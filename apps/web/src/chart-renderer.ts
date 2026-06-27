@@ -3,6 +3,17 @@ import type { BarType, PerBarVolume } from './data-generator';
 import type { OakPlot } from './oakscript';
 import type { VPComputed } from './volume-profile';
 
+export type PerfMode = 'low' | 'medium' | 'high' | 'ultra';
+let _perf: PerfMode = 'high';
+export function setPerfMode(mode: PerfMode) { _perf = mode; }
+export function perfLevel(): PerfMode { return _perf; }
+/** Returns shadowBlur scaled by performance: ultra=1x, high=0.7x, medium=0.3x, low=0 */
+export function perfShadow(base: number): number {
+  return _perf === 'ultra' ? base * 1.3 : _perf === 'high' ? base : _perf === 'medium' ? base * 0.3 : 0;
+}
+/** Whether to use gradients (false for low/medium) */
+export function perfGradient(): boolean { return _perf === 'high' || _perf === 'ultra'; }
+
 function hexToRgb(hex: string): string | null {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   return m ? `${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)}` : null;
@@ -283,20 +294,25 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
     const intensity = Math.min(1, bar.volume / 3000);
     const bTop = Math.min(oy, cy);
     const bBot = Math.max(oy, cy);
-    const bH = Math.max(1.5, bBot - bTop);
+    const bH = Math.max(2.5, bBot - bTop);
 
     // Per-bar volume profile (2D-Per-Bar mode VPI)
     if (perBarVol && perBarVol[i + start]) {
       const pv = perBarVol[i + start];
-      for (const level of pv.levels) {
-        const lx = priceToY(level.price, minP, pRange, height, view);
-        const volW = (level.volume / pv.maxVol) * hW * 0.8;
-        const ratio = level.buyVol / Math.max(level.volume, 0.001);
-        ctx.fillStyle = ratio > 0.5
-          ? `rgba(34, 204, 136, ${0.08 + (level.volume / pv.maxVol) * 0.15})`
-          : `rgba(255, 68, 119, ${0.06 + (level.volume / pv.maxVol) * 0.12})`;
-        ctx.fillRect(x - hW - volW, lx - 1, volW, 2);
-        ctx.fillRect(x + hW, lx - 1, volW, 2);
+      if (pv.maxVol > 0) {
+        const minVol = pv.maxVol * 0.05; // skip levels below 5% of max
+        for (const level of pv.levels) {
+          if (level.volume < minVol) continue;
+          const lx = priceToY(level.price, minP, pRange, height, view);
+          const volW = (level.volume / pv.maxVol) * hW * 0.8;
+          if (volW < 0.5 || isNaN(volW)) continue;
+          const ratio = level.buyVol / Math.max(level.volume, 0.001);
+          ctx.fillStyle = ratio > 0.5
+            ? `rgba(34, 204, 136, ${0.08 + (level.volume / pv.maxVol) * 0.15})`
+            : `rgba(255, 68, 119, ${0.06 + (level.volume / pv.maxVol) * 0.12})`;
+          ctx.fillRect(x - hW - volW, lx - 1, volW, 2);
+          ctx.fillRect(x + hW, lx - 1, volW, 2);
+        }
       }
     }
 
@@ -997,7 +1013,7 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
   for (const p of shapePlots) {
     const idxInView = typeof p.barIdx === 'number' ? p.barIdx - start : typeof p.x === 'number' ? Math.round(p.x) - start : -1;
     if (idxInView < 0 || idxInView >= vLen) continue;
-    const x = barX(idxInView, vLen, width, view.barSpacing, view.scrollX) + view.barSpacing / 2;
+    const x = barX(idxInView, vLen, width, view.barSpacing, view.scrollX);
     if (typeof p.price !== 'number' || isNaN(p.price)) continue;
     let y = priceToY(p.price, minP, pRange, height, view);
     const col = p.color || '#b48cff';

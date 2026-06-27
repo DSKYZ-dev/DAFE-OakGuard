@@ -1,5 +1,5 @@
 export interface OakPlot {
-  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table';
+  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d';
   name: string;
   value?: number;
   series?: number[];
@@ -12,8 +12,37 @@ export interface OakPlot {
   y?: number;
   barIdx?: number;
   pane?: 'main' | 'separate';
-  fillTop?: number;   // for fill type: upper bound value
-  fillBot?: number;   // for fill type: lower bound value
+  fillTop?: number;
+  fillBot?: number;
+  is3D?: boolean;
+}
+
+export interface OakPlot3D {
+  type: 'plot3d';
+  name: string;
+  series: number[];
+  style: 'surface' | 'ribbon' | 'bars3d' | 'scatter' | 'line3d' | 'wireframe' | 'mesh';
+  color: string;
+  pane: 'main' | 'separate';
+}
+
+export interface OakPlot {
+  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d';
+  name: string;
+  value?: number;
+  series?: number[];
+  color?: string;
+  linewidth?: number;
+  style?: string;
+  price?: number;
+  text?: string;
+  x?: number;
+  y?: number;
+  barIdx?: number;
+  pane?: 'main' | 'separate';
+  fillTop?: number;
+  fillBot?: number;
+  is3D?: boolean;
 }
 
 export interface OakAlert {

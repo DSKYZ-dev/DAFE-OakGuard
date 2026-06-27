@@ -10,7 +10,7 @@ export interface Token {
 }
 
 const KEYWORDS = new Set([
-  'indicator', 'strategy', 'plot', 'plotshape', 'plotarrow', 'plotchar',
+  'indicator', 'strategy', 'plot', 'plotshape', 'plotarrow', 'plotchar', 'plot3d',
   'input', 'label', 'table', 'hline', 'fill', 'bgcolor',
   'var', 'varip', 'if', 'else', 'for', 'while', 'in',
   'break', 'continue', 'return', 'true', 'false', 'nil',

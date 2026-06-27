@@ -175,19 +175,19 @@ Should show your GPU with driver version and CUDA version.
 
 On launch, `start.bat` automatically:
 1. Checks if `nvidia-smi` is available → GPU mode
-2. Detects VRAM and configures layer count, context size, and batch size accordingly
-3. Detects CPU cores and sets thread count
+2. Uses conservative defaults optimized for 8GB VRAM: `-ngl -1`, context 4096, batch 256, 4 threads
+3. Detects CPU cores for fallback CPU mode
 4. Prints the detected configuration in the terminal
 
-| VRAM | -ngl (GPU layers) | Context |
-|------|-------------------|---------|
-| 16 GB+ | -1 (all layers) | 8192 |
-| 12 GB+ | 42 | 4096 |
-| 8 GB+ | 33 → -1 | 4096 |
-| 6 GB+ | 24 | 1536 |
-| 4 GB+ | 16 | 1024 |
+**No manual tuning needed** — the adaptive detection handles all hardware configurations automatically. For advanced users, edit the `start.bat` file to adjust individual parameters.
 
----
+### GPU Troubleshooting
+
+If the LLM runs on CPU instead of GPU (slow, ~4 t/s):
+1. Verify `llama-server.exe` is the CUDA build — check device_info in the llama window for `CUDA0`
+2. Run `nvidia-smi` to confirm driver is installed
+3. If you see only CPU in device_info, download the CUDA build from GitHub releases
+4. The RTX 50-series (Blackwell) requires a recent CUDA build (r9821+)
 
 ## Configuration
 

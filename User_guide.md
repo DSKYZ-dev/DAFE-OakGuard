@@ -15,14 +15,18 @@ DAFE Charts is a professional-grade trading charting platform with an onboard AI
 7. [Drawing Tools](#drawing-tools)
 8. [Volume Profile](#volume-profile)
 9. [OakScript — Custom Indicators](#oakscript--custom-indicators)
-10. [Trade Advisor](#trade-advisor)
-11. [Trading Panel](#trading-panel)
-12. [News Feed](#news-feed)
-13. [Settings](#settings)
-14. [Hotkeys](#hotkeys)
-15. [3D Mode](#3d-mode)
-16. [Voice Commands](#voice-commands)
-17. [Shutting Down](#shutting-down)
+10. [3D Indicator Visualizations](#3d-indicator-visualizations)
+11. [Live Tick Simulation](#live-tick-simulation)
+12. [Trade Advisor](#trade-advisor)
+13. [Trading Panel](#trading-panel)
+14. [News Feed](#news-feed)
+15. [Settings](#settings)
+16. [Hotkeys](#hotkeys)
+17. [3D Mode](#3d-mode)
+18. [Performance Modes](#performance-modes)
+19. [Market Hours Detection](#market-hours-detection)
+20. [Voice Commands](#voice-commands)
+21. [Shutting Down](#shutting-down)
 
 ---
 
@@ -183,6 +187,108 @@ Indicators plot directly on the chart and/or in a separate indicator pane below.
 **Overrides:** You can tweak indicator parameters without editing the script via the Overrides panel.
 
 ---
+
+## 3D Indicator Visualizations
+
+OakScript supports rendering indicator data as 3D visualizations using the `plot3d()` function. These render in a dedicated 3D lower pane below the main chart, replacing the secondary 2D pane.
+
+### Syntax
+
+```
+plot3d(series, name, style, color, pane)
+```
+
+### Visualization Styles
+
+| Style | Visual | Best For |
+|-------|--------|----------|
+| `surface` | Color-mapped mesh surface (green→red gradient) | RSI, Stochastics, CCI oscillators |
+| `ribbon` | Glowing tube trace with transparency aura | MACD lines, moving averages |
+| `bars3d` | 3D columns sized by value | Volume, histogram data |
+| `scatter` | HSL-color-coded spheres | Spotting clusters, divergence |
+| `wireframe` | Surface in wireframe mode | Debugging, lightweight view |
+| `line3d` | Thin ribbon variant | Simple trend lines |
+| `mesh` | Solid colored mesh | Dense indicator data |
+
+### Examples
+
+```
+// RSI as a heat-mapped 3D surface
+rsiVal = rsi(close, 14)
+plot3d(rsiVal, "RSI", "surface", "#b48cff", "separate")
+
+// Multiple MACD layers stacked in 3D
+m = macd(close, 12, 26, 9)
+plot3d(m.macd, "MACD", "ribbon", "#22aaff", "separate")
+plot3d(m.signal, "Signal", "ribbon", "#ff8800", "separate")
+
+// Volume as 3D bar chart
+plot3d(volume, "Volume 3D", "bars3d", "#ffd43b", "separate")
+```
+
+### Camera Controls
+
+Click and drag on the 3D pane to rotate the view. Scroll to zoom in/out. The camera adjusts in real-time.
+
+### Resizable Divider
+
+The grey bar between the main chart and 3D pane is draggable. Pull up to shrink the pane (80px min), pull down to expand (500px max). The main chart auto-resizes.
+
+### Pre-built 3D Indicators
+
+Open the OakScript editor and select from the "3D Visualizations" category:
+- RSI 3D Surface
+- RSI 3D Scatter
+- Volume 3D Bars
+- MACD 3D Ribbon
+
+## Live Tick Simulation
+
+The **◆ Live** button in the toolbar simulates real-time price movement on the current candle.
+
+- Updates only the **last candle** — close, high, low, and volume change with each tick
+- Previous bars remain static — only the right edge of the chart animates
+- Ticks fire every 300ms with realistic Gaussian random walk
+- A new candle opens automatically when the timeframe interval expires
+- Button pulses green when active
+- **Market-hours aware**: refuses to start outside trading hours and auto-stops when the market closes
+- Crypto runs 24/7, forex runs 24/5, equities run US market hours
+
+## Market Hours Detection
+
+The system automatically detects whether the current symbol's market is open based on your local time. The status bar shows `●` for open, `○` for closed.
+
+| Market | Timezone | Hours |
+|--------|----------|-------|
+| US Equities | Eastern | Mon-Fri 9:30 AM–4:00 PM (pre: 4:00 AM+, after: until 8:00 PM) |
+| CME Futures | Central | Sun 5:00 PM–Fri 4:00 PM (daily maintenance 4:00–5:00 PM CT) |
+| Forex | Eastern | Sun 5:00 PM–Fri 5:00 PM |
+| Crypto | UTC | Always open |
+| European | London | Mon-Fri 8:00 AM–4:30 PM |
+| Asian | Tokyo | Mon-Fri 9:00 AM–3:00 PM (lunch 11:30 AM–12:30 PM) |
+
+## Performance Modes
+
+A dropdown in the toolbar lets you adjust rendering quality to match your hardware:
+
+| Mode | Shadows | Gradients | Particles | Best For |
+|------|---------|-----------|-----------|----------|
+| Low | Off | Solid fill | Off | Integrated GPUs, laptops |
+| Medium | 30% | Solid fill | Off | Older desktops, 4GB VRAM |
+| High | 70% | Full gradient | On | Recommended (8GB VRAM) |
+| Ultra | 130% | Full gradient | On | RTX 4080+, max quality |
+
+Additional display options in Settings → Display:
+- **Background**: Stars (twinkling field), Particles (floating motes), Graph (clean grid), Plain (solid dark)
+
+## Toolbar & Interface
+
+The bottom toolbar is fully customizable:
+- **Collapse**: Click **«** to shrink to `DAFE Menu »`, click to restore
+- **Drag**: Grab empty space in the bar to reposition anywhere
+- **News Widget**: Drag by its header bar to any screen position
+- **Editor Fullscreen**: Use **⛶** button in OakScript editor header
+- **OHLC Tooltip**: Appears after hovering still for 2 seconds (reduces resource usage)
 
 ## Trade Advisor
 

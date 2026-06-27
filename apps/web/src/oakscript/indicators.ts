@@ -97,6 +97,45 @@ if showSignals
   },
 
   {
+    name: 'RSI 3D Surface',
+    description: 'RSI rendered as a 3D surface plot in the lower pane — watch oscillator waves flow through time',
+    category: '3D Visualizations',
+    source: `// RSI 3D Surface
+rsiLen = input(14, "RSI Length")
+rsiVal = rsi(close, rsiLen)
+plot3d(rsiVal, "RSI Surface", "surface", "#b48cff", "separate")`,
+  },
+  {
+    name: 'Volume 3D Bars',
+    description: 'Volume histogram as 3D bars — makes volume spikes pop out of the chart',
+    category: '3D Visualizations',
+    source: `// Volume 3D Bars
+plot3d(volume, "Volume 3D", "bars3d", "#ffd43b", "separate")`,
+  },
+  {
+    name: 'MACD 3D Ribbon',
+    description: 'MACD line and signal line as glowing 3D ribbons',
+    category: '3D Visualizations',
+    source: `// MACD 3D Ribbon
+fast = input(12, "Fast")
+slow = input(26, "Slow")
+sigLen = input(9, "Signal")
+m = macd(close, fast, slow, sigLen)
+plot3d(m.macd, "MACD", "ribbon", "#22aaff", "separate")
+plot3d(m.signal, "Signal", "ribbon", "#ff8800", "separate")
+plot3d(m.hist, "Histogram", "bars3d", "#8866ff", "separate")`,
+  },
+  {
+    name: 'RSI Scatter',
+    description: 'RSI values as colored 3D scatter plot — overbought/oversold regions visible by color gradient',
+    category: '3D Visualizations',
+    source: `// RSI 3D Scatter
+rsiLen = input(14, "RSI Length")
+rsiVal = rsi(close, rsiLen)
+plot3d(rsiVal, "RSI Scatter", "scatter", "#ff6b6b", "separate")`,
+  },
+
+  {
     name: 'MACD',
     description: 'Moving Average Convergence Divergence with main-chart signal markers',
     category: 'Oscillators',

@@ -282,12 +282,14 @@ export function generatePerBarVolumes(bars: BaseBar[], levelCount: number = 8): 
     const step = (bar.high - bar.low) / levelCount;
     const levels: PerBarVolume['levels'] = [];
     let maxVol = 0;
+    // Use bar range as volume proxy when real volume is 0 (forex, crypto)
+    const effectiveVol = bar.volume > 0 ? bar.volume : (bar.high - bar.low) * 1000 || 1;
 
     for (let i = 0; i < levelCount; i++) {
       const price = bar.low + step * (i + 0.5);
       const distFactor = 1 - Math.abs(i - levelCount / 2) / (levelCount / 2);
       const noise = 0.5 + Math.random() * 1.0;
-      const vol = Math.round(bar.volume / levelCount * distFactor * noise);
+      const vol = Math.round(effectiveVol / levelCount * distFactor * noise);
       const isBuyAtLevel = Math.random() > 0.4;
       const buyVol = Math.round(vol * (isBuyAtLevel ? (0.5 + Math.random() * 0.4) : (0.1 + Math.random() * 0.3)));
       const sellVol = vol - buyVol;

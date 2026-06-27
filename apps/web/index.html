@@ -14,6 +14,8 @@
     }
     #chart-container { position: fixed; inset: 0; display: flex; flex-direction: column; }
     #chart-area { position: relative; flex: 1; min-height: 0; }
+    #chart-splitter { height: 5px; background: rgba(180,140,255,0.12); cursor: row-resize; flex-shrink: 0; }
+    #chart-splitter:hover { background: rgba(180,140,255,0.3); }
     #chart-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; z-index: 2; }
     #chart-canvas:active { cursor: grabbing; }
     #canvas-3d { position: absolute; inset: 0; width: 100%; height: 100%; display: none; z-index: 1; pointer-events: none; }
@@ -78,6 +80,7 @@
       font-family: inherit; cursor: pointer; outline: none;
     }
     #toolbar select:hover { border-color: rgba(180, 140, 255, 0.3); }
+    #toolbar.collapsed { padding: 2px 6px; gap: 4px; justify-content: flex-start; }
     #toolbar .sep {
       width: 1px; height: 20px;
       background: rgba(180, 140, 255, 0.1);
@@ -95,6 +98,23 @@
       cursor: pointer; border-radius: 6px;
     }
     #settings-toggle:hover { background: rgba(180, 140, 255, 0.1); color: rgba(255,255,255,0.7); }
+    #perf-select {
+      padding: 4px 6px; border: 1px solid rgba(0,204,255,0.15);
+      border-radius: 4px; background: rgba(8,8,20,0.9);
+      color: rgba(0,204,255,0.7); font-size: 10px;
+      font-family: inherit; cursor: pointer; outline: none;
+    }
+    #perf-select:hover { border-color: rgba(0,204,255,0.4); }
+    #live-tick-toggle {
+      padding: 4px 10px; border: 1px solid rgba(0,255,136,0.15);
+      border-radius: 4px; background: rgba(8,8,20,0.9);
+      color: rgba(0,255,136,0.4); font-size: 10px;
+      font-family: inherit; cursor: pointer; font-weight: 600;
+      transition: all .15s;
+    }
+    #live-tick-toggle:hover { border-color: rgba(0,255,136,0.4); color: rgba(0,255,136,0.7); }
+    #live-tick-toggle.active { background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.5); color: #00ff88; animation: pulse-live 1.5s infinite; }
+    @keyframes pulse-live { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
     /* ─── Symbol Combo ─────────────────────────────────────── */
     #symbol-input {
@@ -577,6 +597,7 @@
       <canvas id="canvas-3d"></canvas>
       <canvas id="chart-canvas"></canvas>
     </div>
+    <div id="chart-splitter"></div>
     <canvas id="secondary-canvas"></canvas>
   </div>
 
@@ -691,6 +712,16 @@
         </label>
       </div>
       <div class="settings-section">
+        <div class="settings-section-title">Display</div>
+        <label>Background
+          <select id="set-bg-viz">
+            <option value="stars">Stars</option>
+            <option value="particles">Particles</option>
+            <option value="graph">Graph Grid</option>
+            <option value="plain">Plain</option>
+          </select>
+        </label>
+      <div class="settings-section">
         <div class="settings-section-title">Hotkeys (Numpad)</div>
         <div class="hotkey-grid">
           <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input"></label>
@@ -707,8 +738,9 @@
           <label>Undo Drawing <input type="text" id="hk-undo" value="NumpadSubtract" class="hotkey-input"></label>
           <label>Clear All <input type="text" id="hk-clear" value="NumpadMultiply" class="hotkey-input"></label>
           <label>Deselect <input type="text" id="hk-deselect" value="NumpadDecimal" class="hotkey-input"></label>
-        </div>
-      </div>
+    </div>
+    </div>
+  </div>
       <button id="settings-save">Save Settings</button>
       <span id="settings-status" style="font-size:11px;color:rgba(0,255,136,0.6);display:none"></span>
     </div>
@@ -804,6 +836,7 @@
   <div id="toolbar">
     <span class="label" style="color:#00ff88;font-weight:700;letter-spacing:0.5px">DAFE</span>
     <div class="sep"></div>
+    <div class="sep"></div>
 
     <!-- Symbol Selector -->
     <div id="symbol-combo" style="position:relative;display:inline-block">
@@ -851,7 +884,15 @@
     <button id="btn-frame">Frame <span class="key-hint">Np2</span></button>
     <button id="oakscript-toggle">Oak <span class="key-hint">Np3</span></button>
     <button id="vp-toggle">VP <span class="key-hint">Np1</span></button>
+    <button id="live-tick-toggle" title="Live tick simulation">◆ Live</button>
     <button id="settings-toggle" title="Settings">⚙</button>
+    <button id="toolbar-collapse" title="Collapse toolbar">▲</button>
+    <select id="perf-select" title="Performance mode">
+      <option value="high" selected>High</option>
+      <option value="ultra">Ultra</option>
+      <option value="medium">Medium</option>
+      <option value="low">Low</option>
+    </select>
 
     <div class="sep"></div>
 

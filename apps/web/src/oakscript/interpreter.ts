@@ -121,7 +121,6 @@ function evaluateVarDecl(stmt: VarDecl, ctx: RuntimeContext): void {
 }
 
 function evaluateAssignment(stmt: Assignment, ctx: RuntimeContext): void {
-  // Input overrides: if assigning from input() call and override exists, use that
   if (stmt.target.type === 'Identifier' && stmt.value.type === 'CallExpr') {
     const callee = (stmt.value as CallExpr).callee;
     if (callee.type === 'Identifier' && (callee as Identifier).name === 'input') {
@@ -131,6 +130,22 @@ function evaluateAssignment(stmt: Assignment, ctx: RuntimeContext): void {
         ctx.vars.set(name, val);
         if (ctx.persist.has(name)) ctx.persist.set(name, val);
         return;
+      }
+    }
+    // For series functions (rsi, sma, ema, etc.), copy full cached result to seriesHistory
+    // so plot3d() can find it via buildSeries() from the variable identifier
+    const fnName = (stmt.value as CallExpr).callee.type === 'Identifier'
+      ? ((stmt.value as CallExpr).callee as Identifier).name : '';
+    const srcNode = (stmt.value as CallExpr).args[0];
+    const p1 = typeof ((stmt.value as CallExpr).args[1]) === 'number' ? ((stmt.value as CallExpr).args[1]) : 0;
+    if (srcNode?.type === 'Identifier' && fnName) {
+      const cacheKey = `${fnName}:${(srcNode as Identifier).name}:${p1}`;
+      for (const [k] of ctx.cache) {
+        if (k.startsWith(cacheKey)) {
+          const cached = ctx.cache.get(k);
+          if (Array.isArray(cached)) { ctx.seriesHistory.set(stmt.target, cached); }
+          break;
+        }
       }
     }
   }
@@ -447,6 +462,23 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const pane = typeof args[5] === 'string' && args[5] === 'separate' ? 'separate' : 'main';
         const barIdx = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
         ctx.plots.push({ type: 'shape', name: title, text: title, price, color: col, style, pane, barIdx });
+        return true;
+      }
+
+      case 'plot3d': {
+        // plot3d(source, name, style, color, pane)
+        // source is the AST node — pass to buildSeries for full array reconstruction
+        const name = typeof args[1] === 'string' ? args[1] : '3D Plot';
+        const style = typeof args[2] === 'string' ? args[2] : 'surface';
+        const col = typeof args[3] === 'string' ? args[3] : '#b48cff';
+        const pane = typeof args[4] === 'string' && args[4] === 'separate' ? 'separate' : 'main';
+        if (ctx.barIndex === ctx.bars.close.length - 1) {
+          const series = buildSeries(expr.args[0], ctx);
+          ctx.plots.push({
+            type: 'plot3d', name, series,
+            style: style as any, color: col, pane,
+          } as any);
+        }
         return true;
       }
 

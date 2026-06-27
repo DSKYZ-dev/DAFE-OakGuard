@@ -15,6 +15,7 @@ import {
   updateParticles, drawParticles,
   getVisibleRange, visibleBarCount,
   DEFAULT_BAR_SPACING, MIN_BAR_SPACING, MAX_BAR_SPACING, chartRight,
+  setPerfMode,
   type ViewState,
 } from './chart-renderer';
 import {
@@ -27,12 +28,21 @@ import { draw3DScene } from './iso3d';
 import { TradeAdvisorAgent, VisualAdapter, WebSearch } from './trade-advisor';
 import { AdvisorVoice } from './trade-advisor/voice';
 import { LiveDataStream } from './data-stream';
+import { getMarketStatus, marketStatusLabel } from './market-hours';
+import { render3DViz, toggle3DViz, disposeViz, isViz3DActive } from './three-indicators';
+import { show3D, hide3D } from './three-lower-pane';
+import type { OakPlot3D } from './oakscript/runtime';
 
 // ─── URL-based hard reset ──────────────────────────────────────────
 if (window.location.search.includes('reset=1')) {
   const keys = ['oakscript_source', 'oakscript_persist', 'oakscript_webhook', 'oakscript_overrides'];
   keys.forEach(k => localStorage.removeItem(k));
   window.location.replace(window.location.pathname);
+}
+// One-time purge of stale conversation memory that may contain old image references
+if (!localStorage.getItem('dafe_v2_clean')) {
+  try { indexedDB.deleteDatabase('dafe-trade-advisor'); } catch {}
+  localStorage.setItem('dafe_v2_clean', '1');
 }
 
 // ─── State ─────────────────────────────────────────────────────────
@@ -49,8 +59,60 @@ let is3DMode = true;
 let mouseX = -1, mouseY = -1;
 let mouseDown = false, lastMX = 0, lastMY = 0;
 let showTooltip = false;
+let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
 let time = 0;
 let vpiEnabled = true;
+let perfMode: 'low' | 'medium' | 'high' | 'ultra' = 'high';
+let bgViz: 'particles' | 'stars' | 'graph' | 'plain' = 'stars';
+
+// ─── Live Tick Simulator ──────────────────────────────────────────
+let liveTicksEnabled = false;
+let liveTickTimer: ReturnType<typeof setInterval> | null = null;
+
+const TIMEFRAMES_SEC: Record<Timeframe, number> = {
+  '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800,
+};
+
+function startLiveTicks(): void {
+  if (liveTickTimer) return;
+  const status = getMarketStatus(currentSymbol);
+  if (status === 'closed') {
+    appendAdvisorMessage('system', `Live ticks disabled — ${marketStatusLabel(status)} for ${currentSymbol}`);
+    return;
+  }
+  liveTicksEnabled = true;
+  const tickMs = 300;
+  liveTickTimer = setInterval(() => {
+    if (transformed.length === 0) return;
+    // Periodically check if market closed — stop ticks
+    if (Math.random() < 0.02) {
+      if (getMarketStatus(currentSymbol) === 'closed') { stopLiveTicks(); updateUI(); return; }
+    }
+    const last = transformed[transformed.length - 1];
+    const now = Date.now();
+    const intervalMs = TIMEFRAMES_SEC[timeframe] * 1000;
+    if (now - last.timestamp >= intervalMs) {
+      const newBar: BaseBar = {
+        timestamp: last.timestamp + intervalMs,
+        open: last.close, high: last.close, low: last.close, close: last.close, volume: 0,
+      };
+      transformed.push(newBar);
+      bars.push({ ...newBar });
+      return;
+    }
+    const volatility = last.close * 0.0003;
+    const change = (Math.random() - 0.5) * volatility * 2;
+    last.close = Math.max(0.01, last.close + change);
+    if (last.close > last.high) last.high = last.close;
+    if (last.close < last.low) last.low = last.close;
+    last.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
+  }, tickMs);
+}
+
+function stopLiveTicks(): void {
+  if (liveTickTimer) { clearInterval(liveTickTimer); liveTickTimer = null; }
+  liveTicksEnabled = false;
+}
 
 // ─── Trade Advisor state ──────────────────────────────────────────
 let currentSymbol = 'SPY';
@@ -114,14 +176,20 @@ const secCanvas = document.getElementById('secondary-canvas') as HTMLCanvasEleme
 const ctx = canvas.getContext('2d')!;
 const secCtx = secCanvas.getContext('2d')!;
 const SEC_HEIGHT = 120;
+let lowerHeight = 220; // dynamic for 3D pane and resizable divider
 
 function resize() {
   const w = window.innerWidth;
-  const h = Math.max(100, window.innerHeight - SEC_HEIGHT);
+  const h = Math.max(100, window.innerHeight - lowerHeight);
   canvas.width = w;
   canvas.height = h;
   secCanvas.width = w;
-  secCanvas.height = SEC_HEIGHT;
+  secCanvas.height = lowerHeight;
+  const pane3D = document.getElementById('three-lower-scene');
+  if (pane3D) pane3D.style.height = `${lowerHeight}px`;
+  (window as any).__dafeLowerHeight = lowerHeight;
+  const splitter = document.getElementById('chart-splitter');
+  if (splitter) splitter.style.display = '';
 }
 resize();
 window.addEventListener('resize', resize);
@@ -190,7 +258,10 @@ canvas.addEventListener('mousedown', (e) => {
 });
 canvas.addEventListener('mousemove', (e) => {
   mouseX = e.clientX; mouseY = e.clientY;
-  showTooltip = true;
+  // Show tooltip only after 2s of mouse stillness
+  if (tooltipTimer) clearTimeout(tooltipTimer);
+  showTooltip = false;
+  tooltipTimer = setTimeout(() => { showTooltip = true; }, 2000);
   if (draw.isDrawing() && !is3DMode) {
     draw.onMove(e.clientX, e.clientY, transformed, view, canvas.width, canvas.height);
   }
@@ -223,7 +294,7 @@ canvas.addEventListener('mouseup', () => {
     visualAdapter.logAction('mouse', `Clicked at bar near price area`);
   }
 });
-canvas.addEventListener('mouseleave', () => { mouseDown = false; scaleYDragging = false; canvas.style.cursor = ''; mouseX = -1; showTooltip = false; });
+canvas.addEventListener('mouseleave', () => { mouseDown = false; scaleYDragging = false; canvas.style.cursor = ''; mouseX = -1; showTooltip = false; if (tooltipTimer) { clearTimeout(tooltipTimer); tooltipTimer = null; } });
 
 // ─── Keyboard ──────────────────────────────────────────────────────
 window.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -288,6 +359,7 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
 
   liveStream.setSymbol(sym);
   liveStream.setTimeframe(tfv);
+  stopLiveTicks();
 
   try {
     const result = await liveStream.fetchBars();
@@ -712,6 +784,7 @@ function updateUI() {
   if (tfSelect) tfSelect.value = timeframe;
   document.getElementById('oakscript-toggle')?.classList.toggle('active', oakScriptEnabled);
   document.getElementById('os-status')?.classList.toggle('has-errors', oakScriptErrors.length > 0);
+  document.getElementById('live-tick-toggle')?.classList.toggle('active', liveTicksEnabled);
   buildIndicatorList();
   syncVPSettingsPanel();
   updateAdvisorContext();
@@ -854,6 +927,15 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('vp-toggle')?.addEventListener('click', () => {
     document.getElementById('vp-settings-panel')?.classList.toggle('active');
     visualAdapter.logAction('toggle', 'Volume profile settings panel');
+  });
+  document.getElementById('live-tick-toggle')?.addEventListener('click', () => {
+    if (liveTicksEnabled) {
+      stopLiveTicks();
+      (document.getElementById('live-tick-toggle') as HTMLElement).classList.remove('active');
+    } else {
+      startLiveTicks();
+      (document.getElementById('live-tick-toggle') as HTMLElement).classList.add('active');
+    }
   });
   document.getElementById('mode-toggle')?.addEventListener('click', () => {
     is3DMode = !is3DMode;
@@ -1020,6 +1102,53 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   settingsClose?.addEventListener('click', () => settingsPanel?.classList.remove('active'));
 
+  document.getElementById('perf-select')?.addEventListener('change', () => {
+    const val = (document.getElementById('perf-select') as HTMLSelectElement)?.value;
+    if (val === 'low' || val === 'medium' || val === 'high' || val === 'ultra') {
+      perfMode = val;
+      setPerfMode(val);
+    }
+  });
+
+  document.getElementById('toolbar-collapse')?.addEventListener('click', () => {
+    const tb = document.getElementById('toolbar');
+    const btn = document.getElementById('toolbar-collapse');
+    if (!tb || !btn) return;
+    const collapsed = tb.classList.toggle('collapsed');
+    for (const c of Array.from(tb.children)) {
+      if (c === btn || (c as HTMLElement).classList?.contains('label')) continue;
+      (c as HTMLElement).style.display = collapsed ? 'none' : '';
+    }
+    btn.textContent = collapsed ? 'Menu »' : '«';
+  });
+
+  // Make toolbar draggable
+  const tbar = document.getElementById('toolbar');
+  if (tbar) {
+    tbar.style.cursor = 'grab';
+    let tOffX = 0, tOffY = 0;
+    tbar.addEventListener('mousedown', (e) => {
+      if ((e.target as HTMLElement).tagName === 'BUTTON' || (e.target as HTMLElement).tagName === 'SELECT' || (e.target as HTMLElement).tagName === 'INPUT') return;
+      tOffX = e.clientX - tbar.offsetLeft;
+      tOffY = e.clientY - tbar.offsetTop;
+      tbar.style.cursor = 'grabbing';
+      const onMove = (ev: MouseEvent) => {
+        tbar.style.transform = 'none';
+        tbar.style.left = Math.max(0, Math.min(window.innerWidth - 200, ev.clientX - tOffX)) + 'px';
+        tbar.style.bottom = 'auto';
+        tbar.style.top = Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - tOffY)) + 'px';
+      };
+      const onUp = () => {
+        tbar.style.cursor = 'grab';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+  }
+
   // Draggable settings
   const settingsHeader = document.getElementById('settings-header');
   if (settingsPanel && settingsHeader) {
@@ -1056,6 +1185,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const voicePref = localStorage.getItem('dafe_voice_pref') || 'auto';
       const voiceSel = document.getElementById('set-voice') as HTMLSelectElement;
       if (voiceSel) voiceSel.value = voicePref;
+
+      const bgSel = document.getElementById('set-bg-viz') as HTMLSelectElement;
+      if (bgSel) bgSel.value = bgViz;
       if (data.market_data_source) (document.getElementById('set-data-source') as HTMLSelectElement).value = data.market_data_source;
       const hkMap: Record<string, string> = {hk3d:'hotkey_3d',hkvp:'hotkey_vp',hkframe:'hotkey_frame',hkoak:'hotkey_oak',hktrend:'hotkey_trend',hkhline:'hotkey_hline',hkray:'hotkey_ray',hkrect:'hotkey_rect',hkfib:'hotkey_fib',hkchannel:'hotkey_channel',hktext:'hotkey_text',hkundo:'hotkey_undo',hkclear:'hotkey_clear',hkdeselect:'hotkey_deselect'};
       for (const [id, key] of Object.entries(hkMap)) {
@@ -1097,6 +1229,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('set-voice')?.addEventListener('change', () => {
     const val = (document.getElementById('set-voice') as HTMLSelectElement)?.value || 'auto';
     voice.setVoicePreference(val as any);
+  });
+
+  document.getElementById('set-bg-viz')?.addEventListener('change', () => {
+    bgViz = (document.getElementById('set-bg-viz') as HTMLSelectElement)?.value as any || 'particles';
   });
 
   // ─── News Box ────────────────────────────────────────────────────
@@ -1316,6 +1452,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
   updateUI();
   updateTradingPanel();
+
+  // Resizable chart divider
+  const splitter = document.getElementById('chart-splitter');
+
+  // Make news widget draggable
+  const newsBox = document.getElementById('news-box');
+  const newsHeader = document.getElementById('news-header');
+  if (newsBox && newsHeader) {
+    let nX = 0, nY = 0;
+    newsHeader.style.cursor = 'grab';
+    newsHeader.addEventListener('mousedown', (e) => {
+      if ((e.target as HTMLElement).tagName === 'BUTTON') return;
+      nX = e.clientX - newsBox.offsetLeft;
+      nY = e.clientY - newsBox.offsetTop;
+      const onMove = (ev: MouseEvent) => {
+        newsBox.style.left = Math.max(0, ev.clientX - nX) + 'px';
+        newsBox.style.top = Math.max(0, ev.clientY - nY) + 'px';
+        newsBox.style.right = 'auto';
+      };
+      const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+  }
+
+  // Resizable chart divider handler
+  if (splitter) {
+    let sY = 0;
+    splitter.addEventListener('mousedown', (e) => {
+      sY = e.clientY;
+      const onMove = (ev: MouseEvent) => {
+        lowerHeight = Math.max(80, Math.min(500, lowerHeight + (sY - ev.clientY)));
+        sY = ev.clientY;
+        resize();
+      };
+      const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+    });
+  }
 });
 
 // ─── Render loop ───────────────────────────────────────────────────
@@ -1338,8 +1516,10 @@ function frame(now: number) {
 
   updateSnapshotEveryNthFrame();
 
-  // Compute current volume profile from visible or recent bars (used by 2D, 3D ribbon, and status).
+  // Compute visible range once per frame — shared by all drawing functions
   const { start: visStart, end: visEnd } = getVisibleRange(view, canvas.width, transformed.length);
+
+  // Volume profile with cache
   const vpKey = `${visStart}_${visEnd}_${vpSettings.lookbackBars}_${vpSettings.binCount}_${vpSettings.valueAreaPct}_${vpSettings.mode}_${vpSettings.profileWidth}`;
   let vpComputed: VPComputed;
   let volumeBins: VolumeBin[];
@@ -1358,53 +1538,63 @@ function frame(now: number) {
   }
 
   if (is3DMode) {
-    // 2.5D isometric scene rendered on the proven 2D canvas pipeline
     draw3DScene(ctx, transformed, view, {
-      barType,
-      perBarVols: vpiEnabled ? perBarVols : undefined,
-      volumeBins,
-      volumeMode: vpSettings.mode,
-      visualEngine: vpSettings.visualEngine,
-      volumeEnabled,
-      vpiEnabled,
-      time,
-      profileWidth: vpSettings.profileWidth,
-      vpComputed,
+      barType, perBarVols: vpiEnabled ? perBarVols : undefined,
+      volumeBins, volumeMode: vpSettings.mode, visualEngine: vpSettings.visualEngine,
+      volumeEnabled, vpiEnabled, time, profileWidth: vpSettings.profileWidth, vpComputed,
     });
     drawTimeAxis(ctx, transformed, view);
   } else {
-    drawBackground(ctx, time);
+    // 2D mode — background layer based on bgViz
+    if (bgViz === 'stars') drawBackground(ctx, time);
+    else { ctx.fillStyle = '#0a0a18'; ctx.fillRect(0, 0, width, height); }
     drawGrid(ctx, transformed, view, time);
     drawBars(ctx, transformed, view, time, barType, vpiEnabled ? perBarVols : undefined);
     drawTimeAxis(ctx, transformed, view);
   }
 
-  updateParticles(time, width, height);
+  if (bgViz === 'particles') { updateParticles(time, width, height); drawParticles(ctx); }
 
-  // 2D volume profile modes overlay on the canvas in both 2D and 3D.
-  // The 3D extrude/heatmap modes are rendered inside draw3DScene instead.
+  if (bgViz === 'particles') { updateParticles(time, width, height); drawParticles(ctx); }
+
   const is2DVolMode = vpSettings.mode === '2D-Side' || vpSettings.mode === '2D-Per-Bar';
   if (volumeEnabled && (!is3DMode || is2DVolMode)) {
     drawVolumeProfile(ctx, volumeBins, vpSettings.mode, time, vpComputed, vpSettings.profileWidth);
   }
 
-  // OakScript overlay plots — ALWAYS drawn on 2D canvas (even in 3D mode)
+  // OakScript plots — cache filtered arrays to avoid re-filtering every frame
   if (oakScriptEnabled) {
     const result = getCurrentResult();
     if (result && result.plots.length > 0) {
-      const mainPlots = result.plots.filter(p => p.pane !== 'separate');
-      const sepPlots = result.plots.filter(p => p.pane === 'separate');
-      if (mainPlots.length > 0) drawOakScriptPlots(ctx, mainPlots, transformed, view);
-      if (sepPlots.length > 0) drawSecondaryChart(secCtx, sepPlots, transformed, view);
+      const filterKey = result.plots.length + (result.plots[0]?.type || '');
+      if (filterKey !== oakPathKey || !oakPathCache) {
+        oakPathKey = filterKey;
+        oakPathCache = {
+          mainPlots: result.plots.filter(p => p.pane !== 'separate' && p.type !== 'plot3d'),
+          sepPlots: result.plots.filter(p => p.pane === 'separate' && p.type !== 'plot3d'),
+        };
+        // Extract 3D plots — separate pane goes to lower, main pane goes to chart overlay
+        const all3D = result.plots.filter(p => p.type === 'plot3d') as OakPlot3D[];
+        const sep3D = all3D.filter(p => p.pane === 'separate');
+        const main3D = all3D.filter(p => p.pane !== 'separate');
+        show3D(sep3D);
+        if (main3D.length > 0 && !isViz3DActive()) toggle3DViz(transformed, view, canvas.width, canvas.height);
+        if (main3D.length === 0 && isViz3DActive()) { disposeViz(); }
+      }
+      if (oakPathCache.mainPlots.length > 0) drawOakScriptPlots(ctx, oakPathCache.mainPlots, transformed, view);
+      if (oakPathCache.sepPlots.length > 0) drawSecondaryChart(secCtx, oakPathCache.sepPlots, transformed, view);
+      // renderLowerPane();
     } else {
       secCtx.fillStyle = '#0a0a18';
       secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
     }
+  } else {
+    secCtx.fillStyle = '#0a0a18';
+    secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
+    if (isViz3DActive()) disposeViz();
+    hide3D();
   }
 
-  drawParticles(ctx);
-
-  // User drawings (trendlines, rays, hlines, rectangles, fib) — 2D overlay
   if (!is3DMode) draw.drawAll(ctx, transformed, view);
 
   if (mouseX >= 0 && mouseY >= 0) {
@@ -1412,26 +1602,23 @@ function frame(now: number) {
     if (showTooltip) drawOHLCTooltip(ctx, transformed, view, mouseX, mouseY, barType);
   }
 
+  // Status bar — only rebuild string when content changes (not every frame)
   const poc = vpComputed?.poc || null;
-  const result = getCurrentResult();
-  const osCount = result?.plots.length ?? 0;
+  const osCount = oakPathCache ? oakPathCache.mainPlots.length + oakPathCache.sepPlots.length : 0;
   const osErr = oakScriptErrors.length;
-  const status = [
-    `DAFE ${currentSymbol}`,
-    `Data: ${dataProviderLabel}`,
-    `Mode: ${is3DMode ? '3D' : '2D'}`,
-    `Type: ${barType}`,
-    `TF: ${timeframe}`,
-    `VPI: ${vpiEnabled ? 'ON' : 'OFF'}`,
-    `Oak: ${oakScriptEnabled ? osCount + ' plots' + (osErr ? ` (${osErr} err)` : '') : 'OFF'}`,
-    `Vol: ${vpSettings.mode}${volumeEnabled ? '' : ' OFF'}`,
-    `VP bins: ${volumeBins.length}`,
-    vpComputed ? `Delta: ${vpComputed.delta >= 0 ? '+' : ''}${(vpComputed.delta / 1000).toFixed(1)}K` : '',
-    poc ? `POC: $${poc.price.toFixed(0)}` : '',
-    `Zoom: ${view.barSpacing.toFixed(1)}px`,
-    `[Num0]3D [Num1]VP [Num2]Frame [Num3]Oak [Num4-9]Draw [Num+]Txt [Num-]Undo [Num*]Clr [Num.]Del`,
-  ].join('  │  ');
-  drawStatusBar(ctx, status);
+  const statusKey = `${currentSymbol}|${dataProviderLabel}|${is3DMode ? 3 : 2}|${barType}|${timeframe}|${vpiEnabled}|${oakScriptEnabled}|${osCount}|${osErr}|${volumeEnabled}|${vpSettings.mode}|${volumeBins.length}|${view.barSpacing.toFixed(1)}`;
+  if (statusKey !== vpCacheKey + '_status') {
+    (window as any).__dafeStatusKey = statusKey;
+    const status = [
+      `DAFE ${currentSymbol}`, `Data: ${dataProviderLabel}`, `Mode: ${is3DMode ? '3D' : '2D'}`,
+      `Type: ${barType}`, `TF: ${timeframe}`, `VPI: ${vpiEnabled ? 'ON' : 'OFF'}`,
+      `Live: ${liveTicksEnabled ? '◆' : '-'}`,
+      getMarketStatus(currentSymbol) === 'open' ? '●' : '○',
+      `Oak: ${oakScriptEnabled ? osCount + ' plots' + (osErr ? ` (${osErr} err)` : '') : 'OFF'}`,
+      `Vol: ${vpSettings.mode}${volumeEnabled ? '' : ' OFF'}`, `Zoom: ${view.barSpacing.toFixed(1)}px`,
+    ].join('  │  ');
+    drawStatusBar(ctx, status);
+  }
 
   requestAnimationFrame(frame);
 }

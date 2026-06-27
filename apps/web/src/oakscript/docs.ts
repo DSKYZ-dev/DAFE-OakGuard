@@ -164,30 +164,98 @@ When an indicator is selected from the menu, inputs appear
 as interactive controls below the editor.`,
     },
     {
-      title: 'Plotting',
-      content: `// Plot a line
-plot(value, title, color, linewidth)
+      title: 'Plotting (2D)',
+      content: `// Plot a line on the chart or lower pane
+plot(value, title, color, linewidth, pane?)
+  pane: "main" (default) or "separate" (lower pane)
 
-// Plot a shape on the chart
-plotshape(bar_index, price, title, style, color)
+// Plot a shape marker on the chart
+plotshape(bar_index, price, title, style, color, pane?)
 
-  Styles: triangleup, triangledown, circle, cross, xcross, square,
-          diamond, arrowup, arrowdown, labelup, labeldown
+// Horizontal reference line
+hline(price, color, pane?)
 
-// Horizontal line
-hline(price, color)
+// Fill between two plot values
+fill(top, bottom, color)
 
-// Background color
+// Background color for a bar
 bgcolor(color)
 
-// Label (advanced)
+// Label on the chart
 label.new(x, y, text, color)
+
+Shape styles: triangleup, triangledown, circle, cross, xcross,
+              square, diamond, arrowup, arrowdown
 
 Examples:
     plot(close, "Close", "#ffffff", 1)
+    plot(rsiVal, "RSI", "#b48cff", 2, "separate")
     plotshape(bar_index, low, "BUY", "triangleup", "#22cc88")
     hline(70, "#ff4477")
+    hline(30, "#22cc88", "separate")
     bgcolor("rgba(255,0,0,0.1)")`,
+    },
+    {
+      title: '3D Plotting (plot3d)',
+      content: `// Render indicator data as a 3D visualization
+plot3d(series, name, style, color, pane?)
+
+  series — any indicator array (rsi(), volume, macd.macd, etc.)
+  name   — title displayed in the 3D scene
+  style  — visualization type
+  color  — hex color string
+  pane   — "main" (chart overlay) or "separate" (lower pane)
+
+3D Visualization Styles:
+  "surface"   — Colored mesh surface flowing through time. Best for
+                oscillators (RSI, Stochastics, CCI)
+  "ribbon"    — Glowing tube trace with transparency aura. Best for
+                MACD lines, moving averages, trend indicators
+  "bars3d"    — 3D columns sized by value. Best for volume,
+                histogram data, delta
+  "scatter"   — HSL-color-coded spheres. Best for spotting
+                overbought/oversold clusters, divergence
+  "line3d"    — Same as ribbon but thinner (alias)
+
+Panes:
+  "separate"  — Renders in the 3D lower pane below the chart.
+                Multiple plot3d("separate") calls stack side-by-side.
+                Replaces the secondary 2D pane automatically.
+  "main"      — Renders as a 3D overlay on the main chart area.
+                The surface/ribbon floats above the price action.
+
+Examples:
+    // RSI as a 3D surface in the lower pane
+    rsiVal = rsi(close, 14)
+    plot3d(rsiVal, "RSI", "surface", "#b48cff", "separate")
+
+    // Volume as 3D bars — spikes pop out dramatically
+    plot3d(volume, "Volume", "bars3d", "#ffd43b", "separate")
+
+    // MACD with multiple layers
+    m = macd(close, 12, 26, 9)
+    plot3d(m.macd, "MACD", "ribbon", "#22aaff", "separate")
+    plot3d(m.signal, "Signal", "ribbon", "#ff8800", "separate")
+
+    // 3D surface floating above price on main chart
+    plot3d(close, "Price Surface", "surface", "#22cc88", "main")
+
+    // RSI as scatter plot — overbought/oversold visible by color
+    plot3d(rsi(close, 14), "RSI Scatter", "scatter", "#ff6b6b", "separate")
+
+Limitations:
+  - plot3d emits once per full execution (not per-bar). Arrays
+    are reconstructed from the series history.
+  - Only one 3D scene exists per pane. Multiple plot3d calls
+    in the same pane stack as layers within the same scene.
+  - The lower pane switches between 2D (plot with "separate")
+    and 3D (plot3d with "separate") automatically. They cannot
+    coexist — 3D takes priority.
+  - 3D rendering uses Three.js (WebGL). Performance depends on
+    series length — longer series = more geometry. Use
+    performance mode to reduce quality if needed.
+  - Surface/ribbon styles work best with 100+ bars of data.
+    Less than 20 bars may produce sparse geometry.`,
     },
     {
       title: 'Alerts & Webhooks',

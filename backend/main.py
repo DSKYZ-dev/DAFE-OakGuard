@@ -106,12 +106,17 @@ async def api_chat(body: dict[str, Any]):
     )})
     ollama_messages.append({"role": "assistant", "content": "Understood. I am the DAFE Trade Advisor, your trading assistant. How can I help you today?"})
 
-    # Append actual conversation messages — pass multimodal content through as-is
+    # Append actual conversation messages — strip any residual image_url content
     for m in messages:
         role = m.get("role", "user")
         if role == "system-context":
             role = "system"
         content = m.get("content", "")
+        if isinstance(content, list):
+            # Keep only text parts, discard image_urls (model has no vision)
+            content = [p for p in content if isinstance(p, dict) and p.get("type") != "image_url"]
+            if not content:
+                continue
         ollama_messages.append({"role": role, "content": content})
 
     if user_msg and user_msg not in [m.get("content", "") for m in messages]:
@@ -125,7 +130,7 @@ async def api_chat(body: dict[str, Any]):
             async with httpx.AsyncClient(timeout=180.0) as client:
                 resp = await client.post(chat_url, json={
                     "model": model, "messages": ollama_messages,
-                    "temperature": 0.3, "stream": False, "think": False,
+                    "temperature": 0.3, "stream": False,
                 })
                 if resp.status_code != 200:
                     text = await resp.aread()

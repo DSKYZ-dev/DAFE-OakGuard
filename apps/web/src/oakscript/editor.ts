@@ -323,6 +323,36 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     try { localStorage.setItem('oakscript_editor_bounds', JSON.stringify({ left: r.left, top: r.top, width: r.width, height: r.height })); } catch {}
   }
 
+  const btnGroup = document.createElement('div');
+  Object.assign(btnGroup.style, { display: 'flex', alignItems: 'center', gap: '2px' });
+
+  const fullscreenBtn = document.createElement('button');
+  fullscreenBtn.textContent = '⛶';
+  fullscreenBtn.title = 'Fullscreen';
+  Object.assign(fullscreenBtn.style, {
+    background: 'none', border: 'none', color: 'rgba(255,255,255,0.25)',
+    cursor: 'pointer', fontSize: '12px', padding: '2px 6px',
+  });
+  let isFullscreen = false;
+  fullscreenBtn.onclick = () => {
+    if (!editorPanel) return;
+    isFullscreen = !isFullscreen;
+    if (isFullscreen) {
+      editorPanel.style.left = '0'; editorPanel.style.top = '0';
+      editorPanel.style.width = window.innerWidth + 'px';
+      editorPanel.style.height = window.innerHeight + 'px';
+      editorPanel.style.maxHeight = 'none';
+      editorPanel.style.borderRadius = '0';
+    } else {
+      editorPanel.style.left = '300px'; editorPanel.style.top = '60px';
+      editorPanel.style.width = '460px'; editorPanel.style.height = '';
+      editorPanel.style.maxHeight = '90vh';
+      editorPanel.style.borderRadius = '10px';
+    }
+    saveBounds();
+  };
+  btnGroup.appendChild(fullscreenBtn);
+
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
   Object.assign(closeBtn.style, {
@@ -330,13 +360,14 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     cursor: 'pointer', fontSize: '14px', padding: '2px 6px',
   });
   closeBtn.onclick = () => { editorVisible = false; if (editorPanel) editorPanel.style.display = 'none'; };
-  header.appendChild(closeBtn);
+  btnGroup.appendChild(closeBtn);
+  header.appendChild(btnGroup);
   editorPanel.appendChild(header);
 
   // ── Editor area ─────────────────────────────────────────────────
   const editorWrapper = document.createElement('div');
   Object.assign(editorWrapper.style, {
-    display: 'flex', maxHeight: '300px', overflow: 'hidden',
+    display: 'flex', flex: '0 0 auto', overflow: 'hidden',
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
   });
 
@@ -538,7 +569,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   // ── Documentation Panel ─────────────────────────────────────────
   docPanel = document.createElement('div');
   Object.assign(docPanel.style, {
-    maxHeight: '300px', overflow: 'auto', display: 'none',
+    flex: '1', overflow: 'auto', display: 'none', minHeight: '0',
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
   });
   editorPanel.appendChild(docPanel);

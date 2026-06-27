@@ -115,11 +115,20 @@ export function computeVolumeProfileBins(
   let maxP = -Infinity;
   let totalVolume = 0;
   let delta = 0;
+  let usesSyntheticVol = false;
   for (const b of bars) {
     if (b.low < minP) minP = b.low;
     if (b.high > maxP) maxP = b.high;
     totalVolume += b.volume;
     delta += b.volume * (b.close >= b.open ? 0.6 - 0.4 : 0.4 - 0.6);
+  }
+  // Forex/crypto pairs often have zero volume from Yahoo — use bar range as proxy
+  if (totalVolume === 0) {
+    usesSyntheticVol = true;
+    for (const b of bars) {
+      totalVolume += (b.high - b.low) || 1;
+      delta += ((b.high - b.low) || 1) * (b.close >= b.open ? 0.6 - 0.4 : 0.4 - 0.6);
+    }
   }
   const range = maxP - minP || 1;
   const step = range / settings.binCount;
@@ -141,9 +150,10 @@ export function computeVolumeProfileBins(
   }
 
   for (const b of bars) {
+    const vol = usesSyntheticVol ? ((b.high - b.low) || 1) : b.volume;
     const buyFrac = b.close >= b.open ? 0.6 : 0.4;
-    const buyVol = b.volume * buyFrac;
-    const sellVol = b.volume - buyVol;
+    const buyVol = vol * buyFrac;
+    const sellVol = vol - buyVol;
     for (const bin of bins) {
       const binLow = bin.low ?? bin.price - step / 2;
       const binHigh = bin.high ?? bin.price + step / 2;
@@ -151,8 +161,7 @@ export function computeVolumeProfileBins(
       const overlapHigh = Math.min(b.high, binHigh);
       if (overlapHigh <= overlapLow) continue;
       const overlap = (overlapHigh - overlapLow) / (b.high - b.low || 1);
-      const vol = b.volume * overlap;
-      bin.volume += vol;
+      bin.volume += vol * overlap;
       bin.buyVolume += buyVol * overlap;
       bin.sellVolume += sellVol * overlap;
       bin.tickCount += 1;

@@ -56,6 +56,8 @@ if "%USE_VISION%"=="1" (
 echo.
 echo  [1/4] Stopping previous instances...
 powershell -NoProfile -Command "$w='llama-server','dafe-backend','dafe-frontend';Get-Process|Where-Object{$w -contains $_.MainWindowTitle}|Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
+:: Also kill any process squatting on our ports
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8788,5173,8081 -ErrorAction SilentlyContinue|ForEach-Object{Stop-Process -Id `$_.OwningProcess -Force -ErrorAction SilentlyContinue}" 2>nul
 timeout /t 1 /nobreak >nul
 echo         Done.
 
