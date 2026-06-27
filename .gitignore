@@ -1,0 +1,22 @@
+node_modules/
+dist/
+target/
+*.wasm
+.env
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Backend
+backend/settings.json
+
+# Model files (too large for git)
+models/*.gguf
+models/*.bin
+
+# Vite cache
+.vite/
+.vite-temp/

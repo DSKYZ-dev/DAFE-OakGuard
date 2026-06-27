@@ -1,0 +1,299 @@
+import type { BaseBar, Tick, VolumeBin } from '@dafe/types';
+
+export type BarType = 'candlestick' | 'heikin-ashi' | 'renko' | 'range-bar' | 'volume-bar' | 'tick-bar' | 'kagi' | 'footprint' | 'line' | 'area' | 'dollar-bar' | 'imbalance-bar';
+export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';
+
+export interface PerBarVolume {
+  levels: { price: number; volume: number; buyVol: number; sellVol: number }[];
+  maxVol: number;
+}
+
+const TIMEFRAMES_MS: Record<Timeframe, number> = {
+  '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000,
+  '1h': 3600000, '4h': 14400000, '1d': 86400000, '1w': 604800000,
+};
+
+const SYMBOL_BASE_PRICES: Record<string, number> = {
+  'AAPL': 230, 'MSFT': 420, 'GOOGL': 175, 'AMZN': 185, 'NVDA': 125,
+  'TSLA': 250, 'META': 510, 'SPY': 550, 'QQQ': 470, 'IWM': 215,
+  'ES': 5500, 'NQ': 19500, 'YM': 40000, 'RTY': 2100, 'CL': 72,
+  'GC': 2350, 'SI': 29, 'NG': 2.8, 'ZB': 115, 'ZN': 108,
+  'EURUSD': 1.08, 'GBPUSD': 1.27, 'USDJPY': 157, 'BTCUSD': 67000,
+  'ETHUSD': 3500, 'DIA': 400, 'XLF': 42, 'XLE': 88,
+};
+
+export function generateBars(count: number, tf: Timeframe = '1m', symbol?: string): BaseBar[] {
+  const bars: BaseBar[] = [];
+  const sym = (symbol || 'SPY').toUpperCase();
+  let price = SYMBOL_BASE_PRICES[sym] || (500 + Math.random() * 200);
+  const intervalMs = TIMEFRAMES_MS[tf];
+  const now = Date.now() - count * intervalMs;
+
+  for (let i = 0; i < count; i++) {
+    const volatility = price * 0.002;
+    const open = price;
+    const close = price + (Math.random() - 0.48) * volatility * 4;
+    const high = Math.max(open, close) + Math.random() * volatility;
+    const low = Math.min(open, close) - Math.random() * volatility;
+    const volume = 100 + Math.random() * 5000;
+
+    bars.push({
+      timestamp: now + i * intervalMs,
+      open: Math.round(open * 100) / 100,
+      high: Math.round(high * 100) / 100,
+      low: Math.round(low * 100) / 100,
+      close: Math.round(close * 100) / 100,
+      volume: Math.round(volume),
+    });
+
+    price = close;
+    if (i > 0 && i % 20 === 0) price += (Math.random() - 0.5) * volatility * 10;
+  }
+  return bars;
+}
+
+export function generateTicks(bars: BaseBar[]): Tick[] {
+  const ticks: Tick[] = [];
+  for (const bar of bars) {
+    const tickCount = Math.max(1, Math.round(bar.volume / 100));
+    for (let j = 0; j < tickCount; j++) {
+      const progress = j / tickCount;
+      const price = bar.low + (bar.high - bar.low) * (j / tickCount) + Math.random() * (bar.high - bar.low) * 0.1;
+      ticks.push({
+        price: Math.round(price * 100) / 100,
+        size: Math.round(Math.random() * 10 + 0.1),
+        side: Math.random() > 0.5 ? 'buy' : 'sell',
+        timestamp: bar.timestamp + Math.round(progress * (bar.timestamp < bars[bars.indexOf(bar) + 1]?.timestamp ? bars[bars.indexOf(bar) + 1].timestamp - bar.timestamp : 60000)),
+        symbol: 'BTC/USD',
+      });
+    }
+  }
+  return ticks;
+}
+
+export function computeVolumeProfile(bars: BaseBar[], resolution: number = 5): VolumeBin[] {
+  const binMap = new Map<number, VolumeBin>();
+  for (let i = 0; i < bars.length; i++) {
+    const bar = bars[i];
+    const binPrice = Math.round(bar.close / resolution) * resolution;
+    const existing = binMap.get(binPrice);
+    const buyVol = bar.volume * (bar.close >= bar.open ? 0.6 : 0.4);
+    if (existing) {
+      existing.volume += bar.volume;
+      existing.buyVolume += buyVol;
+      existing.sellVolume += bar.volume - buyVol;
+      existing.tickCount++;
+    } else {
+      binMap.set(binPrice, {
+        price: binPrice,
+        volume: bar.volume,
+        buyVolume: buyVol,
+        sellVolume: bar.volume - buyVol,
+        barIndex: i,
+        tickCount: 1,
+      });
+    }
+  }
+  return Array.from(binMap.values()).sort((a, b) => a.price - b.price);
+}
+
+export function findPOC(bins: VolumeBin[]): VolumeBin | null {
+  if (bins.length === 0) return null;
+  return bins.reduce((max, b) => b.volume > max.volume ? b : max, bins[0]);
+}
+
+// ─── TRANSFORM BAR TYPES ──────────────────────────────────────────
+export function transformBars(bars: BaseBar[], type: BarType, params?: Record<string, number>): BaseBar[] {
+  switch (type) {
+    case 'candlestick': return bars;
+    case 'heikin-ashi': return transformHeikinAshi(bars);
+    case 'renko': return transformRenko(bars, params?.brickSize ?? 50);
+    case 'range-bar': return transformRangeBar(bars, params?.range ?? 100);
+    case 'volume-bar': return transformVolumeBar(bars, params?.volTarget ?? 10000);
+    case 'tick-bar': return bars; // same base data; interpretation differs
+    case 'kagi': return transformKagi(bars, params?.reversal ?? 50);
+    case 'footprint': return bars; // footprint adds per-level data; base OHLC same
+    case 'line': return bars;
+    case 'area': return bars;
+    case 'dollar-bar': return bars;
+    case 'imbalance-bar': return bars;
+    default: return bars;
+  }
+}
+
+function transformHeikinAshi(bars: BaseBar[]): BaseBar[] {
+  if (bars.length === 0) return [];
+  const ha: BaseBar[] = [];
+  let prevHaOpen = (bars[0].open + bars[0].close) / 2;
+  let prevHaClose = bars[0].close;
+
+  for (const bar of bars) {
+    const haClose = (bar.open + bar.high + bar.low + bar.close) / 4;
+    const haOpen = (prevHaOpen + prevHaClose) / 2;
+    const haHigh = Math.max(bar.high, haOpen, haClose);
+    const haLow = Math.min(bar.low, haOpen, haClose);
+    ha.push({
+      timestamp: bar.timestamp,
+      open: Math.round(haOpen * 100) / 100,
+      high: Math.round(haHigh * 100) / 100,
+      low: Math.round(haLow * 100) / 100,
+      close: Math.round(haClose * 100) / 100,
+      volume: bar.volume,
+    });
+    prevHaOpen = haOpen;
+    prevHaClose = haClose;
+  }
+  return ha;
+}
+
+function transformRenko(bars: BaseBar[], brickSize: number): BaseBar[] {
+  const bricks: BaseBar[] = [];
+  let price = bars[0].open;
+  for (const bar of bars) {
+    const move = bar.close - price;
+    const bricksCount = Math.floor(Math.abs(move) / brickSize);
+    if (bricksCount < 1) continue;
+    for (let i = 0; i < bricksCount; i++) {
+      const direction = move > 0 ? 1 : -1;
+      const brickClose = price + direction * brickSize;
+      bricks.push({
+        timestamp: bar.timestamp,
+        open: price,
+        high: Math.max(price, brickClose),
+        low: Math.min(price, brickClose),
+        close: brickClose,
+        volume: bar.volume / bricksCount,
+      });
+      price = brickClose;
+    }
+  }
+  return bricks.length > 0 ? bricks : bars.slice(0, 1);
+}
+
+function transformRangeBar(bars: BaseBar[], range: number): BaseBar[] {
+  const result: BaseBar[] = [];
+  let openB = bars[0].open;
+  let highB = bars[0].high;
+  let lowB = bars[0].low;
+  let volB = 0;
+  let tsB = bars[0].timestamp;
+  let closeB = bars[0].close;
+
+  for (const bar of bars) {
+    highB = Math.max(highB, bar.high);
+    lowB = Math.min(lowB, bar.low);
+    volB += bar.volume;
+    closeB = bar.close;
+    if (highB - lowB >= range) {
+      result.push({ timestamp: tsB, open: openB, high: highB, low: lowB, close: closeB, volume: volB });
+      openB = bar.close;
+      highB = bar.high;
+      lowB = bar.low;
+      volB = 0;
+      tsB = bar.timestamp;
+    }
+  }
+  return result.length > 0 ? result : bars.slice(0, 1);
+}
+
+function transformVolumeBar(bars: BaseBar[], volTarget: number): BaseBar[] {
+  const result: BaseBar[] = [];
+  let openB = bars[0].open;
+  let highB = bars[0].high;
+  let lowB = bars[0].low;
+  let volB = 0;
+  let tsB = bars[0].timestamp;
+  let closeB = bars[0].close;
+
+  for (const bar of bars) {
+    highB = Math.max(highB, bar.high);
+    lowB = Math.min(lowB, bar.low);
+    volB += bar.volume;
+    closeB = bar.close;
+    if (volB >= volTarget) {
+      result.push({ timestamp: tsB, open: openB, high: highB, low: lowB, close: closeB, volume: volB });
+      openB = bar.close;
+      highB = bar.high;
+      lowB = bar.low;
+      volB = 0;
+      tsB = bar.timestamp;
+    }
+  }
+  return result.length > 0 ? result : bars.slice(0, 1);
+}
+
+function transformKagi(bars: BaseBar[], reversal: number): BaseBar[] {
+  const result: BaseBar[] = [];
+  if (bars.length < 2) return bars;
+  let direction: 'up' | 'down' = bars[1].close >= bars[0].close ? 'up' : 'down';
+  let pivot = bars[0].close;
+
+  for (let i = 1; i < bars.length; i++) {
+    const bar = bars[i];
+    const move = bar.close - pivot;
+    if ((direction === 'up' && move < -reversal) || (direction === 'down' && move > reversal)) {
+      direction = direction === 'up' ? 'down' : 'up';
+      pivot = bar.close;
+      result.push({
+        timestamp: bar.timestamp,
+        open: bars[i - 1].close,
+        high: direction === 'up' ? bar.close : bars[i - 1].close,
+        low: direction === 'down' ? bar.close : bars[i - 1].close,
+        close: bar.close,
+        volume: bar.volume,
+      });
+    }
+  }
+  return result.length > 0 ? result : bars.slice(0, 1);
+}
+
+// ─── TIMEFRAME AGGREGATION ────────────────────────────────────────
+export function aggregateTimeframe(bars: BaseBar[], tf: Timeframe): BaseBar[] {
+  const ms = TIMEFRAMES_MS[tf];
+  const map = new Map<number, { open: number; high: number; low: number; close: number; volume: number }>();
+
+  for (const bar of bars) {
+    const key = Math.floor(bar.timestamp / ms) * ms;
+    const existing = map.get(key);
+    if (existing) {
+      existing.high = Math.max(existing.high, bar.high);
+      existing.low = Math.min(existing.low, bar.low);
+      existing.close = bar.close;
+      existing.volume += bar.volume;
+    } else {
+      map.set(key, { open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume });
+    }
+  }
+  return Array.from(map.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([timestamp, d]) => ({
+      timestamp,
+      open: Math.round(d.open * 100) / 100,
+      high: Math.round(d.high * 100) / 100,
+      low: Math.round(d.low * 100) / 100,
+      close: Math.round(d.close * 100) / 100,
+      volume: Math.round(d.volume),
+    }));
+}
+
+// ─── PER-BAR VOLUME DISTRIBUTION ──────────────────────────────────
+export function generatePerBarVolumes(bars: BaseBar[], levelCount: number = 8): PerBarVolume[] {
+  return bars.map(bar => {
+    const step = (bar.high - bar.low) / levelCount;
+    const levels: PerBarVolume['levels'] = [];
+    let maxVol = 0;
+
+    for (let i = 0; i < levelCount; i++) {
+      const price = bar.low + step * (i + 0.5);
+      const distFactor = 1 - Math.abs(i - levelCount / 2) / (levelCount / 2);
+      const noise = 0.5 + Math.random() * 1.0;
+      const vol = Math.round(bar.volume / levelCount * distFactor * noise);
+      const isBuyAtLevel = Math.random() > 0.4;
+      const buyVol = Math.round(vol * (isBuyAtLevel ? (0.5 + Math.random() * 0.4) : (0.1 + Math.random() * 0.3)));
+      const sellVol = vol - buyVol;
+      if (vol > maxVol) maxVol = vol;
+      levels.push({ price: Math.round(price * 100) / 100, volume: vol, buyVol, sellVol });
+    }
+    return { levels, maxVol };
+  });
+}

@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DAFE Charts — Interactive Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #0a0a18; color: rgba(255,255,255,0.8);
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      user-select: none;
+    }
+    #chart-container { position: fixed; inset: 0; display: flex; flex-direction: column; }
+    #chart-area { position: relative; flex: 1; min-height: 0; }
+    #chart-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; z-index: 2; }
+    #chart-canvas:active { cursor: grabbing; }
+    #canvas-3d { position: absolute; inset: 0; width: 100%; height: 100%; display: none; z-index: 1; pointer-events: none; }
+    #canvas-3d.active { display: block; }
+    #secondary-canvas { width: 100%; height: 120px; flex-shrink: 0; display: block; cursor: grab; border-top: 1px solid rgba(180, 140, 255, 0.12); }
+    #secondary-canvas:active { cursor: grabbing; }
+
+    #draw-rail {
+      position: fixed; left: 12px; top: 50%;
+      transform: translateY(-50%); z-index: 100;
+      display: flex; flex-direction: column; gap: 4px;
+      background: rgba(12, 12, 28, 0.88);
+      border: 1px solid rgba(180, 140, 255, 0.15);
+      border-radius: 10px; padding: 6px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    }
+    .draw-btn {
+      width: 34px; height: 34px;
+      display: flex; align-items: center; justify-content: center;
+      border: none; border-radius: 7px;
+      background: transparent; color: rgba(255,255,255,0.35);
+      cursor: pointer; font-size: 15px;
+      transition: all 0.15s ease; position: relative;
+    }
+    .draw-btn:hover { background: rgba(180, 140, 255, 0.12); color: rgba(255,255,255,0.8); }
+    .draw-btn.active { background: rgba(180, 140, 255, 0.22); color: #b48cff; box-shadow: 0 0 12px rgba(180, 140, 255, 0.18); }
+    .draw-btn .tooltip {
+      position: absolute; left: calc(100% + 10px); top: 50%;
+      transform: translateY(-50%);
+      background: rgba(12,12,28,0.95); color: rgba(255,255,255,0.7);
+      font-size: 11px; padding: 4px 10px; border-radius: 5px;
+      border: 1px solid rgba(180, 140, 255, 0.12);
+      white-space: nowrap; opacity: 0; pointer-events: none;
+      transition: opacity 0.15s;
+    }
+    .draw-btn:hover .tooltip { opacity: 1; }
+
+    #toolbar {
+      position: fixed; bottom: 32px; left: 50%;
+      transform: translateX(-50%); z-index: 100;
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(12, 12, 28, 0.85);
+      border: 1px solid rgba(180, 140, 255, 0.12);
+      border-radius: 10px; padding: 6px 12px;
+      backdrop-filter: blur(12px);
+      flex-wrap: wrap; justify-content: center;
+    }
+    #toolbar button {
+      padding: 5px 10px; border: 1px solid rgba(180, 140, 255, 0.15);
+      border-radius: 6px; background: transparent;
+      color: rgba(255,255,255,0.5); cursor: pointer;
+      font-size: 11px; font-family: inherit;
+      transition: all 0.15s; white-space: nowrap;
+    }
+    #toolbar button:hover { background: rgba(180, 140, 255, 0.1); color: rgba(255,255,255,0.8); }
+    #toolbar button.active { border-color: #b48cff; color: #b48cff; box-shadow: 0 0 8px rgba(180, 140, 255, 0.1); }
+    #toolbar select {
+      padding: 4px 6px; border: 1px solid rgba(180, 140, 255, 0.15);
+      border-radius: 6px; background: rgba(12,12,28,0.9);
+      color: rgba(255,255,255,0.6); font-size: 11px;
+      font-family: inherit; cursor: pointer; outline: none;
+    }
+    #toolbar select:hover { border-color: rgba(180, 140, 255, 0.3); }
+    #toolbar .sep {
+      width: 1px; height: 20px;
+      background: rgba(180, 140, 255, 0.1);
+    }
+    #toolbar .label {
+      color: rgba(255,255,255,0.25); font-size: 11px;
+    }
+    .key-hint { font-size: 9px; color: rgba(255,255,255,0.2); margin-left: 3px; }
+
+    #settings-toggle {
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      background: transparent; border: none;
+      color: rgba(255,255,255,0.3); font-size: 16px;
+      cursor: pointer; border-radius: 6px;
+    }
+    #settings-toggle:hover { background: rgba(180, 140, 255, 0.1); color: rgba(255,255,255,0.7); }
+
+    /* ─── Symbol Combo ─────────────────────────────────────── */
+    #symbol-input {
+      width: 160px; padding: 4px 8px;
+      border: 1px solid rgba(180,140,255,0.2);
+      border-radius: 6px; background: rgba(12,12,28,0.9);
+      color: rgba(255,255,255,0.8); font-size: 12px;
+      font-family: inherit; outline: none;
+      text-transform: uppercase;
+    }
+    #symbol-input:focus { border-color: rgba(180,140,255,0.5); }
+    #symbol-dropdown { bottom: 100%; margin-bottom: 2px; }
+    #symbol-dropdown .sym-item:hover { background: rgba(0,204,255,0.08) !important; }
+    #symbol-dropdown::-webkit-scrollbar { width: 3px; }
+    #symbol-dropdown::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
+    }
+    #load-data-btn:hover { background: rgba(0,204,255,0.2); }
+    #data-status {
+      font-size: 10px; color: rgba(255,255,255,0.3);
+      margin-left: 4px; max-width: 120px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    #data-status.loading { color: rgba(0,204,255,0.6); }
+    #data-status.error { color: rgba(255,68,119,0.6); }
+    #data-status.loaded { color: rgba(0,255,136,0.6); }
+
+    /* ─── Trade Advisor Chat ────────────────────────────────── */
+    #advisor-fab {
+      position: fixed; bottom: 90px; right: 24px;
+      z-index: 9999; width: 52px; height: 52px;
+      border-radius: 50%; border: 1px solid rgba(180,140,255,0.5);
+      background: linear-gradient(135deg, rgba(180,140,255,0.2), rgba(100,80,200,0.12));
+      box-shadow: 0 8px 32px rgba(180,140,255,0.18);
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; font-size: 20px; color: #fff;
+      transition: transform .15s, box-shadow .2s;
+    }
+    #advisor-fab:hover { transform: scale(1.08); box-shadow: 0 12px 40px rgba(180,140,255,0.28); }
+    #advisor-fab.open { transform: rotate(45deg) scale(1); }
+
+    #advisor-panel {
+      position: fixed; bottom: 152px; right: 24px;
+      z-index: 9998; width: 420px; max-height: 580px;
+      border: 1px solid rgba(180,140,255,0.2);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(10,10,20,0.97), rgba(13,13,26,0.97));
+      backdrop-filter: blur(16px);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+      display: none; flex-direction: column; overflow: hidden;
+      font-size: 13px; cursor: default;
+    }
+    #advisor-panel.visible { display: flex; }
+    #advisor-panel.dragging { opacity: 0.85; transition: none; }
+    @keyframes chatSlideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+    .advisor-header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid rgba(180,140,255,0.12);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .advisor-header-title { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px; color: #e0d8ff; }
+
+    .advisor-chart-context {
+      padding: 8px 12px; border-bottom: 1px solid rgba(180,140,255,0.08);
+      font-size: 10px; color: rgba(255,255,255,0.35);
+      display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .advisor-chart-context span { display: flex; align-items: center; gap: 4px; }
+    .advisor-chart-context .label { color: rgba(255,255,255,0.2); }
+    .advisor-chart-context .val { color: rgba(180,140,255,0.7); font-weight: 600; }
+
+    .advisor-messages {
+      flex: 1; overflow-y: auto; padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 10px;
+      min-height: 180px; max-height: 300px;
+    }
+    .advisor-messages::-webkit-scrollbar { width: 4px; }
+    .advisor-messages::-webkit-scrollbar-thumb { background: rgba(180,140,255,0.2); border-radius: 10px; }
+
+    .advisor-msg {
+      max-width: 88%; padding: 9px 12px;
+      border-radius: 12px; font-size: 12px; line-height: 1.5;
+      word-wrap: break-word; white-space: pre-wrap;
+      position: relative;
+    }
+    .advisor-msg.user {
+      align-self: flex-end;
+      background: rgba(180,140,255,0.12);
+      border: 1px solid rgba(180,140,255,0.2);
+      color: #e0d8ff;
+    }
+    .advisor-msg.assistant {
+      align-self: flex-start;
+      background: rgba(10,10,25,0.8);
+      border: 1px solid rgba(180,140,255,0.1);
+      color: #ccc;
+    }
+    .advisor-msg.assistant .agent-badge {
+      font-size: 9px; font-weight: 700;
+      color: rgba(180,140,255,0.5);
+      margin-bottom: 3px; display: block;
+    }
+    .advisor-msg.error {
+      align-self: center;
+      background: rgba(255,51,102,0.08);
+      border: 1px solid rgba(255,51,102,0.2);
+      color: rgba(255,68,119,0.7); font-size: 11px;
+    }
+    .advisor-msg.system {
+      align-self: center; background: transparent;
+      border: none; color: rgba(255,255,255,0.2);
+      font-size: 11px; text-align: center; padding: 4px;
+    }
+
+    .msg-copy-btn {
+      position: absolute; top: 4px; right: 4px;
+      width: 22px; height: 22px; border-radius: 4px;
+      border: none; background: transparent;
+      color: rgba(255,255,255,0.15); font-size: 11px;
+      cursor: pointer; display: none;
+      align-items: center; justify-content: center;
+      transition: color .15s;
+    }
+    .advisor-msg:hover .msg-copy-btn { display: flex; }
+    .msg-copy-btn:hover { color: rgba(255,255,255,0.6); }
+
+    .advisor-input-row {
+      padding: 10px 12px 12px;
+      border-top: 1px solid rgba(180,140,255,0.08);
+      display: flex; gap: 8px; align-items: flex-end;
+    }
+    .advisor-input {
+      flex: 1; padding: 9px 12px;
+      border-radius: 12px; border: 1px solid rgba(180,140,255,0.12);
+      background: rgba(0,0,0,0.18); color: #ccc;
+      font-size: 12px; font-family: inherit; outline: none;
+      resize: none; min-height: 36px; max-height: 90px; line-height: 1.4;
+    }
+    .advisor-input:focus { border-color: rgba(180,140,255,0.3); }
+    .advisor-send {
+      width: 36px; height: 36px;
+      border-radius: 10px; border: 1px solid rgba(180,140,255,0.3);
+      background: rgba(180,140,255,0.1);
+      color: #b48cff; font-size: 15px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: background .15s;
+    }
+    .advisor-send:hover { background: rgba(180,140,255,0.2); }
+    .advisor-send:disabled { opacity: .4; cursor: not-allowed; }
+
+    .advisor-typing { display: inline-flex; gap: 3px; padding: 3px 0; }
+    .advisor-typing span {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: rgba(180,140,255,0.4);
+      animation: typingBounce .6s infinite alternate;
+    }
+    .advisor-typing span:nth-child(2) { animation-delay: .15s; }
+    .advisor-typing span:nth-child(3) { animation-delay: .3s; }
+    @keyframes typingBounce {
+      from { opacity: .3; transform: translateY(0); }
+      to   { opacity: 1;  transform: translateY(-3px); }
+    }
+
+    .advisor-toolbar {
+      display: flex; gap: 4px; padding: 4px 12px 0;
+      border-bottom: 1px solid rgba(180,140,255,0.08);
+    }
+    .advisor-tool-btn {
+      padding: 3px 8px; border-radius: 6px; border: none;
+      background: transparent; color: rgba(255,255,255,0.25);
+      font-size: 10px; cursor: pointer; transition: all .15s;
+    }
+    .advisor-tool-btn:hover { background: rgba(180,140,255,0.08); color: rgba(255,255,255,0.5); }
+
+    /* ─── Trading Panel ─────────────────────────────────────── */
+    #trading-panel {
+      position: fixed; top: 80px; left: 24px;
+      z-index: 9997; width: 220px;
+      border: 1px solid rgba(0,204,255,0.2);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(10,10,20,0.95), rgba(13,13,26,0.95));
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      font-size: 12px; cursor: default;
+      transition: opacity .2s;
+    }
+    #trading-panel.collapsed .trading-panel-body { display: none; }
+    #trading-panel.dragging { opacity: 0.85; }
+
+    .trading-panel-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(0,204,255,0.12);
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: grab;
+    }
+    .trading-panel-title {
+      font-weight: 700; font-size: 11px;
+      color: rgba(0,204,255,0.8);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .trading-panel-collapse {
+      width: 20px; height: 20px;
+      border-radius: 4px; border: none;
+      background: transparent; color: rgba(255,255,255,0.4);
+      font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .trading-panel-collapse:hover { background: rgba(0,204,255,0.1); color: rgba(255,255,255,0.7); }
+
+    .trading-panel-body { padding: 12px; }
+
+    .trading-spread {
+      text-align: center; margin-bottom: 10px;
+      padding: 6px; border-radius: 6px;
+      background: rgba(0,0,0,0.2);
+    }
+    .spread-label {
+      font-size: 9px; color: rgba(255,255,255,0.4);
+      display: block; margin-bottom: 2px;
+    }
+    .spread-value {
+      font-size: 14px; font-weight: 700;
+      color: rgba(255,255,255,0.7);
+    }
+
+    .trading-buttons {
+      display: flex; gap: 8px; margin-bottom: 10px;
+    }
+    .trade-btn {
+      flex: 1; padding: 10px 8px;
+      border-radius: 8px; border: 2px solid;
+      cursor: pointer; transition: all .15s;
+      display: flex; flex-direction: column;
+      align-items: center; gap: 4px;
+    }
+    .trade-btn:active { transform: scale(0.96); }
+    .sell-btn {
+      border-color: rgba(255,68,119,0.5);
+      background: rgba(255,68,119,0.1);
+    }
+    .sell-btn:hover { background: rgba(255,68,119,0.2); }
+    .buy-btn {
+      border-color: rgba(0,204,255,0.5);
+      background: rgba(0,204,255,0.1);
+    }
+    .buy-btn:hover { background: rgba(0,204,255,0.2); }
+    .trade-price {
+      font-size: 16px; font-weight: 700;
+    }
+    .sell-btn .trade-price { color: #ff4477; }
+    .buy-btn .trade-price { color: #00ccff; }
+    .trade-label {
+      font-size: 9px; font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .sell-btn .trade-label { color: rgba(255,68,119,0.7); }
+    .buy-btn .trade-label { color: rgba(0,204,255,0.7); }
+
+    .trading-quantity {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px; border-radius: 6px;
+      background: rgba(0,0,0,0.15);
+    }
+    .qty-label {
+      font-size: 10px; color: rgba(255,255,255,0.4);
+      font-weight: 600;
+    }
+    .qty-input {
+      flex: 1; width: 60px;
+      padding: 6px 8px; border-radius: 6px;
+      border: 1px solid rgba(0,204,255,0.2);
+      background: rgba(0,0,0,0.3);
+      color: rgba(255,255,255,0.8);
+      font-size: 13px; font-weight: 600;
+      text-align: center; outline: none;
+    }
+    .qty-input:focus { border-color: rgba(0,204,255,0.5); }
+    .qty-unit {
+      font-size: 9px; color: rgba(255,255,255,0.3);
+      min-width: 50px;
+    }
+
+    .vpi-settings {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 10px; color: rgba(255,255,255,0.35);
+    }
+    .vpi-settings input[type="checkbox"] {
+      accent-color: #b48cff;
+    }
+
+    #vp-settings-panel {
+      position: fixed; right: 12px; bottom: 52px; top: auto;
+      transform: none; z-index: 110;
+      width: 270px;
+      background: rgba(12, 12, 28, 0.94);
+      border: 1px solid rgba(180, 140, 255, 0.22);
+      border-radius: 12px; padding: 0;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 12px 44px rgba(0,0,0,0.65);
+      color: rgba(255,255,255,0.78);
+      font-size: 12px;
+      display: none; flex-direction: column; gap: 0;
+      overflow: hidden;
+    }
+    #vp-settings-panel.active { display: flex; }
+    #vp-settings-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px;
+      background: rgba(180, 140, 255, 0.08);
+      border-bottom: 1px solid rgba(180,140,255,0.12);
+      cursor: move; user-select: none;
+    }
+    #vp-settings-header span {
+      color: #b48cff; font-weight: 600; font-size: 13px;
+      letter-spacing: 0.3px;
+    }
+    #vp-settings-header button {
+      background: none; border: none; color: rgba(255,255,255,0.35);
+      cursor: pointer; font-size: 13px; padding: 2px 4px;
+    }
+    #vp-settings-header button:hover { color: rgba(255,255,255,0.8); }
+    #vp-settings-body {
+      padding: 14px;
+      display: flex; flex-direction: column; gap: 11px;
+      max-height: calc(100vh - 140px);
+      overflow-y: auto;
+    }
+    #vp-settings-panel label {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; cursor: pointer;
+      white-space: nowrap;
+    }
+    #vp-settings-panel label.vp-check { justify-content: flex-start; }
+    #vp-settings-panel select,
+    #vp-settings-panel input[type="range"] {
+      flex: 1; accent-color: #b48cff;
+      background: rgba(8,8,20,0.9); color: rgba(255,255,255,0.85);
+      min-width: 0;
+    }
+    #vp-settings-panel select {
+      border: 1px solid rgba(180,140,255,0.25); border-radius: 5px;
+      padding: 5px 6px; font-size: 11px;
+    }
+    #vp-settings-panel select option {
+      background: rgba(8,8,20,0.95); color: rgba(255,255,255,0.85);
+    }
+    #vp-settings-panel span { min-width: 34px; text-align: right; color: rgba(255,255,255,0.5); }
+    #vp-settings-close-btn {
+      margin-top: 4px;
+      padding: 8px; border-radius: 6px;
+      border: 1px solid rgba(180,140,255,0.2);
+      background: rgba(180,140,255,0.1);
+      color: rgba(255,255,255,0.7); cursor: pointer;
+      font-size: 11px;
+    }
+    #vp-settings-close-btn:hover { background: rgba(180,140,255,0.18); }
+
+    /* ─── Settings Panel ────────────────────────────────────── */
+    #settings-panel {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+      z-index: 9999; width: 520px; max-height: 80vh;
+      border: 1px solid rgba(180,140,255,0.25);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(10,10,20,0.98), rgba(13,13,26,0.98));
+      backdrop-filter: blur(20px);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+      display: none; flex-direction: column; overflow: hidden;
+      font-size: 12px;
+    }
+    #settings-panel.active { display: flex; }
+    #settings-header {
+      padding: 14px 16px; display: flex; align-items: center;
+      justify-content: space-between;
+      background: rgba(180,140,255,0.06);
+      border-bottom: 1px solid rgba(180,140,255,0.12);
+      cursor: move;
+    }
+    #settings-header span { color: #b48cff; font-weight: 700; font-size: 14px; }
+    #settings-header button { background:none; border:none; color:rgba(255,255,255,0.3); cursor:pointer; font-size:15px; }
+    #settings-header button:hover { color:#fff; }
+    #settings-body {
+      padding: 16px; overflow-y: auto; display: flex;
+      flex-direction: column; gap: 14px;
+    }
+    #settings-body::-webkit-scrollbar { width: 4px; }
+    #settings-body::-webkit-scrollbar-thumb { background: rgba(180,140,255,0.2); border-radius: 10px; }
+    .settings-section {
+      border: 1px solid rgba(180,140,255,0.1);
+      border-radius: 10px; padding: 12px;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .settings-section-title {
+      color: rgba(180,140,255,0.5); font-size: 10px;
+      font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 2px;
+    }
+    .settings-section label {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; color: rgba(255,255,255,0.6); font-size: 11px;
+      white-space: nowrap;
+    }
+    .settings-section label input,
+    .settings-section label select {
+      flex: 1; max-width: 260px;
+      padding: 5px 8px; border: 1px solid rgba(180,140,255,0.2);
+      border-radius: 6px; background: rgba(8,8,20,0.9);
+      color: rgba(255,255,255,0.8); font-size: 11px; font-family: inherit; outline: none;
+    }
+    .settings-section label input:focus,
+    .settings-section label select:focus { border-color: rgba(180,140,255,0.5); }
+    .settings-section label select option { background: rgba(8,8,20,0.95); color: #ccc; }
+    .hotkey-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px;
+    }
+    .hotkey-grid label { font-size: 10px; }
+    .hotkey-input {
+      width: 90px !important; text-align: center; font-weight: 600;
+      font-family: monospace !important;
+    }
+    #settings-save {
+      padding: 8px 16px; border: 1px solid rgba(0,255,136,0.3);
+      border-radius: 8px; background: rgba(0,255,136,0.08);
+      color: #00ff88; cursor: pointer; font-size: 12px; font-weight: 600;
+      align-self: flex-end;
+    }
+    #settings-save:hover { background: rgba(0,255,136,0.15); }
+
+    /* ─── News Box ──────────────────────────────────────────── */
+    #news-box {
+      position: fixed; top: 12px; right: 12px;
+      z-index: 9995; width: 320px; max-height: 300px;
+      border: 1px solid rgba(0,204,255,0.15);
+      border-radius: 12px;
+      background: rgba(10,10,20,0.92);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      display: flex; flex-direction: column; overflow: hidden;
+      font-size: 11px;
+    }
+    #news-header {
+      padding: 8px 12px; display: flex; align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(0,204,255,0.1);
+      cursor: pointer;
+    }
+    #news-header span { color: rgba(0,204,255,0.7); font-size: 11px; font-weight: 600; }
+    #news-header button {
+      background: none; border: none; color: rgba(255,255,255,0.3);
+      cursor: pointer; font-size: 14px; padding: 0 2px;
+    }
+    #news-header button:hover { color: #fff; }
+    #news-body { overflow-y: auto; max-height: 260px; min-height: 40px; }
+    #news-list { font-size: 11px; color: rgba(255,255,255,0.5); }
+    #news-body::-webkit-scrollbar { width: 3px; }
+    #news-body::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
+    .news-item {
+      padding: 7px 10px; border-bottom: 1px solid rgba(0,204,255,0.04);
+      cursor: pointer; transition: background 0.1s;
+    }
+    .news-item:hover { background: rgba(0,204,255,0.04); }
+    .news-item .news-title { color: rgba(255,255,255,0.75); line-height: 1.4; }
+    .news-item .news-meta {
+      display: flex; gap: 8px; margin-top: 2px;
+      font-size: 9px; color: rgba(255,255,255,0.25);
+    }
+    .news-tag {
+      padding: 0 4px; border-radius: 3px; font-size: 8px;
+      background: rgba(0,204,255,0.1); color: rgba(0,204,255,0.5);
+    }
+    .news-tag.earnings { background: rgba(0,255,136,0.1); color: rgba(0,255,136,0.5); }
+    .news-tag.risk { background: rgba(255,68,119,0.1); color: rgba(255,68,119,0.5); }
+    #news-body.collapsed { display: none; }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="chart-container">
+    <div id="chart-area">
+      <canvas id="canvas-3d"></canvas>
+      <canvas id="chart-canvas"></canvas>
+    </div>
+    <canvas id="secondary-canvas"></canvas>
+  </div>
+
+  <!-- Volume Profile Settings Panel -->
+  <div id="vp-settings-panel">
+    <div id="vp-settings-header">
+      <span>Volume Profile</span>
+      <button id="vp-settings-close" title="Close">✕</button>
+    </div>
+    <div id="vp-settings-body">
+      <label>Mode
+        <select id="vp-mode">
+          <option value="2D-Side">2D Side</option>
+          <option value="2D-Per-Bar">2D Per-Bar</option>
+          <option value="3D-Extrude">3D Extrude</option>
+          <option value="3D-Heatmap">3D Heatmap</option>
+        </select>
+      </label>
+      <label>Visual Engine
+        <select id="vp-engine">
+          <option value="3D-Depth">3D Depth</option>
+          <option value="Thermal">Thermal</option>
+          <option value="Nebula">Nebula</option>
+          <option value="Quantum">Quantum</option>
+          <option value="DNA">DNA</option>
+          <option value="Constellation">Constellation</option>
+          <option value="Liquid Metal">Liquid Metal</option>
+          <option value="Neon Wireframe">Neon Wireframe</option>
+        </select>
+      </label>
+      <label>Profile Width
+        <input type="range" id="vp-width" min="10" max="150" step="5">
+        <span id="vp-width-val"></span>
+      </label>
+      <label>Bins
+        <input type="range" id="vp-bins" min="8" max="80" step="1">
+        <span id="vp-bins-val"></span>
+      </label>
+      <label>Lookback
+        <input type="range" id="vp-lookback" min="0" max="500" step="10">
+        <span id="vp-lookback-val"></span>
+      </label>
+      <label>Value Area %
+        <input type="range" id="vp-va" min="0" max="100" step="1">
+        <span id="vp-va-val"></span>
+      </label>
+      <label>Color Theme
+        <select id="vp-theme">
+          <option value="DAFE Signature">DAFE Signature</option>
+          <option value="Cyber Neon">Cyber Neon</option>
+          <option value="Ocean Depths">Ocean Depths</option>
+          <option value="Volcanic">Volcanic</option>
+        </select>
+      </label>
+      <label class="vp-check"><input type="checkbox" id="vp-show-va"> Show Value Area</label>
+      <label class="vp-check"><input type="checkbox" id="vp-show-delta"> Show Delta</label>
+      <label class="vp-check"><input type="checkbox" id="vp-show-nodes"> Show Nodes</label>
+      <button id="vp-settings-close-btn">Close</button>
+    </div>
+  </div>
+
+  <!-- Settings Panel -->
+  <div id="settings-panel">
+    <div id="settings-header">
+      <span>Settings</span>
+      <button id="settings-close" title="Close">✕</button>
+    </div>
+    <div id="settings-body">
+      <div class="settings-section">
+        <div class="settings-section-title">API Credentials</div>
+        <label>Massive API Key <input type="password" id="set-massive-key" placeholder="Enter API key"></label>
+        <label>SerpAPI Key <input type="password" id="set-serp-key" placeholder="Enter API key"></label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Brokerage — Tradovate</div>
+        <label>Username <input type="text" id="set-tradovate-user" placeholder="Tradovate username"></label>
+        <label>Password <input type="password" id="set-tradovate-pass" placeholder="Tradovate password"></label>
+        <label>Environment
+          <select id="set-tradovate-env">
+            <option value="demo">Demo</option>
+            <option value="live">Live</option>
+          </select>
+        </label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">LLM Configuration</div>
+        <label>Provider
+          <select id="set-llm-provider">
+            <option value="local">Local (llama.cpp)</option>
+            <option value="ollama">Ollama</option>
+          </select>
+        </label>
+        <label>Ollama URL <input type="text" id="set-ollama-url" placeholder="http://localhost:11434"></label>
+        <label>Trade Advisor Model <input type="text" id="set-advisor-model" placeholder="qwythos-9b"></label>
+        <label>Advisor Voice
+          <select id="set-voice">
+            <option value="auto">Auto (best available)</option>
+            <option value="natural">Natural / Neural</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="soft">Soft</option>
+          </select>
+        </label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Data</div>
+        <label>Source
+          <select id="set-data-source">
+            <option value="massive">Massive (primary)</option>
+            <option value="yahoo">Yahoo Finance (fallback)</option>
+          </select>
+        </label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Hotkeys (Numpad)</div>
+        <div class="hotkey-grid">
+          <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input"></label>
+          <label>Volume Profile <input type="text" id="hk-vp" value="Numpad1" class="hotkey-input"></label>
+          <label>Frame All <input type="text" id="hk-frame" value="Numpad2" class="hotkey-input"></label>
+          <label>OakScript <input type="text" id="hk-oak" value="Numpad3" class="hotkey-input"></label>
+          <label>Trend Line <input type="text" id="hk-trend" value="Numpad4" class="hotkey-input"></label>
+          <label>Horizontal <input type="text" id="hk-hline" value="Numpad5" class="hotkey-input"></label>
+          <label>Ray <input type="text" id="hk-ray" value="Numpad6" class="hotkey-input"></label>
+          <label>Rectangle <input type="text" id="hk-rect" value="Numpad7" class="hotkey-input"></label>
+          <label>Fib Retrace <input type="text" id="hk-fib" value="Numpad8" class="hotkey-input"></label>
+          <label>Channel <input type="text" id="hk-channel" value="Numpad9" class="hotkey-input"></label>
+          <label>Text Label <input type="text" id="hk-text" value="NumpadAdd" class="hotkey-input"></label>
+          <label>Undo Drawing <input type="text" id="hk-undo" value="NumpadSubtract" class="hotkey-input"></label>
+          <label>Clear All <input type="text" id="hk-clear" value="NumpadMultiply" class="hotkey-input"></label>
+          <label>Deselect <input type="text" id="hk-deselect" value="NumpadDecimal" class="hotkey-input"></label>
+        </div>
+      </div>
+      <button id="settings-save">Save Settings</button>
+      <span id="settings-status" style="font-size:11px;color:rgba(0,255,136,0.6);display:none"></span>
+    </div>
+  </div>
+
+  <!-- News Box -->
+  <div id="news-box">
+    <div id="news-header">
+      <span>📰 News &amp; Events</span>
+      <button id="news-toggle" title="Collapse">−</button>
+    </div>
+    <div id="news-body">
+      <div id="news-list" style="font-size:11px;color:rgba(255,255,255,0.5);padding:8px;text-align:center">Loading news...</div>
+    </div>
+  </div>
+
+  <!-- Drawing Tools Rail -->
+  <div id="draw-rail">
+    <button class="draw-btn" data-tool="none" title="Cursor (Esc)">⌖<span class="tooltip">Cursor · Esc</span></button>
+    <button class="draw-btn" data-tool="trend" title="Trend Line (T)">╱<span class="tooltip">Trend Line · T</span></button>
+    <button class="draw-btn" data-tool="ray" title="Ray (R)">➚<span class="tooltip">Ray · R</span></button>
+    <button class="draw-btn" data-tool="hline" title="Horizontal Line (H)">―<span class="tooltip">Horizontal · H</span></button>
+    <button class="draw-btn" data-tool="rect" title="Rectangle (B)">▭<span class="tooltip">Rectangle · B</span></button>
+    <button class="draw-btn" data-tool="fib" title="Fib Retracement (G)">𝆑<span class="tooltip">Fib · G</span></button>
+    <button class="draw-btn" data-tool="channel" title="Channel (C)">∥<span class="tooltip">Channel · C</span></button>
+    <button class="draw-btn" data-tool="text" title="Text Label (X)">T<span class="tooltip">Text · X</span></button>
+    <button class="draw-btn" id="draw-clear" title="Clear All (Shift+X)">🗑<span class="tooltip">Clear · Shift+X</span></button>
+  </div>
+
+  <!-- Trade Advisor FAB -->
+  <button id="advisor-fab" title="Trade Advisor">◆</button>
+
+  <!-- Trade Advisor Panel -->
+  <div id="advisor-panel">
+    <div class="advisor-header">
+      <div class="advisor-header-title">
+        <span id="advisorAgentIcon" style="color:#b48cff">◆</span>
+        <span id="advisorAgentLabel">Trade Advisor</span>
+      </div>
+      <span style="font-size:10px;color:rgba(255,255,255,0.2);">Trade Advisor</span>
+    </div>
+    <div class="advisor-chart-context" id="advisorChartContext">
+      <span><span class="label">Symbol:</span><span class="val" id="advisorSymbol">-</span></span>
+      <span><span class="label">TF:</span><span class="val" id="advisorTf">-</span></span>
+      <span><span class="label">Close:</span><span class="val" id="advisorClose">-</span></span>
+      <span><span class="label">Bars:</span><span class="val" id="advisorBars">-</span></span>
+    </div>
+    <div class="advisor-toolbar" id="advisorToolbar">
+      <button class="advisor-tool-btn" id="advisorAnalyze"> Analyze</button>
+      <button class="advisor-tool-btn" id="advisorVoice">🎤 Voice</button>
+      <button class="advisor-tool-btn" id="advisorVoiceFree" title="Toggle free speech (wake word: 'Advisor?')">♾️</button>
+      <button class="advisor-tool-btn" id="advisorClear"> Clear</button>
+    </div>
+    <div class="advisor-messages" id="advisorMessages">
+      <div class="advisor-msg system">Hi, I'm your Trade Advisor and assistant, how can I help you today?</div>
+    </div>
+    <div class="advisor-input-row">
+      <textarea class="advisor-input" id="advisorInput" placeholder="Ask about the chart..." rows="1"></textarea>
+      <button class="advisor-send" id="advisorSend" title="Send">↑</button>
+    </div>
+  </div>
+
+  <!-- Trading Panel -->
+  <div id="trading-panel">
+    <div class="trading-panel-header" id="tradingPanelHeader">
+      <span class="trading-panel-title">One-Click Trading</span>
+      <button class="trading-panel-collapse" id="tradingPanelCollapse">−</button>
+    </div>
+    <div class="trading-panel-body" id="tradingPanelBody">
+      <div class="trading-spread">
+        <span class="spread-label">Spread</span>
+        <span class="spread-value" id="tradingSpread">0.00</span>
+      </div>
+      <div class="trading-buttons">
+        <button class="trade-btn sell-btn" id="tradeSell">
+          <span class="trade-price" id="sellPrice">--</span>
+          <span class="trade-label">SELL</span>
+        </button>
+        <button class="trade-btn buy-btn" id="tradeBuy">
+          <span class="trade-price" id="buyPrice">--</span>
+          <span class="trade-label">BUY</span>
+        </button>
+      </div>
+      <div class="trading-quantity">
+        <label class="qty-label">Qty</label>
+        <input type="number" id="tradeQuantity" class="qty-input" value="1" min="1" step="1">
+        <span class="qty-unit" id="tradeQtyUnit">shares</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Toolbar -->
+  <div id="toolbar">
+    <span class="label" style="color:#00ff88;font-weight:700;letter-spacing:0.5px">DAFE</span>
+    <div class="sep"></div>
+
+    <!-- Symbol Selector -->
+    <div id="symbol-combo" style="position:relative;display:inline-block">
+      <input type="text" id="symbol-input" placeholder="Symbol (search or pick)" maxlength="10" title="Type to search or pick a symbol" style="width:160px" autocomplete="off">
+      <div id="symbol-dropdown" style="display:none;position:absolute;left:0;right:0;bottom:100%;margin-bottom:2px;max-height:300px;overflow-y:auto;background:rgba(10,10,25,0.96);border:1px solid rgba(0,204,255,0.2);border-radius:6px;z-index:9999;font-size:10px"></div>
+    </div>
+    <select id="symbol-select" style="display:none"></select>
+    <span id="data-status"></span>
+
+    <div class="sep"></div>
+
+    <!-- Bar Type Selector -->
+    <select id="bar-type-select">
+      <option value="candlestick">Candlestick</option>
+      <option value="heikin-ashi">Heikin-Ashi</option>
+      <option value="renko">Renko</option>
+      <option value="range-bar">Range Bar</option>
+      <option value="volume-bar">Volume Bar</option>
+      <option value="tick-bar">Tick Bar</option>
+      <option value="kagi">Kagi</option>
+      <option value="footprint">Footprint</option>
+      <option value="line">Line</option>
+      <option value="area">Area</option>
+      <option value="dollar-bar">Dollar Bar</option>
+      <option value="imbalance-bar">Imbalance Bar</option>
+    </select>
+
+    <div class="sep"></div>
+
+    <!-- Timeframe Select -->
+    <select id="tf-select">
+      <option value="1m">1m</option>
+      <option value="5m">5m</option>
+      <option value="15m">15m</option>
+      <option value="30m">30m</option>
+      <option value="1h">1h</option>
+      <option value="4h">4h</option>
+      <option value="1d">1d</option>
+      <option value="1w">1w</option>
+    </select>
+
+    <div class="sep"></div>
+
+    <button id="mode-toggle">2D <span class="key-hint">Np0</span></button>
+    <button id="btn-frame">Frame <span class="key-hint">Np2</span></button>
+    <button id="oakscript-toggle">Oak <span class="key-hint">Np3</span></button>
+    <button id="vp-toggle">VP <span class="key-hint">Np1</span></button>
+    <button id="settings-toggle" title="Settings">⚙</button>
+
+    <div class="sep"></div>
+
+    <div class="vpi-settings">
+      <input type="checkbox" id="vpi-enabled" checked>
+      <label for="vpi-enabled">VPI</label>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

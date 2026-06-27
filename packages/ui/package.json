@@ -1,0 +1,13 @@
+{
+  "name": "@dafe/ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "types": "index.ts",
+  "dependencies": {
+    "@dafe/core": "*",
+    "@dafe/types": "*",
+    "svelte": "^5.0.0"
+  }
+}
