@@ -110,6 +110,7 @@ This installs:
 - **httpx** — HTTP client for external API calls
 - **yfinance** — Yahoo Finance market data
 - **gTTS** — Google Text-to-Speech (voice synthesis)
+- **psutil** — system RAM detection for adaptive model sizing
 
 ### Step 4: Verify the Frontend Compiles
 
@@ -149,18 +150,23 @@ llama-server.exe --help
 
 Look for `CUDA` in the output. If you see only `CPU` backends listed, the CUDA build is not properly installed.
 
-### Step 2: Download a GGUF Model
+### Step 2: Download One or More GGUF Models
 
-Place a GGUF-format model file in `C:\DAFECharts\models\`.
+Drop any GGUF-format model file(s) into `C:\DAFECharts\models\`. **No editing required** —
+the system scans this folder and picks the best model for your hardware automatically.
 
-**Recommended model:** A 7-9B parameter Q4_K_M quantized model (e.g., Qwen2.5, Llama 3, Mistral).
+**Recommended:** a 3–12B parameter model. Smaller (3B) loads fast; larger (12B IQ3)
+is more capable. You can keep several and switch between them in **Settings → Trade
+Advisor Model**.
 
-The default configuration expects:
-```
-C:\DAFECharts\models\Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf
-```
-
-You can change the model path and name by editing `start.bat` and updating the `MODEL_NAME` variable.
+How selection works (`backend/model_manager.py`, the single source of truth):
+- On launch it parses each model's real GGUF architecture (layers, embedding size,
+  GQA heads, trained context) and reads your free VRAM, then computes the optimal
+  context size, GPU-layer offload, batch, and thread count **per model, per machine**.
+- With no saved preference it picks the largest model that fully fits your VRAM.
+  Set a specific model in Settings to override.
+- Switching models in Settings hot-reloads the LLM (kills the old one, frees VRAM,
+  starts the new one) without restarting the app.
 
 ### Step 3: GPU Drivers
 
@@ -173,13 +179,25 @@ Should show your GPU with driver version and CUDA version.
 
 ### How Auto-Detection Works
 
-On launch, `start.bat` automatically:
-1. Checks if `nvidia-smi` is available → GPU mode
-2. Uses conservative defaults optimized for 8GB VRAM: `-ngl -1`, context 4096, batch 256, 4 threads
-3. Detects CPU cores for fallback CPU mode
-4. Prints the detected configuration in the terminal
+On launch, `start.bat` calls `python backend/model_manager.py select`, which:
+1. Detects the GPU and **free** VRAM across vendors — NVIDIA (`nvidia-smi`), AMD
+   (`amd-smi`/`rocm-smi`), and Apple Silicon (Metal unified memory).
+2. Reads each model's true GGUF architecture and computes a **per-model** context
+   size, GPU-layer offload, batch, and thread count that fits your hardware
+   (with a safety margin so loads don't OOM).
+3. Falls back to CPU mode (threads scaled to your cores) when no GPU is present.
+4. Prints the chosen model + parameters in the terminal.
 
-**No manual tuning needed** — the adaptive detection handles all hardware configurations automatically. For advanced users, edit the `start.bat` file to adjust individual parameters.
+**No manual tuning needed.** The same logic drives both startup and in-app model
+switching, so they always agree.
+
+**Environment overrides** (for unusual rigs / non-default install paths):
+| Variable | Effect |
+|----------|--------|
+| `LLAMA_DIR` | Path to your llama.cpp folder (else it's auto-discovered) |
+| `DAFE_VRAM_MB` | Declare available VRAM if your GPU can't be auto-measured |
+| `DAFE_FORCE_GPU=1` / `DAFE_FORCE_CPU=1` | Force GPU/CPU inference |
+| `DAFE_MODELS_DIR` | Use a models folder outside the repo |
 
 ### GPU Troubleshooting
 
@@ -203,10 +221,22 @@ The backend stores settings in `C:\DAFECharts\backend\settings.json`. This file 
     "llm_provider": "local",
     "ollama_base_url": "http://localhost:11434",
     "local_llm_base_url": "http://localhost:8081",
-    "llm_trade_advisor_model": "qwythos-9b",
+    "llm_trade_advisor_model": "auto",
     "market_data_source": "yahoo"
 }
 ```
+`llm_trade_advisor_model` of `"auto"` lets the system pick the best-fitting model;
+set it (or use the Settings UI dropdown) to a specific model's name to pin it.
+
+### Market Data Source
+
+`market_data_source` can be:
+- **`yahoo`** — free Yahoo Finance (default).
+- **`massive`** — paid Massive feed (requires `massive_api_key`).
+- **`hybrid`** — blends sparse paid Massive anchors + frequent free Yahoo
+  corrections + a correction-anchored synthetic engine for near-live ticks at a
+  fraction of the API cost. For symbols Yahoo doesn't cover (e.g. some futures),
+  it runs on the paid feed alone at a reduced poll rate.
 
 ### API Keys (Optional)
 
@@ -221,15 +251,10 @@ Without API keys:
 
 ### Model Configuration
 
-Edit `start.bat` lines 8-10 to change the model:
-```batch
-set "MODEL_NAME=your-model-name.gguf"
-```
-
-The `llama.cpp` directory can also be changed:
-```batch
-set "LLAMA_DIR=C:\llama.cpp"
-```
+There is **nothing to edit** — drop `.gguf` files in `models/` and choose one in
+**Settings → Trade Advisor Model** (or leave it on Auto). The launch parameters are
+computed automatically per model. To point at a llama.cpp install outside the
+defaults, set the `LLAMA_DIR` environment variable (see the override table above).
 
 ---
 
@@ -442,7 +467,10 @@ Add new symbols to both files to keep them in sync.
 
 ### Customizing Behavior
 
-- **LLM params**: Edit the adaptive detection section in `start.bat` (around line 70)
-- **Chart defaults**: Edit `main.ts` initial state variables (around line 40)
-- **Voice wake word**: Pass `wakeWord` option to `AdvisorVoice` constructor
-- **News refresh interval**: Edit `fetchNews` interval in `main.ts` (line ~1170)
+- **LLM params**: handled automatically by `backend/model_manager.py`; override via
+  the environment variables in the table above — no need to edit `start.bat`.
+- **Chart defaults**: Edit `main.ts` initial state variables (near the top).
+- **Voice wake word**: Pass `wakeWord` option to `AdvisorVoice` constructor.
+- **News refresh interval**: Edit the `fetchNews` interval in `main.ts`.
+- **Hybrid data tuning**: `HybridConfig` defaults in
+  `apps/web/src/data-stream/hybrid-engine.ts` (poll intervals, snap factor, band).

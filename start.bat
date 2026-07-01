@@ -4,14 +4,24 @@ cd /d "%~dp0"
 
 title DAFE System
 
-:: ─── Configuration ─────────────────────────────────────────────
-set "LLAMA_DIR=C:\llama.cpp"
-set "MODEL_DIR=C:\DAFECharts\models"
-set "MODEL_NAME=Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf"
+:: ─── Configuration (paths are relative to this script — portable) ──
+set "REPO_DIR=%~dp0"
+set "MODEL_DIR=%~dp0models"
+set "MODEL_NAME="
 set "LLAMA_PORT=8081"
 set "BACKEND_PORT=8788"
 set "FRONTEND_PORT=5173"
 set "USE_VISION=0"
+
+:: Discover llama-server location (env LLAMA_DIR, bundled, or on PATH).
+:: Falls back to C:\llama.cpp only if discovery fails.
+set "LLAMA_EXE="
+for /f "usebackq delims=" %%p in (`python "%~dp0backend\model_manager.py" llama-path 2^>nul`) do set "LLAMA_EXE=%%p"
+if defined LLAMA_EXE (
+    for %%d in ("%LLAMA_EXE%") do set "LLAMA_DIR=%%~dpd"
+) else (
+    set "LLAMA_DIR=C:\llama.cpp"
+)
 
 :: ─── Parse args ───────────────────────────────────────────────
 if /I "%1"=="-reset" goto reset
@@ -36,16 +46,6 @@ echo          start.bat -vision   (image mode, needs mmproj)
 echo          start.bat -reset    (kill all + clear cache)
 echo.
 
-:: ─── Check model ───────────────────────────────────────────────
-if defined SKIP_LLAMA goto skip_llama_check
-set "SKIP_LLAMA=1"
-if exist "%MODEL_DIR%\%MODEL_NAME%" set "SKIP_LLAMA=0"
-if "%SKIP_LLAMA%"=="1" (
-    echo  [INFO] Model not found at %MODEL_DIR%\%MODEL_NAME%
-    echo         Continuing without LLM ^(use -no-llm to hide^)
-)
-:skip_llama_check
-
 if "%USE_VISION%"=="1" (
     echo  [INFO] Vision mode ^(slow^)
 ) else (
@@ -56,42 +56,33 @@ if "%USE_VISION%"=="1" (
 echo.
 echo  [1/4] Stopping previous instances...
 powershell -NoProfile -Command "$w='llama-server','dafe-backend','dafe-frontend';Get-Process|Where-Object{$w -contains $_.MainWindowTitle}|Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
-:: Also kill any process squatting on our ports
 powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8788,5173,8081 -ErrorAction SilentlyContinue|ForEach-Object{Stop-Process -Id `$_.OwningProcess -Force -ErrorAction SilentlyContinue}" 2>nul
 timeout /t 1 /nobreak >nul
 echo         Done.
 
-:: ═══════════════════════════════════════════════════════════════
-::  Adaptive hardware detection
-:: ═══════════════════════════════════════════════════════════════
-
-if "%SKIP_LLAMA%"=="0" (
-    :: Simple GPU check — if nvidia-smi exists, assume GPU is available
-    set "HAS_GPU=0"
-    where nvidia-smi >nul 2>&1
-    if not errorlevel 1 set "HAS_GPU=1"
-
-    if !HAS_GPU! EQU 1 (
-        :: GPU present — conservative defaults for 8GB VRAM
-        set "NGPULAYERS=-1"
-        set "CTX=4096"
-        set "BSIZE=256"
-        set /a "NTHREADS=4"
-        echo  [HW]  GPU detected — using GPU-accelerated mode
-    ) else (
-        :: No GPU — CPU-only, use half of logical cores
-        set "NGPULAYERS=0"
-        set "CTX=1024"
-        set "BSIZE=32"
-        for /f "tokens=*" %%i in ('powershell -NoProfile -Command "[Environment]::ProcessorCount"') do set "CPU_CORES=%%i"
-        if "!CPU_CORES!"=="" set "CPU_CORES=4"
-        set /a "NTHREADS=!CPU_CORES! / 2"
-        if !NTHREADS! LSS 2 set "NTHREADS=2"
-        if !NTHREADS! GTR 8 set "NTHREADS=8"
-        echo  [HW]  No GPU — using CPU mode ^(%CPU_CORES% cores, %NTHREADS% threads^)
-    )
-    echo  [HW]  Params:  -ngl %NGPULAYERS%  -c %CTX%  -b %BSIZE%  -t %NTHREADS%
+:: ─── Adaptive model + hardware selection (single source of truth) ──
+:: model_manager.py inspects the GPU/VRAM/RAM and each model's real GGUF
+:: architecture, then picks the best model and optimal launch params.
+:: Runs AFTER the kill so free-VRAM is measured accurately on a restart.
+if defined SKIP_LLAMA goto skip_llama_check
+set "SKIP_LLAMA=1"
+for /f "usebackq tokens=1-5 delims=|" %%a in (`python "%~dp0backend\model_manager.py" select 2^>nul`) do (
+    set "MODEL_NAME=%%a"
+    set "CTX=%%b"
+    set "NGPULAYERS=%%c"
+    set "BSIZE=%%d"
+    set "NTHREADS=%%e"
 )
+if /I "%MODEL_NAME%"=="NONE" set "MODEL_NAME="
+if defined MODEL_NAME if not "%MODEL_NAME%"=="" set "SKIP_LLAMA=0"
+if "%SKIP_LLAMA%"=="1" (
+    echo  [INFO] No usable model found in %MODEL_DIR%
+    echo         Continuing without LLM ^(use -no-llm to hide^)
+) else (
+    echo  [HW]  Selected model: %MODEL_NAME%
+    echo  [HW]  Params:  -c %CTX%  -ngl %NGPULAYERS%  -b %BSIZE%  -t %NTHREADS%
+)
+:skip_llama_check
 
 :: ═══════════════════════════════════════════════════════════════
 ::  2/4 — LLM (optional)
@@ -101,9 +92,9 @@ if "%SKIP_LLAMA%"=="0" (
     echo  [2/4] Starting local LLM on port %LLAMA_PORT%...
 
     :: Pre-flight checks
-    if not exist "%LLAMA_DIR%\llama-server.exe" (
-        echo  [SKIP] llama-server.exe not found at %LLAMA_DIR%
-        echo         Install llama.cpp CUDA build there, or use start.bat -no-llm
+    if not exist "%LLAMA_DIR%llama-server.exe" if not exist "%LLAMA_DIR%\llama-server.exe" (
+        echo  [SKIP] llama-server.exe not found ^(looked in %LLAMA_DIR%^)
+        echo         Set LLAMA_DIR env var, bundle it at .\llama.cpp, or use start.bat -no-llm
         goto skip_llama
     )
     if not exist "%MODEL_DIR%\%MODEL_NAME%" (
@@ -144,7 +135,7 @@ if "%SKIP_LLAMA%"=="0" (
 :: ═══════════════════════════════════════════════════════════════
 echo.
 echo  [3/4] Starting backend on port %BACKEND_PORT%...
-start "dafe-backend" cmd /k "cd /d C:\DAFECharts\backend && python -m uvicorn main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+start "dafe-backend" cmd /k "cd /d "%~dp0backend" && python -m uvicorn main:app --host 127.0.0.1 --port %BACKEND_PORT%"
 
 echo         Waiting for backend ^(up to 60s^)...
 set WAIT=0
@@ -165,7 +156,7 @@ echo  [OK]  Backend ready
 :: ═══════════════════════════════════════════════════════════════
 echo.
 echo  [4/4] Starting frontend on port %FRONTEND_PORT%...
-start "dafe-frontend" cmd /k "cd /d C:\DAFECharts\apps\web && npx vite --port %FRONTEND_PORT%"
+start "dafe-frontend" cmd /k "cd /d "%~dp0apps\web" && npx vite --port %FRONTEND_PORT%"
 
 echo         Waiting for frontend ^(up to 60s^)...
 set WAIT=0
@@ -222,9 +213,9 @@ timeout /t 1 /nobreak >nul
 echo         Done.
 
 echo  [2/4] Cleaning caches...
-if exist "C:\DAFECharts\backend\__pycache__" rmdir /s /q "C:\DAFECharts\backend\__pycache__" 2>nul
-if exist "C:\DAFECharts\apps\web\node_modules\.vite" rmdir /s /q "C:\DAFECharts\apps\web\node_modules\.vite" 2>nul
-del /s /q "C:\DAFECharts\backend\*.pyc" 2>nul
+if exist "%~dp0backend\__pycache__" rmdir /s /q "%~dp0backend\__pycache__" 2>nul
+if exist "%~dp0apps\web\node_modules\.vite" rmdir /s /q "%~dp0apps\web\node_modules\.vite" 2>nul
+del /s /q "%~dp0backend\*.pyc" 2>nul
 echo         Done.
 
 echo  [3/4] Flushing DNS...

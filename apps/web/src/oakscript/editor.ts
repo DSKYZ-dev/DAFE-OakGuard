@@ -2,7 +2,7 @@ import { parse, ParseError } from './parser';
 import { executeScript } from './interpreter';
 import type { OakPlot, OakAlert } from './runtime';
 import type { Program, Assignment, CallExpr, Identifier, ASTNode } from './ast';
-import { getIndicators, getCategories, type IndicatorDef } from './indicators';
+import { getIndicators, getCategories, type IndicatorDef, saveUserIndicator, getUserIndicators, removeUserIndicator } from './indicators';
 import { getDocumentation, type DocSection } from './docs';
 
 export interface OakscriptResult {
@@ -37,37 +37,12 @@ let editorVisible = false;
 let editorPanel: HTMLDivElement | null = null;
 let textarea: HTMLTextAreaElement | null = null;
 let errorListDiv: HTMLDivElement | null = null;
-let inputsDiv: HTMLDivElement | null = null;
 let docPanel: HTMLDivElement | null = null;
 let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
 
-const DEFAULT_SCRIPT = `// OakScript — TradingVision Indicator Language
-// Press E to toggle editor | Ctrl+Enter to run
-
-// Parameters
-fastLen = input(9, "Fast Length")
-slowLen = input(21, "Slow Length")
-showSignals = input(true, "Show Signals")
-
-// Calculate indicators
-fastMA = sma(close, fastLen)
-slowMA = sma(close, slowLen)
-
-// Plot lines
-plot(fastMA, "Fast MA", "#22cc88", 2)
-plot(slowMA, "Slow MA", "#ff4477", 2)
-
-// Crossover signals — buys below the bar, sells above
-crossed = crossover(fastMA, slowMA)
-crossedDown = crossunder(fastMA, slowMA)
-
-if showSignals
-    if crossed
-        plotshape(bar_index, low, "BUY", "triangleup", "#22cc88")
-    if crossedDown
-        plotshape(bar_index, high, "SELL", "triangledown", "#ff4477")
+const DEFAULT_SCRIPT = `// DAFE Trading Systems - DskyzInvestment
 `;
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -254,6 +229,26 @@ export function toggleEditor(): boolean {
 }
 
 let onRunCallback: ((source: string) => void) | null = null;
+let onSendErrorsToAdvisor: ((errors: string[], source: string) => void) | null = null;
+let onAgentAction: ((action: string, data?: string) => void) | null = null;
+let agentChatCallback: ((message: string) => void) | null = null;
+let onToggleVisibility: (() => void) | null = null;
+
+export function setSendErrorsCallback(cb: (errors: string[], source: string) => void): void {
+  onSendErrorsToAdvisor = cb;
+}
+
+export function setAgentActionCallback(cb: (action: string, data?: string) => void): void {
+  onAgentAction = cb;
+}
+
+export function setAgentChatCallback(cb: (message: string) => void): void {
+  agentChatCallback = cb;
+}
+
+export function setToggleVisibilityCallback(cb: () => void): void {
+  onToggleVisibility = cb;
+}
 
 export function createEditor(container: HTMLElement, onRun: (source: string) => void): { panel: HTMLDivElement; textarea: HTMLTextAreaElement } {
   onRunCallback = onRun;
@@ -264,7 +259,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     position: 'fixed', left: '300px', top: '60px', width: '460px', maxHeight: '90vh',
     minWidth: '420px', minHeight: '320px',
     background: 'rgba(8, 8, 20, 0.95)', border: '1px solid rgba(180, 140, 255, 0.15)',
-    borderRadius: '10px', display: 'none', flexDirection: 'column', zIndex: '200',
+    borderRadius: '10px', display: 'none', flexDirection: 'column', zIndex: '10001',
     backdropFilter: 'blur(12px)', boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
   });
 
@@ -367,7 +362,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   // ── Editor area ─────────────────────────────────────────────────
   const editorWrapper = document.createElement('div');
   Object.assign(editorWrapper.style, {
-    display: 'flex', flex: '0 0 auto', overflow: 'hidden',
+    display: 'flex', flex: '1 1 auto', overflow: 'hidden', minHeight: '0',
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
   });
 
@@ -397,6 +392,12 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   };
   textarea.addEventListener('input', updateLineNumbers);
   textarea.addEventListener('scroll', () => { lineNum.scrollTop = textarea!.scrollTop; });
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      doRun();
+    }
+  });
 
   editorWrapper.appendChild(lineNum);
   editorWrapper.appendChild(textarea);
@@ -406,165 +407,294 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   // ── Controls bar ────────────────────────────────────────────────
   const controls = document.createElement('div');
   Object.assign(controls.style, {
-    display: 'flex', alignItems: 'center', gap: '5px', padding: '6px 10px',
+    display: 'flex', alignItems: 'center', gap: '4px', padding: '5px 8px',
     flexWrap: 'wrap', borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
   });
 
-  const runBtn = document.createElement('button');
-  runBtn.textContent = '▶ Run';
-  Object.assign(runBtn.style, {
-    padding: '4px 12px', border: '1px solid rgba(34, 204, 136, 0.3)',
-    borderRadius: '5px', background: 'rgba(34, 204, 136, 0.12)',
-    color: '#22cc88', cursor: 'pointer', fontSize: '11px', fontWeight: '600',
+  const btnStyle = (color: string, bg: string) => ({
+    padding: '3px 7px', border: `1px solid ${color}33`,
+    borderRadius: '4px', background: bg,
+    color, cursor: 'pointer', fontSize: '10px', fontWeight: '600',
   });
-  runBtn.onclick = () => doRun();
+
+  let indicatorVisible = true;
+  const viewBtn = document.createElement('button');
+  viewBtn.textContent = '👁 Hide';
+  viewBtn.title = 'Toggle indicator visibility on chart';
+  viewBtn.style.cssText = 'padding:3px 7px;border:1px solid rgba(255,184,0,0.25);border-radius:4px;background:rgba(255,184,0,0.12);color:#FFB800;cursor:pointer;font-size:10px;font-weight:600;';
+  viewBtn.onclick = () => {
+    indicatorVisible = !indicatorVisible;
+    viewBtn.textContent = indicatorVisible ? '👁 Hide' : '👁 Show';
+    viewBtn.style.color = indicatorVisible ? '#FFB800' : 'rgba(255,255,255,0.3)';
+    viewBtn.style.borderColor = indicatorVisible ? 'rgba(255,184,0,0.25)' : 'rgba(255,255,255,0.08)';
+    viewBtn.style.background = indicatorVisible ? 'rgba(255,184,0,0.12)' : 'transparent';
+    if (onToggleVisibility) onToggleVisibility();
+  };
 
   const saveBtn = document.createElement('button');
-  saveBtn.textContent = '💾 Save';
-  Object.assign(saveBtn.style, {
-    padding: '4px 8px', border: '1px solid rgba(180, 140, 255, 0.15)',
-    borderRadius: '5px', background: 'transparent',
-    color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: '11px',
-  });
+  saveBtn.textContent = '';
+  saveBtn.title = 'Save to localStorage';
+  Object.assign(saveBtn.style, btnStyle('rgba(255,255,255,0.5)', 'transparent'));
+
+  // Track the original saved script name so we can offer replace/delete options
+  let originalSavedName: string | null = null;
+
   saveBtn.onclick = () => {
-    localStorage.setItem('oakscript_source', textarea!.value);
-    saveBtn.textContent = '✓ Saved';
-    setTimeout(() => { saveBtn.textContent = '💾 Save'; }, 1500);
+    const src = textarea!.value;
+    localStorage.setItem('oakscript_source', src);
+    localStorage.setItem('oakscript_source_version', 'v2');
+
+    const currentName = localStorage.getItem('oakscript_active_name') || 'My Indicator';
+    const isEditingSaved = originalSavedName && getUserIndicators().some(i => i.name === originalSavedName);
+
+    if (isEditingSaved) {
+      // Show options: save as new, replace original, delete original
+      const choice = confirm(
+        `You are editing "${originalSavedName}".\n\n` +
+        `OK = Replace "${originalSavedName}" with your changes\n` +
+        `Cancel = Save as a NEW indicator`
+      );
+      if (choice) {
+        // Replace original
+        saveUserIndicator(originalSavedName!, src);
+        saveBtn.textContent = '✓';
+        setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
+      } else {
+        // Save as new
+        const name = prompt('Save indicator as:', currentName);
+        if (name) {
+          saveUserIndicator(name, src);
+          localStorage.setItem('oakscript_active_name', name);
+          originalSavedName = name;
+          saveBtn.textContent = '✓';
+          setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
+        }
+      }
+    } else {
+      // Not editing a saved script — just save as new
+      const name = prompt('Save indicator as:', currentName);
+      if (name) {
+        saveUserIndicator(name, src);
+        localStorage.setItem('oakscript_active_name', name);
+        originalSavedName = name;
+        saveBtn.textContent = '✓';
+        setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
+      }
+    }
+    refreshIndicatorDropdown();
+  };
+
+  // Manage saved scripts button (delete, view)
+  const manageBtn = document.createElement('button');
+  manageBtn.textContent = '🗑';
+  manageBtn.title = 'Manage saved indicators (delete, rename)';
+  Object.assign(manageBtn.style, btnStyle('rgba(255,68,119,0.5)', 'transparent'));
+  manageBtn.onclick = () => {
+    const userInds = getUserIndicators();
+    if (userInds.length === 0) {
+      alert('No saved indicators to manage.');
+      return;
+    }
+    // Build a simple modal with delete buttons
+    const modal = document.createElement('div');
+    Object.assign(modal.style, {
+      position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+      background: 'rgba(8, 8, 20, 0.98)', border: '1px solid rgba(180, 140, 255, 0.3)',
+      borderRadius: '10px', padding: '20px', zIndex: '100000', minWidth: '300px',
+      boxShadow: '0 8px 40px rgba(0,0,0,0.8)',
+    });
+    const title = document.createElement('div');
+    title.textContent = 'Manage Saved Indicators';
+    Object.assign(title.style, { color: '#b48cff', fontSize: '14px', fontWeight: '600', marginBottom: '12px' });
+    modal.appendChild(title);
+
+    const list = document.createElement('div');
+    list.style.maxHeight = '400px';
+    list.style.overflow = 'auto';
+    for (const ind of userInds) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '6px 0', borderBottom: '1px solid rgba(180, 140, 255, 0.1)',
+      });
+      const name = document.createElement('span');
+      name.textContent = ind.name;
+      name.style.color = 'rgba(255,255,255,0.8)';
+      name.style.fontSize = '11px';
+      row.appendChild(name);
+
+      const delBtn = document.createElement('button');
+      delBtn.textContent = 'Delete';
+      Object.assign(delBtn.style, {
+        padding: '3px 10px', border: '1px solid rgba(255, 68, 119, 0.4)',
+        borderRadius: '4px', background: 'rgba(255, 68, 119, 0.1)',
+        color: '#ff4477', cursor: 'pointer', fontSize: '10px',
+      });
+      delBtn.onclick = () => {
+        if (confirm(`Delete "${ind.name}"?`)) {
+          removeUserIndicator(ind.name);
+          row.remove();
+          refreshIndicatorDropdown();
+          if (originalSavedName === ind.name) originalSavedName = null;
+          if (userInds.length === 1) { modal.remove(); alert('All saved indicators deleted.'); }
+        }
+      };
+      row.appendChild(delBtn);
+      list.appendChild(row);
+    }
+    modal.appendChild(list);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    Object.assign(closeBtn.style, {
+      marginTop: '12px', padding: '6px 16px', border: '1px solid rgba(180, 140, 255, 0.3)',
+      borderRadius: '4px', background: 'rgba(180, 140, 255, 0.1)',
+      color: '#b48cff', cursor: 'pointer', fontSize: '11px', width: '100%',
+    });
+    closeBtn.onclick = () => modal.remove();
+    modal.appendChild(closeBtn);
+
+    // Backdrop
+    const backdrop = document.createElement('div');
+    Object.assign(backdrop.style, {
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', zIndex: '99999',
+    });
+    backdrop.onclick = () => { modal.remove(); backdrop.remove(); };
+    document.body.appendChild(backdrop);
+    document.body.appendChild(modal);
   };
 
   // Indicator dropdown
   const indSelect = document.createElement('select');
   Object.assign(indSelect.style, {
-    flex: '1', minWidth: '120px', padding: '4px 6px',
-    border: '1px solid rgba(180, 140, 255, 0.15)', borderRadius: '5px',
+    flex: '1', minWidth: '110px', padding: '3px 5px',
+    border: '1px solid rgba(180, 140, 255, 0.15)', borderRadius: '4px',
     background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.7)',
     fontSize: '10px', cursor: 'pointer', outline: 'none',
   });
-
-  // Build grouped options
-  const categories = getCategories();
-  const indicators = getIndicators();
-  const defaultOpt = document.createElement('option');
-  defaultOpt.value = '';
-  defaultOpt.textContent = '📊 Load Indicator...';
-  defaultOpt.disabled = true;
-  defaultOpt.selected = true;
-  indSelect.appendChild(defaultOpt);
-
-  for (const cat of categories) {
-    const group = document.createElement('optgroup');
-    group.label = cat;
-    const catInds = indicators.filter(ind => ind.category === cat);
-    for (const ind of catInds) {
-      const opt = document.createElement('option');
-      opt.value = ind.name;
-      opt.textContent = ind.name;
-      group.appendChild(opt);
+  // Rebuild the dropdown from the current indicator list (built-ins + user
+  // saved). Called on editor creation AND after every save so a newly saved
+  // script shows up immediately without a page reload.
+  function refreshIndicatorDropdown() {
+    const prev = indSelect.value;
+    indSelect.innerHTML = '';
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = '📊 Load...';
+    defaultOpt.disabled = true; defaultOpt.selected = true;
+    indSelect.appendChild(defaultOpt);
+    for (const cat of getCategories()) {
+      const group = document.createElement('optgroup');
+      group.label = cat;
+      for (const ind of getIndicators().filter(i => i.category === cat)) {
+        const opt = document.createElement('option');
+        opt.value = ind.name; opt.textContent = ind.name;
+        group.appendChild(opt);
+      }
+      indSelect.appendChild(group);
     }
-    indSelect.appendChild(group);
+    indSelect.value = prev;
   }
-
+  refreshIndicatorDropdown();
   indSelect.onchange = () => {
-    const selected = indSelect.value;
-    if (!selected) return;
-    const ind = getIndicators().find(i => i.name === selected);
+    const sel = indSelect.value; if (!sel) return;
+    const ind = getIndicators().find(i => i.name === sel);
     if (ind) {
-      textarea!.value = ind.source;
-      updateLineNumbers();
+      textarea!.value = ind.source; updateLineNumbers();
       localStorage.setItem('oakscript_source', ind.source);
       localStorage.setItem('oakscript_active_name', ind.name);
-      // Clear stale input overrides when loading a new indicator
       localStorage.removeItem('oakscript_overrides');
       doRun();
     }
     indSelect.value = '';
   };
 
-  // Docs toggle
   const docsBtn = document.createElement('button');
-  docsBtn.textContent = '📖 Docs';
-  Object.assign(docsBtn.style, {
-    padding: '4px 8px', border: '1px solid rgba(180, 140, 255, 0.15)',
-    borderRadius: '5px', background: 'transparent',
-    color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: '11px',
-  });
+  docsBtn.textContent = '📖';
+  docsBtn.title = 'Documentation';
+  Object.assign(docsBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   docsBtn.onclick = () => toggleDocs();
 
-  controls.appendChild(runBtn);
+  controls.appendChild(viewBtn);
   controls.appendChild(saveBtn);
+  controls.appendChild(manageBtn);
   controls.appendChild(indSelect);
   controls.appendChild(docsBtn);
+
+  // ── Agent command buttons ────────────────────────────────────
+  const agentSep = document.createElement('div');
+  agentSep.style.width = '1px'; agentSep.style.height = '16px';
+  agentSep.style.background = 'rgba(180,140,255,0.1)'; agentSep.style.margin = '0 2px';
+  controls.appendChild(agentSep);
+
+  const agentBtnStyle = (color: string) => ({
+    padding: '3px 6px', border: `1px solid ${color}22`,
+    borderRadius: '4px', background: 'transparent',
+    color, cursor: 'pointer', fontSize: '10px', fontWeight: '500',
+  });
+
+  const fixBtn = document.createElement('button');
+  fixBtn.textContent = '🔧 Fix';
+  fixBtn.title = 'Auto-fix errors with agent';
+  Object.assign(fixBtn.style, agentBtnStyle('#ff4477'));
+  fixBtn.onclick = () => { if (onAgentAction) onAgentAction('fix'); };
+
+  const genBtn = document.createElement('button');
+  genBtn.textContent = '✍️ New';
+  genBtn.title = 'Generate indicator from description';
+  Object.assign(genBtn.style, agentBtnStyle('#22cc88'));
+  genBtn.onclick = () => {
+    const desc = prompt('Describe the indicator:');
+    if (desc && onAgentAction) {
+      // Only clear to the placeholder when the editor is ALREADY empty/
+      // placeholder — i.e. this really is a from-scratch request. If there's
+      // a real script here, this click is almost always someone refining
+      // what they just asked for, and main.ts's action handler routes that
+      // case through the context-aware edit path using the CURRENT source —
+      // wiping it here first would destroy the very thing that path needs
+      // to read.
+      const current = textarea!.value.trim();
+      if (!current || current === DEFAULT_SCRIPT.trim()) {
+        textarea!.value = DEFAULT_SCRIPT;
+        localStorage.setItem('oakscript_source', DEFAULT_SCRIPT);
+        updateLineNumbers();
+      }
+      onAgentAction('generate', desc);
+    }
+  };
+
+  const ideasBtn = document.createElement('button');
+  ideasBtn.textContent = '💡';
+  ideasBtn.title = 'Brainstorm ideas';
+  Object.assign(ideasBtn.style, agentBtnStyle('#ffd43b'));
+  ideasBtn.onclick = () => { if (onAgentAction) onAgentAction('brainstorm'); };
+
+  const metricsBtn = document.createElement('button');
+  metricsBtn.textContent = '📊';
+  metricsBtn.title = 'Analyze metrics';
+  Object.assign(metricsBtn.style, agentBtnStyle('#b48cff'));
+  metricsBtn.onclick = () => { if (onAgentAction) onAgentAction('metrics'); };
+
+  const validateBtn = document.createElement('button');
+  validateBtn.textContent = '✓';
+  validateBtn.title = 'Validate code';
+  Object.assign(validateBtn.style, agentBtnStyle('#00FFF0'));
+  validateBtn.onclick = () => { if (onAgentAction) onAgentAction('validate'); };
+
+  controls.appendChild(fixBtn);
+  controls.appendChild(genBtn);
+  controls.appendChild(ideasBtn);
+  controls.appendChild(metricsBtn);
+  controls.appendChild(validateBtn);
   editorPanel.appendChild(controls);
 
-  // ── Input controls ──────────────────────────────────────────────
-  inputsDiv = document.createElement('div');
-  inputsDiv.setAttribute('data-section', 'inputs');
-  Object.assign(inputsDiv.style, {
-    maxHeight: '180px', overflow: 'auto', display: 'none',
-    borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
-    padding: '6px 10px',
-  });
-  editorPanel.appendChild(inputsDiv);
-
-  // ── Error list ──────────────────────────────────────────────────
+  // ── Error list ────────────────────────────────────────────────
   errorListDiv = document.createElement('div');
   Object.assign(errorListDiv.style, {
     maxHeight: '100px', overflow: 'auto', display: 'none',
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
   });
   editorPanel.appendChild(errorListDiv);
-
-  // ── Webhook section ─────────────────────────────────────────────
-  const alertSection = document.createElement('div');
-  Object.assign(alertSection.style, {
-    padding: '6px 10px', borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
-  });
-
-  const webhookRow = document.createElement('div');
-  Object.assign(webhookRow.style, { display: 'flex', gap: '4px', alignItems: 'center' });
-
-  const whIcon = document.createElement('span');
-  whIcon.textContent = '🔗';
-  whIcon.style.fontSize = '11px';
-
-  const webhookInput = document.createElement('input');
-  webhookInput.type = 'url';
-  webhookInput.placeholder = 'Webhook URL for alerts...';
-  webhookInput.value = webhookUrl;
-  Object.assign(webhookInput.style, {
-    flex: '1', padding: '3px 6px', border: '1px solid rgba(180, 140, 255, 0.15)',
-    borderRadius: '5px', background: 'rgba(12,12,28,0.9)',
-    color: 'rgba(255,255,255,0.5)', fontSize: '10px', fontFamily: 'monospace',
-    outline: 'none',
-  });
-  webhookInput.onchange = () => { setWebhookUrl(webhookInput.value); };
-
-  const testHookBtn = document.createElement('button');
-  testHookBtn.textContent = 'Test';
-  Object.assign(testHookBtn.style, {
-    padding: '3px 8px', border: '1px solid rgba(180, 140, 255, 0.15)',
-    borderRadius: '5px', background: 'transparent',
-    color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '10px',
-  });
-  testHookBtn.onclick = () => {
-    sendAlert({
-      type: 'TEST', message: 'Test webhook from OakScript Editor',
-      barIndex: 0, timestamp: Date.now(), price: 0,
-    });
-    testHookBtn.textContent = '✓ Sent';
-    setTimeout(() => { testHookBtn.textContent = 'Test'; }, 2000);
-  };
-
-  webhookRow.appendChild(whIcon);
-  webhookRow.appendChild(webhookInput);
-  webhookRow.appendChild(testHookBtn);
-  alertSection.appendChild(webhookRow);
-
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
-
-  editorPanel.appendChild(alertSection);
 
   // ── Documentation Panel ─────────────────────────────────────────
   docPanel = document.createElement('div');
@@ -573,6 +703,171 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
   });
   editorPanel.appendChild(docPanel);
+
+  // ── Agent Chat Box ────────────────────────────────────────────
+  const agentChat = document.createElement('div');
+  Object.assign(agentChat.style, {
+    padding: '4px 0', borderTop: '1px solid rgba(180, 140, 255, 0.08)',
+    display: 'flex', flexDirection: 'column',
+  });
+
+  const chatMsgs = document.createElement('div');
+  chatMsgs.id = 'os-agent-messages';
+  Object.assign(chatMsgs.style, {
+    maxHeight: '80px', overflow: 'auto', padding: '2px 8px',
+    fontSize: '9px', fontFamily: 'monospace',
+    color: 'rgba(255,255,255,0.5)',
+    display: 'none',
+  });
+
+  const chatHeader = document.createElement('div');
+  Object.assign(chatHeader.style, {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '1px 8px',
+  });
+  const chatTitle = document.createElement('span');
+  chatTitle.textContent = 'Agent Chat';
+  chatTitle.style.cssText = 'color:rgba(180,140,255,0.4);font-size:8px;';
+
+  const chatTools = document.createElement('div');
+  Object.assign(chatTools.style, { display: 'flex', gap: '2px', alignItems: 'center' });
+
+  // Font size controls
+  let chatFontSize = 9;
+  const sizeDown = document.createElement('button');
+  sizeDown.textContent = 'A-';
+  sizeDown.title = 'Decrease text size';
+  Object.assign(sizeDown.style, { padding:'0 3px',border:'1px solid rgba(180,140,255,0.1)',borderRadius:'3px',background:'transparent',color:'rgba(255,255,255,0.25)',cursor:'pointer',fontSize:'7px' });
+  sizeDown.onclick = () => { chatFontSize = Math.max(7, chatFontSize - 1); chatMsgs.style.fontSize = chatFontSize + 'px'; };
+  const sizeUp = document.createElement('button');
+  sizeUp.textContent = 'A+';
+  sizeUp.title = 'Increase text size';
+  Object.assign(sizeUp.style, { padding:'0 3px',border:'1px solid rgba(180,140,255,0.1)',borderRadius:'3px',background:'transparent',color:'rgba(255,255,255,0.25)',cursor:'pointer',fontSize:'7px' });
+  sizeUp.onclick = () => { chatFontSize = Math.min(14, chatFontSize + 1); chatMsgs.style.fontSize = chatFontSize + 'px'; };
+  chatTools.appendChild(sizeDown);
+  chatTools.appendChild(sizeUp);
+
+  const copyLogBtn = document.createElement('button');
+  copyLogBtn.textContent = '📋';
+  copyLogBtn.title = 'Copy entire chat log';
+  Object.assign(copyLogBtn.style, {
+    padding: '1px 5px', border: '1px solid rgba(180,140,255,0.1)',
+    borderRadius: '3px', background: 'transparent',
+    color: 'rgba(255,255,255,0.25)', cursor: 'pointer', fontSize: '8px',
+  });
+  copyLogBtn.onclick = () => {
+    const lines: string[] = [];
+    chatMsgs.querySelectorAll('div').forEach(d => lines.push(d.textContent || ''));
+    navigator.clipboard.writeText(lines.join('\n')).then(() => {
+      copyLogBtn.textContent = '✓';
+      setTimeout(() => { copyLogBtn.textContent = '📋'; }, 1500);
+    }).catch(() => {});
+  };
+  chatTools.appendChild(copyLogBtn);
+  chatHeader.appendChild(chatTitle);
+  chatHeader.appendChild(chatTools);
+  agentChat.appendChild(chatHeader);
+  agentChat.appendChild(chatMsgs);
+
+  const chatRow = document.createElement('div');
+  Object.assign(chatRow.style, {
+    display: 'flex', gap: '3px', padding: '3px 8px',
+  });
+
+  const chatInput = document.createElement('input');
+  chatInput.type = 'text';
+  chatInput.placeholder = 'Ask agent about this indicator...';
+  Object.assign(chatInput.style, {
+    flex: '1', padding: '3px 6px',
+    border: '1px solid rgba(180, 140, 255, 0.12)',
+    borderRadius: '4px', background: 'rgba(12,12,28,0.9)',
+    color: 'rgba(255,255,255,0.6)', fontSize: '10px', fontFamily: 'monospace',
+    outline: 'none',
+  });
+  chatInput.onkeydown = (e) => {
+    if (e.key === 'Enter' && chatInput.value.trim()) {
+      const msg = chatInput.value.trim();
+      chatInput.value = '';
+      appendAgentChatMsg('user', msg);
+      if (agentChatCallback) agentChatCallback(msg);
+    }
+  };
+
+  const chatSend = document.createElement('button');
+  chatSend.textContent = '→';
+  chatSend.title = 'Send to agent';
+  Object.assign(chatSend.style, {
+    padding: '3px 8px', border: '1px solid rgba(180, 140, 255, 0.2)',
+    borderRadius: '4px', background: 'rgba(180, 140, 255, 0.08)',
+    color: '#b48cff', cursor: 'pointer', fontSize: '11px', fontWeight: '600',
+  });
+  chatSend.onclick = () => {
+    const msg = chatInput.value.trim();
+    if (!msg) return;
+    chatInput.value = '';
+    appendAgentChatMsg('user', msg);
+    if (agentChatCallback) agentChatCallback(msg);
+  };
+
+  chatRow.appendChild(chatInput);
+  chatRow.appendChild(chatSend);
+  agentChat.appendChild(chatRow);
+
+  // Auto-accept + Render priority toggles
+  const autoRow = document.createElement('div');
+  Object.assign(autoRow.style, {
+    display: 'flex', alignItems: 'center', gap: '8px', padding: '2px 8px',
+    flexWrap: 'wrap',
+  });
+  const autoLabel = document.createElement('label');
+  Object.assign(autoLabel.style, {
+    display: 'flex', alignItems: 'center', gap: '4px',
+    color: 'rgba(255,255,255,0.35)', fontSize: '9px', cursor: 'pointer',
+  });
+  const autoCheck = document.createElement('input');
+  autoCheck.type = 'checkbox';
+  autoCheck.id = 'os-auto-accept';
+  Object.assign(autoCheck.style, { accentColor: '#22cc88' });
+  autoCheck.onchange = () => {
+    if (onAgentAction) onAgentAction('auto-accept');
+  };
+  autoLabel.appendChild(autoCheck);
+  autoLabel.appendChild(document.createTextNode('Auto-accept'));
+  autoRow.appendChild(autoLabel);
+
+  // 3D render priority toggle
+  const d3Label = document.createElement('label');
+  Object.assign(d3Label.style, {
+    display: 'flex', alignItems: 'center', gap: '4px',
+    color: 'rgba(255,255,255,0.35)', fontSize: '9px', cursor: 'pointer',
+  });
+  const d3Check = document.createElement('input');
+  d3Check.type = 'checkbox';
+  d3Check.id = 'os-prefer-3d';
+  d3Check.checked = true;
+  Object.assign(d3Check.style, { accentColor: '#b48cff' });
+  d3Label.appendChild(d3Check);
+  d3Label.appendChild(document.createTextNode('Prefer 3D'));
+  autoRow.appendChild(d3Label);
+  agentChat.appendChild(autoRow);
+
+  editorPanel.appendChild(agentChat);
+
+  // Expose chat append + auto-accept + 3D prefs for external use
+  (window as any).__osAppendChat = (role: string, msg: string) => appendAgentChatMsg(role, msg);
+  (window as any).__osGetAutoAccept = () => autoCheck.checked;
+  (window as any).__osGetPrefer3D = () => d3Check.checked;
+
+  function appendAgentChatMsg(role: string, msg: string) {
+    chatMsgs.style.display = 'block';
+    const div = document.createElement('div');
+    div.textContent = (role === 'user' ? 'You: ' : 'Agent: ') + msg;
+    div.style.color = role === 'user' ? 'rgba(255,255,255,0.5)' : '#b48cff';
+    div.style.padding = '1px 0';
+    chatMsgs.appendChild(div);
+    chatMsgs.scrollTop = chatMsgs.scrollHeight;
+    if (chatMsgs.children.length > 20) chatMsgs.firstChild?.remove();
+  }
 
   // ── Resize handle ───────────────────────────────────────────────
   const resizeHandle = document.createElement('div');
@@ -616,19 +911,58 @@ function doRun(): void {
   if (onRunCallback) onRunCallback(src);
 }
 
+function doRunSilent(): void {
+  if (!textarea) return;
+  const src = textarea.value;
+  localStorage.setItem('oakscript_source', src);
+  if (onRunCallback) onRunCallback(src);
+}
+
 export function showErrors(errors: string[]): void {
   if (!errorListDiv) return;
   errorListDiv.innerHTML = '';
   if (errors.length === 0) { errorListDiv.style.display = 'none'; return; }
   errorListDiv.style.display = 'block';
 
+  const headerRow = document.createElement('div');
+  Object.assign(headerRow.style, {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '5px 10px', borderBottom: '1px solid rgba(255, 68, 119, 0.1)',
+  });
+
   const title = document.createElement('div');
   title.textContent = `⚠ ${errors.length} Error${errors.length > 1 ? 's' : ''}`;
   Object.assign(title.style, {
-    padding: '5px 10px', color: '#ff4477', fontSize: '10px',
-    fontWeight: '600', borderBottom: '1px solid rgba(255, 68, 119, 0.1)',
+    color: '#ff4477', fontSize: '10px', fontWeight: '600',
   });
-  errorListDiv.appendChild(title);
+  headerRow.appendChild(title);
+
+  // Send all errors to the Trade Advisor for auto-fix
+  const sendToAdvisorBtn = document.createElement('button');
+  sendToAdvisorBtn.textContent = '🤖 Fix with Advisor';
+  sendToAdvisorBtn.title = 'Send all errors to the Trade Advisor for diagnosis and auto-fix';
+  Object.assign(sendToAdvisorBtn.style, {
+    padding: '3px 8px', border: '1px solid rgba(180, 140, 255, 0.3)',
+    borderRadius: '4px', background: 'rgba(180, 140, 255, 0.1)',
+    color: '#b48cff', cursor: 'pointer', fontSize: '9px', fontWeight: '600',
+  });
+  sendToAdvisorBtn.onclick = () => {
+    if (onSendErrorsToAdvisor && textarea) {
+      onSendErrorsToAdvisor(errors, textarea.value);
+      sendToAdvisorBtn.textContent = '✓ Sent to Advisor';
+      sendToAdvisorBtn.style.color = '#22cc88';
+      sendToAdvisorBtn.style.borderColor = 'rgba(34, 204, 136, 0.4)';
+      sendToAdvisorBtn.style.background = 'rgba(34, 204, 136, 0.12)';
+      setTimeout(() => {
+        sendToAdvisorBtn.textContent = '🤖 Fix with Advisor';
+        sendToAdvisorBtn.style.color = '#b48cff';
+        sendToAdvisorBtn.style.borderColor = 'rgba(180, 140, 255, 0.3)';
+        sendToAdvisorBtn.style.background = 'rgba(180, 140, 255, 0.1)';
+      }, 2000);
+    }
+  };
+  headerRow.appendChild(sendToAdvisorBtn);
+  errorListDiv.appendChild(headerRow);
 
   for (const err of errors) {
     const parsed = parseErrorMessage(err);
@@ -668,142 +1002,51 @@ export function showErrors(errors: string[]): void {
     row.appendChild(copyBtn);
     errorListDiv.appendChild(row);
   }
-}
 
-export function showInputs(inputs: InputDef[], onRun: (src: string) => void): void {
-  if (!inputsDiv) return;
-  inputsDiv.innerHTML = '';
-  if (inputs.length === 0) { inputsDiv.style.display = 'none'; return; }
-  inputsDiv.style.display = 'block';
-
-  const title = document.createElement('div');
-  title.textContent = '⚙ Inputs';
-  Object.assign(title.style, {
-    color: 'rgba(180,140,255,0.6)', fontSize: '10px',
-    fontWeight: '600', marginBottom: '6px',
+  // Add a "copy all errors" row at the bottom
+  const copyAllRow = document.createElement('div');
+  Object.assign(copyAllRow.style, {
+    padding: '4px 10px', display: 'flex', justifyContent: 'flex-end',
   });
-  inputsDiv.appendChild(title);
-
-  const currentOverrides = getStoredOverrides();
-
-  for (const input of inputs) {
-    const row = document.createElement('div');
-    Object.assign(row.style, {
-      display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px',
-    });
-
-    const label = document.createElement('label');
-    label.textContent = input.title;
-    Object.assign(label.style, {
-      color: 'rgba(255,255,255,0.5)', fontSize: '10px', minWidth: '70px',
-      flexShrink: '0',
-    });
-    row.appendChild(label);
-
-    // Use current override value if available
-    const currentVal = currentOverrides.has(input.name) ? currentOverrides.get(input.name) : input.defaultValue;
-
-    if (input.type === 'number') {
-      const slider = document.createElement('input');
-      slider.type = 'range';
-      slider.min = String(input.min ?? 1);
-      slider.max = String(input.max ?? 200);
-      slider.step = String(input.step ?? 1);
-      slider.value = String(currentVal);
-      Object.assign(slider.style, { flex: '1', height: '16px', cursor: 'pointer' });
-
-      const numInput = document.createElement('input');
-      numInput.type = 'number';
-      numInput.value = String(currentVal);
-      numInput.min = slider.min;
-      numInput.max = slider.max;
-      numInput.step = slider.step;
-      Object.assign(numInput.style, {
-        width: '50px', padding: '2px 4px', border: '1px solid rgba(180,140,255,0.15)',
-        borderRadius: '3px', background: 'rgba(12,12,28,0.9)',
-        color: 'rgba(255,255,255,0.6)', fontSize: '10px', textAlign: 'center',
-        outline: 'none',
-      });
-
-      const updateNum = () => {
-        const val = parseFloat(slider.value);
-        numInput.value = String(val);
-        triggerRunWithOverrides(inputs);
-      };
-      const updateSlider = () => {
-        const val = parseFloat(numInput.value);
-        if (!isNaN(val) && val >= parseFloat(slider.min) && val <= parseFloat(slider.max)) {
-          slider.value = String(val);
-          triggerRunWithOverrides(inputs);
-        }
-      };
-
-      slider.oninput = updateNum;
-      numInput.onchange = updateSlider;
-
-      row.appendChild(slider);
-      row.appendChild(numInput);
-    } else if (input.type === 'boolean') {
-      const checkbox = document.createElement('input');
-      checkbox.type = 'checkbox';
-      checkbox.checked = currentVal === true;
-      Object.assign(checkbox.style, { cursor: 'pointer' });
-      checkbox.onchange = () => triggerRunWithOverrides(inputs);
-      row.appendChild(checkbox);
-    } else {
-      const textInput = document.createElement('input');
-      textInput.type = 'text';
-      textInput.value = String(currentVal);
-      Object.assign(textInput.style, {
-        flex: '1', padding: '2px 6px', border: '1px solid rgba(180,140,255,0.15)',
-        borderRadius: '3px', background: 'rgba(12,12,28,0.9)',
-        color: 'rgba(255,255,255,0.6)', fontSize: '10px', outline: 'none',
-      });
-      textInput.onchange = () => triggerRunWithOverrides(inputs);
-      row.appendChild(textInput);
-    }
-
-    inputsDiv.appendChild(row);
-  }
+  const copyAllBtn = document.createElement('button');
+  copyAllBtn.textContent = '📋 Copy All Errors';
+  Object.assign(copyAllBtn.style, {
+    padding: '2px 10px', border: '1px solid rgba(255,68,119,0.15)',
+    borderRadius: '3px', background: 'transparent',
+    color: 'rgba(255,68,119,0.4)', cursor: 'pointer', fontSize: '9px',
+  });
+  copyAllBtn.onclick = () => {
+    const allErrors = errors.join('\n');
+    navigator.clipboard.writeText(allErrors).then(() => {
+      copyAllBtn.textContent = '✓ Copied';
+      setTimeout(() => { copyAllBtn.textContent = '📋 Copy All Errors'; }, 1500);
+    }).catch(() => {});
+  };
+  copyAllRow.appendChild(copyAllBtn);
+  errorListDiv.appendChild(copyAllRow);
 }
 
-function triggerRunWithOverrides(inputs: InputDef[]): void {
-  if (!textarea || !onRunCallback) return;
-  const overrides = new Map<string, any>();
-  const container = inputsDiv!;
-  const rows = container.querySelectorAll('div[id]') as any;
-  // Read values from the rendered inputs — iterate the children
-  let childIdx = 1; // skip title
-  for (const input of inputs) {
-    const row = container.children[childIdx];
-    if (row) {
-      if (input.type === 'number') {
-        const numInput = row.querySelector('input[type="number"]') as HTMLInputElement;
-        if (numInput) overrides.set(input.name, parseFloat(numInput.value) || input.defaultValue);
-      } else if (input.type === 'boolean') {
-        const cb = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
-        if (cb) overrides.set(input.name, cb.checked);
-      } else {
-        const textInput = row.querySelector('input[type="text"]') as HTMLInputElement;
-        if (textInput) overrides.set(input.name, textInput.value);
-      }
-    }
-    childIdx++;
-  }
-  // Inject into source text before re-running
-  const src = textarea.value;
-  onRunCallback(src);
-  // Overrides will be picked up from the global state
-  // Store overrides for the next run
-  localStorage.setItem('oakscript_overrides', JSON.stringify(Object.fromEntries(overrides)));
+// Overrides are namespaced by indicator name — the old single global
+// "oakscript_overrides" key was shared across every indicator, so saved
+// settings from one indicator (e.g. a `showSignals`/`atrLen` override, both
+// very common input names) silently bled into any other indicator that
+// happened to declare an input with the same name. `scope` defaults to a
+// legacy shared bucket only for callers that don't know their indicator's
+// name yet.
+function overridesKey(scope?: string): string {
+  return scope ? `oakscript_overrides:${scope}` : 'oakscript_overrides';
 }
 
-export function getStoredOverrides(): Map<string, any> {
+export function getStoredOverrides(scope?: string): Map<string, any> {
   try {
-    const raw = localStorage.getItem('oakscript_overrides');
+    const raw = localStorage.getItem(overridesKey(scope));
     if (raw) return new Map(Object.entries(JSON.parse(raw)));
   } catch {}
   return new Map();
+}
+
+export function setStoredOverrides(overrides: Map<string, any>, scope?: string): void {
+  localStorage.setItem(overridesKey(scope), JSON.stringify(Object.fromEntries(overrides)));
 }
 
 function toggleDocs(): void {
@@ -877,10 +1120,42 @@ function renderDocs(): void {
   }
 }
 
-export function showResults(errors: string[], inputs: InputDef[]): void {
+export function showResults(errors: string[], _inputs: InputDef[]): void {
   showErrors(errors);
-  showInputs(inputs, (s) => { if (onRunCallback) onRunCallback(s); });
 }
 
 export function getDefaultScript(): string { return DEFAULT_SCRIPT; }
 export function isEditorVisible(): boolean { return editorVisible; }
+
+/**
+ * Register global keyboard shortcuts for when the editor has focus.
+ * Returns an unsubscribe function.
+ */
+export function registerEditorShortcuts(shortcuts: Array<{
+  key: string;
+  ctrl?: boolean;
+  alt?: boolean;
+  shift?: boolean;
+  handler: () => void;
+}>): () => void {
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!editorVisible || !textarea) return;
+    const active = document.activeElement;
+    if (active !== textarea && active !== editorPanel) return;
+    for (const sc of shortcuts) {
+      const ctrlMatch = sc.ctrl ? (e.ctrlKey || e.metaKey) : !(e.ctrlKey || e.metaKey);
+      const altMatch = sc.alt ? e.altKey : !e.altKey;
+      const shiftMatch = sc.shift ? e.shiftKey : !e.shiftKey;
+      const keyUpper = sc.key.toUpperCase();
+      const eKeyUpper = e.key.toUpperCase();
+      if ((eKeyUpper === keyUpper || e.key === sc.key) && ctrlMatch && altMatch && shiftMatch) {
+        e.preventDefault();
+        e.stopPropagation();
+        sc.handler();
+        return;
+      }
+    }
+  };
+  document.addEventListener('keydown', onKeyDown);
+  return () => document.removeEventListener('keydown', onKeyDown);
+}

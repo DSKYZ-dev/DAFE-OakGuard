@@ -14,7 +14,7 @@ const KEYWORDS = new Set([
   'input', 'label', 'table', 'hline', 'fill', 'bgcolor',
   'var', 'varip', 'if', 'else', 'for', 'while', 'in',
   'break', 'continue', 'return', 'true', 'false', 'nil',
-  'and', 'or', 'not', 'to', 'by',
+  'and', 'or', 'not', 'to', 'by', 'downto',
   'crossover', 'crossunder', 'barssince',
   'sma', 'ema', 'rsi', 'macd', 'highest', 'lowest',
   'cum', 'change', 'roc', 'stdev', 'variance', 'correlation',

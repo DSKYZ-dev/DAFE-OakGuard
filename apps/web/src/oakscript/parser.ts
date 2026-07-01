@@ -174,10 +174,27 @@ class Parser {
   }
 
   private parseBlock(): ASTNode[] {
-    // Support implicit single-statement block (PineScript style, no braces)
+    // Support implicit indentation-based blocks (PineScript style, no braces).
+    // The block's statements all share the column of the first one; a token
+    // at a shallower column ends the block. Without this, a brace-less body
+    // collapsed to just its first line, silently spilling every later
+    // statement out as unconditional top-level code (e.g. loop counter
+    // decrements ending up outside their own while loop — an infinite loop).
     if (!this.match('PUNCTUATION', '{')) {
-      const s = this.parseStatement();
-      return s ? [s] : [];
+      if (this.isEOF()) return [];
+      const bodyCol = this.peek().col;
+      const stmts: ASTNode[] = [];
+      const first = this.parseStatement();
+      if (first) stmts.push(first);
+      while (!this.isEOF()) {
+        const tok = this.peek();
+        if (tok.col < bodyCol) break;
+        if (tok.type === 'KEYWORD' && tok.value === 'else') break;
+        const s = this.parseStatement();
+        if (!s) break;
+        stmts.push(s);
+      }
+      return stmts;
     }
     this.advance(); // '{'
     const stmts: ASTNode[] = [];
@@ -200,13 +217,26 @@ class Parser {
   }
 
   private parseAssignment(): ASTNode {
-    let left = this.parseOr();
+    let left = this.parseTernary();
     if (this.match('OPERATOR', '=') || this.match('OPERATOR', ':=')) {
       const op = this.advance().value;
       const right = this.parseAssignment();
       return { type: 'Assignment', target: left, value: right } as unknown as ASTNode;
     }
     return left;
+  }
+
+  // Conditional: cond ? a : b  (right-associative, PineScript-style).
+  private parseTernary(): ASTNode {
+    const cond = this.parseOr();
+    if (this.match('OPERATOR', '?')) {
+      this.advance();
+      const consequent = this.parseTernary();
+      this.expect('OPERATOR', ':');
+      const alternate = this.parseTernary();
+      return { type: 'TernaryExpr', condition: cond, consequent, alternate } as ASTNode;
+    }
+    return cond;
   }
 
   private parseOr(): ASTNode {

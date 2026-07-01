@@ -22,6 +22,30 @@ function project(x: number, y: number, z: number): { x: number; y: number } {
   };
 }
 
+/** Deep blue → cyan → green → yellow → red thermal-camera palette keyed by 0..1 intensity. */
+function heatColor(t: number): string {
+  const stops: [number, number, number, number][] = [
+    [0.00, 20, 20, 90],
+    [0.25, 20, 140, 220],
+    [0.50, 40, 200, 90],
+    [0.75, 240, 210, 30],
+    [1.00, 255, 60, 20],
+  ];
+  const c = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [t0, r0, g0, b0] = stops[i];
+    const [t1, r1, g1, b1] = stops[i + 1];
+    if (c >= t0 && c <= t1) {
+      const f = (c - t0) / (t1 - t0 || 1);
+      const r = Math.round(r0 + (r1 - r0) * f);
+      const g = Math.round(g0 + (g1 - g0) * f);
+      const b = Math.round(b0 + (b1 - b0) * f);
+      return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+    }
+  }
+  return '#ff3c14';
+}
+
 function shade(hex: string, factor: number): string {
   // hex like #rrggbb → multiply rgb by factor
   const r = Math.round(parseInt(hex.slice(1, 3), 16) * factor);
@@ -88,8 +112,44 @@ function extrudedBox(
   ctx.stroke();
 }
 
+// ─── Graph-paper background (3D "graph" mode) ───────────────────────
+// Static (never self-animates) and anchored to the chart's view transform, so
+// it pans and scales WITH the chart under any zoom/pan/stretch/compress and
+// stays perfectly still when the chart is still.
+function drawGraph3DBackground(ctx: CanvasRenderingContext2D, view: ViewState): void {
+  const { width, height } = ctx.canvas;
+  ctx.fillStyle = '#070713';
+  ctx.fillRect(0, 0, width, height);
+
+  const sx = view.scrollX || 0;
+  const oy = view.offsetY || 0;
+  // Cell size tracks horizontal zoom (barSpacing) and vertical zoom (scaleY).
+  const colStep = Math.max(16, (view.barSpacing || 8) * 4);
+  const rowStep = Math.max(16, 40 * (view.scaleY || 1));
+  const wrap = (off: number, step: number) => ((off % step) + step) % step;
+
+  // Minor grid — anchored to scroll/offset so it moves with the chart.
+  ctx.lineWidth = 0.5;
+  ctx.strokeStyle = 'rgba(40,40,80,0.30)';
+  ctx.beginPath();
+  for (let x = -wrap(sx, colStep); x <= width; x += colStep) { ctx.moveTo(x, 0); ctx.lineTo(x, height); }
+  for (let y = -wrap(oy, rowStep); y <= height; y += rowStep) { ctx.moveTo(0, y); ctx.lineTo(width, y); }
+  ctx.stroke();
+
+  // Major grid every 4 cells — brighter, same anchoring.
+  const majX = colStep * 4, majY = rowStep * 4;
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(70,70,130,0.42)';
+  ctx.beginPath();
+  for (let x = -wrap(sx, majX); x <= width; x += majX) { ctx.moveTo(x, 0); ctx.lineTo(x, height); }
+  for (let y = -wrap(oy, majY); y <= height; y += majY) { ctx.moveTo(0, y); ctx.lineTo(width, y); }
+  ctx.stroke();
+}
+
 // ─── Atmospheric background ─────────────────────────────────────────
-function drawAtmosphere(ctx: CanvasRenderingContext2D, time: number): void {
+// `stars` gates the twinkling starfield so non-star modes (particles) keep the
+// nebula glow without the stars.
+function drawAtmosphere(ctx: CanvasRenderingContext2D, time: number, stars: boolean = true): void {
   const { width, height } = ctx.canvas;
 
   // Deep space gradient
@@ -101,21 +161,23 @@ function drawAtmosphere(ctx: CanvasRenderingContext2D, time: number): void {
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, width, height);
 
-  // Subtle starfield
+  // Subtle starfield (only in the dedicated "stars" background)
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  const starSeed = 12345;
-  const pseudo = (n: number) => {
-    const x = Math.sin(starSeed + n) * 10000;
-    return x - Math.floor(x);
-  };
-  for (let i = 0; i < 120; i++) {
-    const sx = pseudo(i * 2) * width;
-    const sy = pseudo(i * 3) * height;
-    const size = 0.4 + pseudo(i) * 1.2;
-    const twinkle = 0.35 + 0.35 * Math.sin(time * 0.0015 + i * 0.7);
-    ctx.fillStyle = `rgba(255,255,255,${twinkle})`;
-    ctx.beginPath(); ctx.arc(sx, sy, size, 0, Math.PI * 2); ctx.fill();
+  if (stars) {
+    const starSeed = 12345;
+    const pseudo = (n: number) => {
+      const x = Math.sin(starSeed + n) * 10000;
+      return x - Math.floor(x);
+    };
+    for (let i = 0; i < 120; i++) {
+      const sx = pseudo(i * 2) * width;
+      const sy = pseudo(i * 3) * height;
+      const size = 0.4 + pseudo(i) * 1.2;
+      const twinkle = 0.35 + 0.35 * Math.sin(time * 0.0015 + i * 0.7);
+      ctx.fillStyle = `rgba(255,255,255,${twinkle})`;
+      ctx.beginPath(); ctx.arc(sx, sy, size, 0, Math.PI * 2); ctx.fill();
+    }
   }
 
   // Drifting nebula wisps — richer colors
@@ -232,28 +294,31 @@ function drawVolumeBlock(
 
   switch (engine) {
     case 'Thermal': {
-      // Strong heat gradient with bright core
-      const alpha = 0.25 + ratio * 0.55;
+      // True heat-map palette (deep blue → cyan → green → yellow → red) keyed
+      // off ratio, instead of just tinting the bin's own bull/bear color —
+      // reads like an actual thermal camera rather than a glowing candle.
+      const heat = heatColor(ratio);
+      const alpha = 0.32 + ratio * 0.4;
       const g = ctx.createLinearGradient(fb.x, fb.y, bb.x, bb.y);
-      g.addColorStop(0, hexToRgba(baseCol, alpha));
-      g.addColorStop(0.5, hexToRgba(baseCol, alpha * 0.6));
-      g.addColorStop(1, hexToRgba(baseCol, alpha * 0.15));
+      g.addColorStop(0, hexToRgba(heat, alpha));
+      g.addColorStop(0.5, hexToRgba(heat, alpha * 0.55));
+      g.addColorStop(1, hexToRgba(heat, alpha * 0.12));
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(bt.x, bt.y); ctx.lineTo(bb.x, bb.y); ctx.closePath();
       ctx.fill();
-      // Bright hot core on front face
-      const cg = ctx.createRadialGradient(center.x, (fb.y + ft.y) / 2, 0, center.x, (fb.y + ft.y) / 2, Math.abs(rt.x - fb.x) * 1.2);
-      cg.addColorStop(0, hexToRgba('#ffffff', ratio * 0.55));
-      cg.addColorStop(0.4, hexToRgba(baseCol, ratio * 0.3));
-      cg.addColorStop(1, hexToRgba(baseCol, 0));
+      // Modest hot core — no longer a blown-out white flare
+      const cg = ctx.createRadialGradient(center.x, (fb.y + ft.y) / 2, 0, center.x, (fb.y + ft.y) / 2, Math.abs(rt.x - fb.x) * 1.1);
+      cg.addColorStop(0, hexToRgba('#ffffff', ratio * 0.22));
+      cg.addColorStop(0.5, hexToRgba(heat, ratio * 0.22));
+      cg.addColorStop(1, hexToRgba(heat, 0));
       ctx.fillStyle = cg;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
       ctx.fill();
       // Border
-      ctx.strokeStyle = hexToRgba(baseCol, 0.9);
-      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = hexToRgba(heat, 0.75);
+      ctx.lineWidth = 1.0;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
       ctx.stroke();
@@ -261,35 +326,37 @@ function drawVolumeBlock(
     }
 
     case 'Nebula': {
+      // Dropped the additive 'lighter' blend — with many stacked volume levels
+      // per bar it summed straight to blown-out white regardless of alpha.
+      // Plain alpha blending with a modest ceiling stays readable at any density.
       ctx.save();
-      ctx.globalCompositeOperation = 'lighter';
-      const alpha = 0.35 + ratio * 0.6;
-      const r = Math.max(4, Math.abs(rt.x - fb.x) * 1.8);
-      const g = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, r + ratio * 20);
-      g.addColorStop(0, hexToRgba('#ffffff', alpha * 0.8));
-      g.addColorStop(0.2, hexToRgba(baseCol, alpha));
-      g.addColorStop(0.6, hexToRgba(baseCol, alpha * 0.45));
+      const alpha = 0.14 + ratio * 0.22;
+      const r = Math.max(3, Math.abs(rt.x - fb.x) * 1.0);
+      const g = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, r + ratio * 8);
+      g.addColorStop(0, hexToRgba('#ffffff', alpha * 0.35));
+      g.addColorStop(0.3, hexToRgba(baseCol, alpha));
+      g.addColorStop(0.65, hexToRgba(baseCol, alpha * 0.3));
       g.addColorStop(1, hexToRgba(baseCol, 0));
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(center.x, center.y, r + ratio * 20, 0, Math.PI * 2);
+      ctx.arc(center.x, center.y, r + ratio * 8, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
       break;
     }
 
     case 'Quantum': {
-      ctx.strokeStyle = '#00f0ff';
-      ctx.lineWidth = 2.4;
-      ctx.shadowBlur = 14;
-      ctx.shadowColor = 'rgba(0,240,255,0.55)';
+      ctx.strokeStyle = 'rgba(0,240,255,0.7)';
+      ctx.lineWidth = 1.6;
+      ctx.shadowBlur = 5;
+      ctx.shadowColor = 'rgba(0,240,255,0.3)';
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
       ctx.stroke();
       // Secondary pulse line
-      ctx.strokeStyle = 'rgba(0,240,255,0.45)';
-      ctx.lineWidth = 1;
-      ctx.shadowBlur = 6;
+      ctx.strokeStyle = 'rgba(0,240,255,0.25)';
+      ctx.lineWidth = 0.8;
+      ctx.shadowBlur = 2;
       ctx.beginPath();
       ctx.moveTo(ft.x, ft.y); ctx.lineTo(bt.x, bt.y); ctx.lineTo(brt.x, brt.y); ctx.lineTo(rt.x, rt.y);
       ctx.moveTo(bb.x, bb.y); ctx.lineTo(brb.x, brb.y);
@@ -313,45 +380,49 @@ function drawVolumeBlock(
     }
 
     case 'DNA': {
-      const alpha = 0.85;
-      const turns = 3.0;
-      ctx.lineCap = 'round';
-      for (let s = 0; s < 2; s++) {
-        ctx.strokeStyle = hexToRgba(baseCol, alpha);
-        ctx.lineWidth = 2.5;
-        ctx.shadowBlur = 6;
-        ctx.shadowColor = hexToRgba(baseCol, 0.35);
-        ctx.beginPath();
-        for (let step = 0; step <= 12; step++) {
-          const t = step / 12;
-          const ang = (t * turns + s * 0.5 + i * 0.1) * Math.PI * 2;
-          const off = Math.sin(ang) * (bot - top) * 0.4;
-          const px = fb.x + (bb.x - fb.x) * t;
-          const py = (fb.y + ft.y) / 2 + off;
-          if (step === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-        }
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-      }
-      // Bright rungs
-      ctx.strokeStyle = hexToRgba('#ffffff', 0.5);
-      ctx.lineWidth = 1.5;
-      for (let step = 0; step <= 5; step++) {
-        const t = step / 5;
-        const ang = (t * turns + i * 0.1) * Math.PI * 2;
-        const off = Math.sin(ang) * (bot - top) * 0.4;
+      // Real double helix: two strands 180° out of phase (mirror images of
+      // each other) so they visibly cross, plus base-pair rungs between them
+      // colored by which strand is "forward" at that point — reads like an
+      // actual DNA render rather than one wavy line traced twice.
+      const turns = 2.2;
+      const amp = (bot - top) * 0.42;
+      const midY = (fb.y + ft.y) / 2;
+      const steps = 16;
+      const strandPts: { x: number; y: number }[][] = [[], []];
+      for (let step = 0; step <= steps; step++) {
+        const t = step / steps;
         const px = fb.x + (bb.x - fb.x) * t;
-        const pyMid = (fb.y + ft.y) / 2 + off;
+        const ang = (t * turns + i * 0.15) * Math.PI * 2;
+        strandPts[0].push({ x: px, y: midY + Math.sin(ang) * amp });
+        strandPts[1].push({ x: px, y: midY + Math.sin(ang + Math.PI) * amp });
+      }
+      ctx.lineCap = 'round';
+      const strandCols = [baseCol, '#ffffff'];
+      for (let s = 0; s < 2; s++) {
+        ctx.strokeStyle = hexToRgba(strandCols[s], 0.85);
+        ctx.lineWidth = 2.2;
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = hexToRgba(strandCols[s], 0.3);
         ctx.beginPath();
-        ctx.moveTo(px, pyMid - (bot - top) * 0.2);
-        ctx.lineTo(px, pyMid + (bot - top) * 0.2);
+        strandPts[s].forEach((p, k) => k === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+      // Base-pair rungs — only where strands are far enough apart to read as rungs
+      const rungStep = Math.max(1, Math.floor(steps / 8));
+      for (let step = 0; step <= steps; step += rungStep) {
+        const p0 = strandPts[0][step], p1 = strandPts[1][step];
+        if (Math.abs(p0.y - p1.y) < amp * 0.3) continue;
+        ctx.strokeStyle = hexToRgba(baseCol, 0.4);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
         ctx.stroke();
       }
       break;
     }
 
     case 'Constellation': {
-      const alpha = 0.95;
       const nodes = [fb, ft, rb, rt, bb, bt, brb, brt];
       ctx.fillStyle = hexToRgba('#ffffff', 0.9);
       for (const n of nodes) {
@@ -359,14 +430,20 @@ function drawVolumeBlock(
         ctx.arc(n.x, n.y, 2.2 + ratio * 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
-      ctx.strokeStyle = hexToRgba(baseCol, alpha);
-      ctx.lineWidth = 1.2;
+      // All connecting lines white — the front/back box outlines carry no
+      // dominance signal, only the four depth-axis (front→back) lines do.
+      ctx.strokeStyle = hexToRgba('#ffffff', 0.55);
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
+      ctx.moveTo(bt.x, bt.y); ctx.lineTo(bb.x, bb.y); ctx.lineTo(brb.x, brb.y); ctx.lineTo(brt.x, brt.y); ctx.closePath();
+      ctx.stroke();
+      // Depth (horizontal, front-to-back) lines carry the buy/sell dominance color
+      ctx.strokeStyle = hexToRgba(baseCol, 0.95);
+      ctx.lineWidth = 1.4;
       ctx.shadowBlur = 6;
       ctx.shadowColor = hexToRgba(baseCol, 0.4);
       ctx.beginPath();
-      // Full box edges
-      ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
-      ctx.moveTo(bt.x, bt.y); ctx.lineTo(bb.x, bb.y); ctx.lineTo(brb.x, brb.y); ctx.lineTo(brt.x, brt.y); ctx.closePath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(bb.x, bb.y);
       ctx.moveTo(ft.x, ft.y); ctx.lineTo(bt.x, bt.y);
       ctx.moveTo(rb.x, rb.y); ctx.lineTo(brb.x, brb.y);
@@ -511,6 +588,7 @@ export interface Scene3DOptions {
   time: number;
   profileWidth?: number;
   vpComputed?: VPComputed;
+  bgViz?: 'particles' | 'stars' | 'graph' | 'plain';
 }
 
 export function draw3DScene(
@@ -531,9 +609,20 @@ export function draw3DScene(
   const maxP = Math.max(...all);
   const pRange = (maxP - minP) || 1;
 
-  // Atmosphere + floor
-  drawAtmosphere(ctx, opts.time);
-  drawFloorGrid(ctx, bars, view, minP, pRange);
+  // Atmosphere + floor — respect bgViz setting.
+  //   plain     → solid dark, no decoration
+  //   graph     → graph-paper background (no stars)
+  //   particles → nebula glow only (no stars; GPU particles drawn on top)
+  //   stars     → full atmosphere WITH starfield
+  if (opts.bgViz === 'plain') {
+    ctx.fillStyle = '#0a0a18';
+    ctx.fillRect(0, 0, width, height);
+  } else if (opts.bgViz === 'graph') {
+    drawGraph3DBackground(ctx, view);
+  } else {
+    drawAtmosphere(ctx, opts.time, opts.bgViz === 'stars' || opts.bgViz === undefined);
+  }
+  if (opts.bgViz !== 'plain') drawFloorGrid(ctx, bars, view, minP, pRange);
 
   const bs = view.barSpacing;
   const bw = Math.max(1.2, bs * 0.72);

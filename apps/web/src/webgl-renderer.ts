@@ -1,6 +1,10 @@
 import * as THREE from 'three';
 import type { BaseBar } from '@dafe/types';
 import type { PerBarVolume } from './data-generator';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
   type ViewState, chartRight, visibleBarCount, getVisibleRange, barX,
   DEFAULT_BAR_SPACING, TOP_FRAC, BOT_FRAC,
@@ -13,6 +17,9 @@ export class ThreeDRenderer {
   private barGroup: THREE.Group;
   private gridGroup: THREE.Group;
   private particleGroup: THREE.Group;
+  private composer: EffectComposer;
+  private bloomPass: UnrealBloomPass;
+  private postEnabled = true;
   private width = 0;
   private height = 0;
   private view: ViewState = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
@@ -94,6 +101,16 @@ export class ThreeDRenderer {
     this.scene.add(this.gridGroup);
     this.scene.add(this.barGroup);
     this.scene.add(this.particleGroup);
+
+    // Post-processing — bloom for glow effects
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(800, 600), 0.4, 0.3, 0.1);
+    this.bloomPass.threshold = 0.1;
+    this.bloomPass.strength = 0.5;
+    this.bloomPass.radius = 0.8;
+    this.composer.addPass(this.bloomPass);
+    this.composer.addPass(new OutputPass());
 
     // Depth fog for atmospheric depth
     this.scene.fog = new THREE.FogExp2(0x0a0a18, 0.0008);
@@ -314,7 +331,11 @@ export class ThreeDRenderer {
       this.needsRebuild = false;
       this.rebuild();
     }
-    this.renderer.render(this.scene, this.camera);
+    if (this.postEnabled) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   // ── Resize (frustum is set in rebuild() with chart-area bounds) ──
@@ -322,11 +343,21 @@ export class ThreeDRenderer {
     this.width = width;
     this.height = height;
     this.renderer.setSize(width, height);
+    this.composer.setSize(width, height);
     this.needsRebuild = true;
+  }
+
+  togglePostProcessing(enabled: boolean): void {
+    this.postEnabled = enabled;
+  }
+
+  setBloomStrength(s: number): void {
+    this.bloomPass.strength = Math.max(0, Math.min(3, s));
   }
 
   // ── Cleanup ──
   dispose(): void {
+    this.composer.dispose();
     this.renderer.dispose();
     this.scene.traverse((obj) => {
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {

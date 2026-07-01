@@ -8,6 +8,10 @@ import type { OakPlot3D } from './oakscript/runtime';
 const ID = 'three-lower-scene';
 let _ok = false;
 let _rafId = 0;
+// Cached scene resources — created once, reused across show3D calls
+let _renderer: THREE.WebGLRenderer | null = null;
+let _scene: THREE.Scene | null = null;
+let _camera: THREE.PerspectiveCamera | null = null;
 
 function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera; canvas: HTMLCanvasElement } | null {
   const h = (window as any).__dafeLowerHeight || 220;
@@ -20,21 +24,29 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     const sec = document.getElementById('secondary-canvas');
     if (container && sec) { sec.style.display = 'none'; container.insertBefore(c, sec); }
   }
+  // If we already have cached resources, just resize and return
+  if (_renderer && _scene && _camera) {
+    const pw = c.parentElement?.clientWidth || 1200;
+    _renderer.setSize(pw, h, false);
+    _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    _camera.aspect = pw / h; _camera.updateProjectionMatrix();
+    return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
+  }
   try {
-    const renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true });
-    renderer.setSize(c.parentElement?.clientWidth || 1200, h, false);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    renderer.setClearColor(0x060612);
-    const scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0x404060, 1.0));
+    _renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true });
+    _renderer.setSize(c.parentElement?.clientWidth || 1200, h, false);
+    _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    _renderer.setClearColor(0x060612);
+    _scene = new THREE.Scene();
+    _scene.add(new THREE.AmbientLight(0x404060, 1.0));
     const d = new THREE.DirectionalLight(0xffffff, 0.7);
-    d.position.set(3, 6, 5); scene.add(d);
-    scene.add(new THREE.GridHelper(16, 12, 0x222244, 0x111122));
-    const camera = new THREE.PerspectiveCamera(35, (c.parentElement?.clientWidth || 1200) / h, 0.1, 100);
-    camera.position.set(0, 3.5, 10);
-    camera.lookAt(0, 1.8, 0);
-    enableOrbit(c, camera);
-    return { renderer, scene, camera, canvas: c };
+    d.position.set(3, 6, 5); _scene.add(d);
+    _scene.add(new THREE.GridHelper(16, 12, 0x222244, 0x111122));
+    _camera = new THREE.PerspectiveCamera(35, (c.parentElement?.clientWidth || 1200) / h, 0.1, 100);
+    _camera.position.set(0, 3.5, 10);
+    _camera.lookAt(0, 1.8, 0);
+    enableOrbit(c, _camera);
+    return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   } catch { return null; }
 }
 
@@ -44,12 +56,13 @@ export function show3D(plots: OakPlot3D[]): void {
   if (!r) return;
   _ok = true;
 
-  // Clear old meshes
-  while (r.scene.children.length > 3) {
-    const ch = r.scene.children[r.scene.children.length - 1];
-    if (ch instanceof THREE.Mesh || ch instanceof THREE.Group) { dispose(ch); r.scene.remove(ch); }
-    else break;
+  // Clear old geometry — works for Mesh, Group, Line, LineSegments, etc.
+  const toRemove: THREE.Object3D[] = [];
+  for (const child of r.scene.children) {
+    if (child instanceof THREE.AmbientLight || child instanceof THREE.DirectionalLight || child instanceof THREE.GridHelper) continue;
+    toRemove.push(child);
   }
+  for (const child of toRemove) { dispose(child); r.scene.remove(child); }
 
   const allVals = plots.flatMap(p => p.series.filter(v => isFinite(v) && !isNaN(v)));
   if (allVals.length < 2) return;
@@ -126,6 +139,158 @@ export function show3D(plots: OakPlot3D[]): void {
         group.add(sphere);
       }
       r.scene.add(group);
+    } else if (p.style === 'helix') {
+      const count = Math.min(vals.length, 100);
+      const twists = 3, radius = 0.8;
+      const s1: THREE.Vector3[] = [], s2: THREE.Vector3[] = [];
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        const x = (i / (count - 1)) * 10 - 5;
+        const y = ((vals[vi] - min) / range) * 4;
+        const angle = (i / count) * Math.PI * 2 * twists;
+        s1.push(new THREE.Vector3(x + Math.cos(angle) * radius, y + Math.sin(angle) * radius, z));
+        s2.push(new THREE.Vector3(x + Math.cos(angle + Math.PI) * radius, y + Math.sin(angle + Math.PI) * radius, z));
+      }
+      const c1 = new THREE.CatmullRomCurve3(s1), c2 = new THREE.CatmullRomCurve3(s2);
+      r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(c1, count, 0.05, 6, false), new THREE.MeshPhongMaterial({ color: 0x22cc88, emissive: 0x004422, shininess: 70 })));
+      r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(c2, count, 0.05, 6, false), new THREE.MeshPhongMaterial({ color: 0xff4477, emissive: 0x220011, shininess: 70 })));
+      const center: THREE.Vector3[] = [];
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        center.push(new THREE.Vector3((i / (count - 1)) * 10 - 5, ((vals[vi] - min) / range) * 4, z));
+      }
+      const cc = new THREE.CatmullRomCurve3(center);
+      r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(cc, count, 0.02, 4, false), new THREE.MeshPhongMaterial({ color: 0xffffff, emissive: 0x4444aa, transparent: true, opacity: 0.4 })));
+    } else if (p.style === 'vortex') {
+      const count = Math.min(vals.length, 100);
+      const spirals = 6, maxR = 2.0;
+      for (let s = 0; s < spirals; s++) {
+        const pts: THREE.Vector3[] = [];
+        const phase = (s / spirals) * Math.PI * 2;
+        const hue = (s / spirals) * 0.8;
+        for (let i = 0; i < count; i++) {
+          const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+          const x = (i / (count - 1)) * 10 - 5;
+          const y = ((vals[vi] - min) / range) * 4;
+          const pct = i / count;
+          const r = maxR * (1 - pct * 0.85);
+          const angle = pct * Math.PI * 4 + phase;
+          pts.push(new THREE.Vector3(x + Math.cos(angle) * r, y + Math.sin(angle) * r, z));
+        }
+        if (pts.length < 2) continue;
+        const curve = new THREE.CatmullRomCurve3(pts);
+        const col = new THREE.Color().setHSL(hue, 0.7, 0.5);
+        r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve, count, 0.03, 5, false), new THREE.MeshPhongMaterial({ color: col, emissive: col.clone().multiplyScalar(0.3), transparent: true, opacity: 0.55 })));
+      }
+    } else if (p.style === 'manifold') {
+      const count = Math.min(vals.length, 60);
+      const longCount = 8, manifoldWidth = 1.2;
+      for (let l = 0; l < longCount; l++) {
+        const pts: THREE.Vector3[] = [];
+        const lFrac = l / (longCount - 1);
+        for (let i = 0; i < count; i++) {
+          const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+          const x = (i / (count - 1)) * 10 - 5;
+          const y = ((vals[vi] - min) / range) * 4;
+          pts.push(new THREE.Vector3(x + (lFrac - 0.5) * manifoldWidth, y * (0.6 + lFrac * 0.3), z + (lFrac - 0.5) * 0.8));
+        }
+        const curve = new THREE.CatmullRomCurve3(pts);
+        const curvePts = curve.getPoints(count);
+        const col = new THREE.Color().setHSL(0.7 + lFrac * 0.15, 0.6, 0.4 + lFrac * 0.3);
+        r.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(curvePts), new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.6 })));
+      }
+      const latStep = Math.max(1, Math.floor(count / 20));
+      for (let i = 0; i < count; i += latStep) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        const x = (i / (count - 1)) * 10 - 5;
+        const y = ((vals[vi] - min) / range) * 4;
+        const pts: THREE.Vector3[] = [];
+        for (let l = 0; l < longCount; l++) {
+          const lFrac = l / (longCount - 1);
+          pts.push(new THREE.Vector3(x + (lFrac - 0.5) * manifoldWidth, y * (0.6 + lFrac * 0.3), z + (lFrac - 0.5) * 0.8));
+        }
+        r.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.25 })));
+      }
+    } else if (p.style === 'nebula') {
+      const count = Math.min(vals.length, 60);
+      const perBar = 8;
+      const group = new THREE.Group();
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        const x = (i / (count - 1)) * 10 - 5;
+        const y = ((vals[vi] - min) / range) * 4;
+        const hue = 0.65 - ((vals[vi] - min) / range) * 0.65;
+        for (let p = 0; p < perBar; p++) {
+          const s = new THREE.Mesh(new THREE.SphereGeometry(0.015 + Math.random() * 0.05, 4, 3),
+            new THREE.MeshPhongMaterial({ color: new THREE.Color().setHSL(hue + (Math.random() - 0.5) * 0.08, 0.6, 0.3 + Math.random() * 0.3), emissive: new THREE.Color().setHSL(hue, 0.3, 0.06), transparent: true, opacity: 0.4 + Math.random() * 0.4 }));
+          s.position.set(x + (Math.random() - 0.5) * 0.6, y + (Math.random() - 0.5) * 0.6, z + (Math.random() - 0.5) * 0.6);
+          group.add(s);
+        }
+      }
+      r.scene.add(group);
+    } else if (p.style === 'constellation') {
+      const count = Math.min(vals.length, 80);
+      const positions: THREE.Vector3[] = [];
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        positions.push(new THREE.Vector3((i / (count - 1)) * 10 - 5, ((vals[vi] - min) / range) * 4, z));
+      }
+      const pairs: THREE.Vector3[] = [];
+      for (let i = 0; i < count; i++) for (let j = i + 1; j < Math.min(i + 4, count); j++) {
+        if (positions[i].distanceTo(positions[j]) < 1.5) pairs.push(positions[i], positions[j]);
+      }
+      if (pairs.length) r.scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pairs), new THREE.LineBasicMaterial({ color: 0x4488ff, transparent: true, opacity: 0.12 })));
+      const starGroup = new THREE.Group();
+      for (let i = 0; i < count; i++) {
+        const star = new THREE.Mesh(new THREE.SphereGeometry(0.04 + Math.random() * 0.06, 5, 4),
+          new THREE.MeshPhongMaterial({ color: 0xb48cff, emissive: 0x8844ff, emissiveIntensity: 0.3 + Math.random() * 0.5 }));
+        star.position.copy(positions[i]);
+        starGroup.add(star);
+      }
+      r.scene.add(starGroup);
+    } else if (p.style === 'torus') {
+      const count = Math.min(vals.length, 70);
+      const maxV = Math.max(...vals, 1);
+      const group = new THREE.Group();
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        const x = (i / (count - 1)) * 10 - 5;
+        const y = ((vals[vi] - min) / range) * 4;
+        const volScale = Math.abs(vals[vi]) / maxV;
+        const torus = new THREE.Mesh(new THREE.TorusGeometry(0.2 + volScale * 0.4, 0.02 + volScale * 0.03, 6, 8),
+          new THREE.MeshPhongMaterial({ color: new THREE.Color(p.color), emissive: new THREE.Color(p.color).multiplyScalar(0.2), transparent: true, opacity: 0.45 + volScale * 0.3 }));
+        torus.position.set(x, y, z);
+        torus.rotation.x = Math.PI / 2;
+        group.add(torus);
+      }
+      r.scene.add(group);
+      const centerPts: THREE.Vector3[] = [];
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        centerPts.push(new THREE.Vector3((i / (count - 1)) * 10 - 5, ((vals[vi] - min) / range) * 4, z));
+      }
+      r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(centerPts), count, 0.025, 6, false),
+        new THREE.MeshPhongMaterial({ color: 0xb48cff, emissive: 0x442288, transparent: true, opacity: 0.25 })));
+    } else if (p.style === 'trail') {
+      const count = Math.min(vals.length, 80);
+      const upper: THREE.Vector3[] = [], lower: THREE.Vector3[] = [];
+      const maxV = Math.max(...vals, 1);
+      for (let i = 0; i < count; i++) {
+        const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
+        const x = (i / (count - 1)) * 10 - 5;
+        const y = ((vals[vi] - min) / range) * 4;
+        const w = 0.05 + (Math.abs(vals[vi]) / maxV) * 0.25;
+        upper.push(new THREE.Vector3(x, y + w, z));
+        lower.push(new THREE.Vector3(x, y - w, z));
+      }
+      for (let i = 0; i < count - 1; i++) {
+        const verts = [upper[i].x, upper[i].y, upper[i].z, upper[i + 1].x, upper[i + 1].y, upper[i + 1].z, lower[i + 1].x, lower[i + 1].y, lower[i + 1].z, lower[i].x, lower[i].y, lower[i].z];
+        const idx = [0, 1, 2, 0, 2, 3];
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+        g.setIndex(idx); g.computeVertexNormals();
+        r.scene.add(new THREE.Mesh(g, new THREE.MeshPhongMaterial({ color: new THREE.Color(p.color), transparent: true, opacity: 0.4 + (Math.abs(vals[Math.min(i, vals.length - 1)]) / maxV) * 0.2, side: THREE.DoubleSide, shininess: 30 })));
+      }
     }
   }
 
@@ -145,13 +310,15 @@ export function show3D(plots: OakPlot3D[]): void {
 }
 
 function dispose(obj: THREE.Object3D): void {
-  if (obj instanceof THREE.Mesh) { obj.geometry?.dispose(); const m = obj.material; if (Array.isArray(m)) m.forEach(x => x.dispose()); else m?.dispose(); }
+  if (obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.LineSegments) { obj.geometry?.dispose(); const m = obj.material; if (Array.isArray(m)) m.forEach(x => x.dispose()); else m?.dispose(); }
   if (obj instanceof THREE.Group) obj.children.forEach(c => dispose(c));
 }
 
 export function hide3D(): void {
   _ok = false;
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+  if (_renderer) { _renderer.dispose(); _renderer = null; }
+  _scene = null; _camera = null;
   const c = document.getElementById(ID); if (c) { c.onpointerdown = null; c.onpointermove = null; c.onpointerup = null; c.onwheel = null; c.remove(); }
   const sec = document.getElementById('secondary-canvas');
   if (sec) sec.style.display = '';

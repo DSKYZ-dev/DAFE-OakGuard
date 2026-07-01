@@ -1,7 +1,7 @@
 export type ASTNode =
   | Program | VarDecl | Assignment | IfStatement | ForStatement | WhileStatement
   | BreakStmt | ContinueStmt | ReturnStmt | ExpressionStmt
-  | BinaryExpr | UnaryExpr | CallExpr | IndexExpr | MemberExpr
+  | BinaryExpr | UnaryExpr | TernaryExpr | CallExpr | IndexExpr | MemberExpr
   | Identifier | NumberLiteral | StringLiteral | BooleanLiteral | ArrayLiteral | NilLiteral;
 
 export interface Program { type: 'Program'; statements: ASTNode[]; }
@@ -17,6 +17,7 @@ export interface ExpressionStmt { type: 'ExpressionStmt'; expression: ASTNode; }
 
 export interface BinaryExpr { type: 'BinaryExpr'; left: ASTNode; op: string; right: ASTNode; }
 export interface UnaryExpr { type: 'UnaryExpr'; op: string; argument: ASTNode; }
+export interface TernaryExpr { type: 'TernaryExpr'; condition: ASTNode; consequent: ASTNode; alternate: ASTNode; }
 export interface CallExpr { type: 'CallExpr'; callee: ASTNode; args: ASTNode[]; }
 export interface IndexExpr { type: 'IndexExpr'; object: ASTNode; index: ASTNode; }
 export interface MemberExpr { type: 'MemberExpr'; object: ASTNode; property: string; }

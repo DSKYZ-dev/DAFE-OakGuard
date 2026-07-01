@@ -13,6 +13,9 @@ __pycache__/
 # Backend
 backend/settings.json
 
+# Logs
+*.log
+
 # Model files (too large for git)
 models/*.gguf
 models/*.bin
@@ -20,3 +23,10 @@ models/*.bin
 # Vite cache
 .vite/
 .vite-temp/
+
+# Local-only Claude Code permissions (per-machine, not shared)
+.claude/settings.local.json
+
+# Nested scaffold repo checked out inside the project root — has its own .git,
+# never intended to be tracked as part of this repo's history.
+/DAFECharts/

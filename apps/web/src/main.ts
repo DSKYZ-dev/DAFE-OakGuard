@@ -19,19 +19,47 @@ import {
   type ViewState,
 } from './chart-renderer';
 import {
-  createEditor, runScript, getCurrentResult, showErrors, showResults, toggleEditor, isEditorVisible, getStoredOverrides,
-  getIndicators, type OakPlot,
+  createEditor, toggleEditor, isEditorVisible,
+  getIndicators, getCategories, type OakPlot,
+  setSendErrorsCallback, setAgentActionCallback, setAgentChatCallback,
+  setToggleVisibilityCallback, registerEditorShortcuts, getDefaultScript,
 } from './oakscript';
 import * as draw from './drawings';
 import type { DrawTool } from './drawings';
-import { draw3DScene } from './iso3d';
-import { TradeAdvisorAgent, VisualAdapter, WebSearch } from './trade-advisor';
+import {
+  TradeAdvisorAgent, VisualAdapter, WebSearch,
+  initBridge,
+  agentDiagnoseErrors, agentGenerateIndicatorPhased,
+  agentBrainstormIndicator, agentAnalyzeMetrics,
+  extractCodeBlocks, applyAgentCode, validateCurrentCode,
+} from './trade-advisor';
+import type { ChartSnapshot, IndicatorMetrics } from './trade-advisor/visual-adapter';
+import { prefetchModelProfile } from './trade-advisor/token-optimizer';
 import { AdvisorVoice } from './trade-advisor/voice';
 import { LiveDataStream } from './data-stream';
+import { HybridDataEngine } from './data-stream/hybrid-engine';
 import { getMarketStatus, marketStatusLabel } from './market-hours';
-import { render3DViz, toggle3DViz, disposeViz, isViz3DActive } from './three-indicators';
+import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene } from './three-indicators';
 import { show3D, hide3D } from './three-lower-pane';
+import { draw3DScene } from './iso3d';
 import type { OakPlot3D } from './oakscript/runtime';
+import {
+  initParticleSystem, updateGPUParticles, drawCPUParticles,
+  resizeParticleField, setParticleCount, setParticleMode, setParticleIntensity,
+} from './gpu-particles';
+import { PerfGovernor, recommendInitialTier, tierParticleCount, type PerfTier } from './perf-governor';
+import { createInputsPanel } from './age-inputs-panel';
+import { createDashboard } from './dashboard-widget';
+import { registerWidget, initWidgetMenu } from './widget-registry';
+import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
+import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
+import { detectCurrency } from './trading/currency';
+import type { OrderType } from './trading/broker-port';
+import {
+  addIndicator, removeIndicator, getActiveInstances,
+  runAllInstances, getCombinedPlots, hasActiveIndicators,
+  setInstanceOverrides, setInstanceEnabled, type IndicatorInstance,
+} from './indicator-manager';
 
 // ─── URL-based hard reset ──────────────────────────────────────────
 if (window.location.search.includes('reset=1')) {
@@ -39,10 +67,12 @@ if (window.location.search.includes('reset=1')) {
   keys.forEach(k => localStorage.removeItem(k));
   window.location.replace(window.location.pathname);
 }
-// One-time purge of stale conversation memory that may contain old image references
-if (!localStorage.getItem('dafe_v2_clean')) {
-  try { indexedDB.deleteDatabase('dafe-trade-advisor'); } catch {}
-  localStorage.setItem('dafe_v2_clean', '1');
+// Clear stale saved source on version bump
+const SAVED_SOURCE_VERSION = 'v2';
+if (localStorage.getItem('oakscript_source_version') !== SAVED_SOURCE_VERSION) {
+  localStorage.removeItem('oakscript_source');
+  localStorage.removeItem('oakscript_persist');
+  localStorage.setItem('oakscript_source_version', SAVED_SOURCE_VERSION);
 }
 
 // ─── State ─────────────────────────────────────────────────────────
@@ -62,16 +92,62 @@ let showTooltip = false;
 let tooltipTimer: ReturnType<typeof setTimeout> | null = null;
 let time = 0;
 let vpiEnabled = true;
-let perfMode: 'low' | 'medium' | 'high' | 'ultra' = 'high';
+// Start from a device-appropriate tier; the governor adapts it live.
+let perfMode: PerfTier = recommendInitialTier();
+let perfAuto = true;                                  // auto-adapt unless user pins a tier
 let bgViz: 'particles' | 'stars' | 'graph' | 'plain' = 'stars';
+
+// Adaptive performance governor — measures FPS and retunes the quality tier.
+// The GPU particle buffer is allocated at full size (cheap), so the governor
+// can range the active count freely from low up to ultra.
+const perfGovernor = new PerfGovernor({
+  targetFps: 50,
+  onChange: (tier, reason) => {
+    perfMode = tier;
+    setPerfMode(tier);
+    setParticleCount(tierParticleCount(tier));
+    const sel = document.getElementById('perf-select') as HTMLSelectElement | null;
+    if (sel && perfAuto) sel.title = `Auto: ${tier} (${reason})`;
+    console.log(`[DAFE] perf auto → ${tier} (${reason})`);
+  },
+}, perfMode);
 
 // ─── Live Tick Simulator ──────────────────────────────────────────
 let liveTicksEnabled = false;
 let liveTickTimer: ReturnType<typeof setInterval> | null = null;
+// Wall-clock time of the last bar roll — bars advance on real elapsed time, NOT
+// on (now - lastBarTimestamp), which floods flat bars when the feed is delayed.
+let lastBarRollTime = 0;
+
+// Data source mode. 'hybrid' = correction-anchored blend of Massive (paid,
+// sparse) + yfinance (free, frequent) + synthetic fill, for near-live accuracy
+// at a fraction of the API cost.
+let dataSourceMode: 'massive' | 'yahoo' | 'hybrid' = 'yahoo';
+const hybridEngine = new HybridDataEngine({
+  baseUrl: (window as any).__DAFE_BACKEND_URL || 'http://localhost:8788',
+});
+// Tell the user when the blend adapts (e.g. yfinance doesn't cover the symbol,
+// so we run on the paid stream alone at a reduced request rate).
+hybridEngine.onCoverageChange = (st) => {
+  if (st.mode === 'paid-only') {
+    appendAdvisorMessage('system',
+      `${currentSymbol}: not covered by Yahoo — switched to paid stream only (reduced ~20s polling + synthetic fill).`);
+  } else if (st.mode === 'blend') {
+    appendAdvisorMessage('system', `${currentSymbol}: Yahoo coverage restored — full hybrid blend resumed.`);
+  } else {
+    appendAdvisorMessage('system', `${currentSymbol}: no live provider — pure synthetic mode.`);
+  }
+};
 
 const TIMEFRAMES_SEC: Record<Timeframe, number> = {
+  '1s': 1, '5s': 5, '10s': 10, '30s': 30,
   '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800,
 };
+
+// Sub-minute bars only exist on a real second-resolution feed — populated from
+// /api/market-data/providers once at load, used to grey out the tf-select
+// options the current data source can't actually serve.
+let supportedSubMinuteTfs: Set<string> = new Set();
 
 function startLiveTicks(): void {
   if (liveTickTimer) return;
@@ -81,6 +157,16 @@ function startLiveTicks(): void {
     return;
   }
   liveTicksEnabled = true;
+
+  // Hybrid mode: calibrate + start the correction-anchored engine so the
+  // synthesized ticks track real prices (corrected by free/paid quotes).
+  const useHybrid = dataSourceMode === 'hybrid' && transformed.length > 1;
+  if (useHybrid) {
+    hybridEngine.calibrate(transformed, TIMEFRAMES_SEC[timeframe]);
+    hybridEngine.start(currentSymbol, transformed[transformed.length - 1].close);
+  }
+  lastBarRollTime = Date.now();
+
   const tickMs = 300;
   liveTickTimer = setInterval(() => {
     if (transformed.length === 0) return;
@@ -91,27 +177,103 @@ function startLiveTicks(): void {
     const last = transformed[transformed.length - 1];
     const now = Date.now();
     const intervalMs = TIMEFRAMES_SEC[timeframe] * 1000;
-    if (now - last.timestamp >= intervalMs) {
+
+    // Roll a new bar on REAL elapsed time (one per interval). Using wall-clock
+    // here — not (now - last.timestamp) — prevents the flat-bar flood when the
+    // upstream feed is delayed. We cap to a single roll per tick, and never
+    // stamp a bar past real "now" — guards against runaway bars if the last
+    // bar's timestamp is off (stale feed data, symbol/timeframe switch, tab
+    // throttling causing missed rolls to pile up).
+    const nextBarTs = last.timestamp + intervalMs;
+    if (now - lastBarRollTime >= intervalMs && nextBarTs <= now) {
+      lastBarRollTime = now;
       const newBar: BaseBar = {
-        timestamp: last.timestamp + intervalMs,
+        timestamp: nextBarTs,
         open: last.close, high: last.close, low: last.close, close: last.close, volume: 0,
       };
       transformed.push(newBar);
       bars.push({ ...newBar });
-      return;
+      if (useHybrid && hybridEngine.isActive()) {
+        // Re-anchor the new bar to the last close, but do NOT recalibrate from
+        // synthetic-polluted bars — that creates a drift feedback loop. The
+        // original real-bar calibration (from live-tick start) stays in effect.
+        hybridEngine.start(currentSymbol, newBar.close);
+      }
+      // fall through so the fresh bar gets an immediate price move this tick
     }
-    const volatility = last.close * 0.0003;
-    const change = (Math.random() - 0.5) * volatility * 2;
-    last.close = Math.max(0.01, last.close + change);
-    if (last.close > last.high) last.high = last.close;
-    if (last.close < last.low) last.low = last.close;
-    last.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
+
+    const live = transformed[transformed.length - 1];
+    if (useHybrid && hybridEngine.isActive()) {
+      // Correction-anchored synthesis: real quotes snap the price to truth.
+      const price = hybridEngine.tick(now);
+      const prev = live.close;
+      live.close = Math.max(0.01, price);
+      if (live.close > live.high) live.high = live.close;
+      if (live.close < live.low) live.low = live.close;
+      live.volume += Math.round(Math.abs((live.close - prev) * 10000) + Math.random() * 50);
+    } else {
+      // Plain synthetic tick (non-hybrid live mode).
+      const volatility = live.close * 0.0003;
+      const change = (Math.random() - 0.5) * volatility * 2;
+      live.close = Math.max(0.01, live.close + change);
+      if (live.close > live.high) live.high = live.close;
+      if (live.close < live.low) live.low = live.close;
+      live.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
+    }
+    // Keep the one-click trading panel (buy/sell/spread) in sync with the tick.
+    updateTradingPanel();
   }, tickMs);
 }
 
 function stopLiveTicks(): void {
   if (liveTickTimer) { clearInterval(liveTickTimer); liveTickTimer = null; }
+  hybridEngine.stop();
   liveTicksEnabled = false;
+  // Reset so a later startLiveTicks() re-anchors cleanly rather than rolling
+  // catch-up bars based on a stale wall-clock reference from before the switch.
+  lastBarRollTime = 0;
+}
+
+// Toggle the coder model fields based on provider (local select vs Ollama text).
+function applyCoderProviderUI(provider: string): void {
+  const isOllama = provider === 'ollama';
+  const localRow = document.getElementById('coder-model-local-row');
+  const cloudRow = document.getElementById('coder-model-cloud-row');
+  if (localRow) localRow.style.display = isOllama ? 'none' : '';
+  if (cloudRow) cloudRow.style.display = isOllama ? '' : 'none';
+}
+
+// Toggle the advisor model fields + local-only controls based on provider.
+function applyAdvisorProviderUI(provider: string): void {
+  const isOllama = provider === 'ollama';
+  const localRow = document.getElementById('advisor-model-local-row');
+  const cloudRow = document.getElementById('advisor-model-cloud-row');
+  if (localRow) localRow.style.display = isOllama ? 'none' : '';
+  if (cloudRow) cloudRow.style.display = isOllama ? '' : 'none';
+  // The hot-reload button + hardware readout only apply to a local GPU model.
+  const switchBtn = document.getElementById('set-switch-model');
+  const hwInfo = document.getElementById('set-hardware-info');
+  if (switchBtn) switchBtn.style.display = isOllama ? 'none' : '';
+  if (hwInfo) hwInfo.style.display = isOllama ? 'none' : '';
+}
+
+// Switch data-source mode. Hybrid detects the paid feed and, if live ticks are
+// already running, restarts them so the correction-anchored engine takes over.
+function applyDataSourceMode(mode: string): void {
+  if (mode !== 'massive' && mode !== 'yahoo' && mode !== 'hybrid') return;
+  dataSourceMode = mode;
+  if (mode === 'hybrid') {
+    hybridEngine.detectProviders().then(({ massive }) => {
+      appendAdvisorMessage('system',
+        `Hybrid data: ${massive ? 'Massive (paid anchors) + ' : ''}yfinance corrections + synthetic fill engaged.`);
+    });
+  }
+  // Reflect the mode in the data status chip immediately.
+  const statusEl = document.getElementById('data-status');
+  if (statusEl && dataProviderLabel && dataProviderLabel !== 'synthetic') {
+    statusEl.textContent = `${currentSymbol} (${mode === 'hybrid' ? `hybrid·${dataProviderLabel}` : dataProviderLabel})`;
+  }
+  if (liveTicksEnabled) { stopLiveTicks(); startLiveTicks(); }
 }
 
 // ─── Trade Advisor state ──────────────────────────────────────────
@@ -121,7 +283,7 @@ const advisor = new TradeAdvisorAgent({
   agentId: 'trade_advisor',
   agentName: 'Trade Advisor',
   agentIcon: '◆',
-  model: 'qwythos-9b:latest',
+  model: 'meta-llama-3.1-8b-instruct',
 });
 const voice = new AdvisorVoice({
   onResult: (text: string) => {
@@ -141,6 +303,18 @@ const voice = new AdvisorVoice({
 const visualAdapter = new VisualAdapter();
 const webSearch = new WebSearch();
 const liveStream = new LiveDataStream({ symbol: 'SPY', timeframe: '1h', barCount: 500 });
+
+async function refreshProviderCapabilities(): Promise<void> {
+  try {
+    const providers = await liveStream.getProviders();
+    const merged = new Set<string>();
+    for (const p of providers as any[]) {
+      for (const tf of (p.sub_minute_timeframes || p.subMinuteTimeframes || [])) merged.add(tf);
+    }
+    supportedSubMinuteTfs = merged;
+    updateUI();
+  } catch { /* leave sub-minute options greyed out on failure */ }
+}
 let lastChartSnapshot: any = null;
 let advisorMessages: Array<{ role: string; content: string }> = [];
 let advisorStreaming = false;
@@ -149,25 +323,83 @@ let dataProviderLabel = 'synthetic';
 // ─── OakScript state ───────────────────────────────────────────────
 let oakScriptEnabled = false;
 let oakScriptErrors: string[] = [];
+let osTextarea: HTMLTextAreaElement | null = null;
 
-function runOakScript(): void {
-  const source = (document.getElementById('os-textarea') as HTMLTextAreaElement)?.value || '';
-  const overrides = getStoredOverrides();
-  const result = runScript(
-    source,
-    {
-      close: transformed.map(b => b.close),
-      open: transformed.map(b => b.open),
-      high: transformed.map(b => b.high),
-      low: transformed.map(b => b.low),
-      volume: transformed.map(b => b.volume),
-      time: transformed.map(b => b.timestamp),
-    },
-    overrides.size > 0 ? overrides : undefined,
-  );
-  oakScriptErrors = result.errors;
-  showResults(result.errors, result.inputs || []);
+// Store the currently selected indicator ID for the inputs panel
+let activeInputsId: string | null = null;
+
+const inputsPanel = createInputsPanel((overrides) => {
+  if (activeInputsId) {
+    setInstanceOverrides(activeInputsId, overrides);
+  }
+  runAllIndicators();
+  const activeInst = getActiveInstances().find(i => i.id === activeInputsId);
+  inputsPanel.update(activeInst?.inputs || [], activeInst?.name);
+  dashboard.refresh();
   buildIndicatorList();
+});
+
+const dashboard = createDashboard();
+
+function getBarData() {
+  return {
+    close: transformed.map(b => b.close),
+    open: transformed.map(b => b.open),
+    high: transformed.map(b => b.high),
+    low: transformed.map(b => b.low),
+    volume: transformed.map(b => b.volume),
+    time: transformed.map(b => b.timestamp),
+  };
+}
+
+// A main-pane 3D indicator (pane="3d") takes over the whole chart, and a
+// lower-pane 3D indicator (pane="separate" plot3d) takes over the lower
+// pane — running two of either at once would double up that workload for
+// no visual benefit (only one can be seen/orbited at a time anyway). Keep
+// at most one of each: adding a new 3D-main or 3D-lower indicator evicts
+// the previous one occupying that slot.
+function enforceSingle3DPerPosition(newId: string): void {
+  const all = getActiveInstances();
+  const newInst = all.find(i => i.id === newId);
+  if (!newInst) return;
+  const has3D = (inst: IndicatorInstance, pane: '3d' | 'separate') =>
+    inst.plots.some(p => p.type === 'plot3d' && (p as any).pane === pane);
+  const newHasMain3D = has3D(newInst, '3d');
+  const newHasLower3D = has3D(newInst, 'separate');
+  if (!newHasMain3D && !newHasLower3D) return;
+  for (const other of all) {
+    if (other.id === newId) continue;
+    if ((newHasMain3D && has3D(other, '3d')) || (newHasLower3D && has3D(other, 'separate'))) {
+      removeIndicator(other.id);
+    }
+  }
+}
+
+// True while any active indicator has a main-pane (pane="3d") plot3d call —
+// the unified 3D scene takes over the whole chart in this state.
+function hasPane3DActive(): boolean {
+  return hasActiveIndicators() && getCombinedPlots().plot3d.some(p => (p as any).pane === '3d');
+}
+
+function runAllIndicators(): void {
+  runAllInstances(getBarData());
+  oakScriptErrors = [];
+  for (const inst of getActiveInstances()) {
+    oakScriptErrors.push(...inst.errors);
+  }
+  // Invalidate 3D cache so the render frame rebuilds plot3d scenes
+  oakPathKey = '';
+  oakPathCache = null;
+  buildIndicatorList();
+  dashboard.refresh();
+  // Show widgets only when indicators are active
+  const active = getActiveInstances();
+  if (active.length > 0) {
+    dashboard.show();
+    if (activeInputsId && active.find(i => i.id === activeInputsId)?.inputs.length) {
+      inputsPanel.show();
+    }
+  }
 }
 
 // ─── Canvas ────────────────────────────────────────────────────────
@@ -209,7 +441,7 @@ function regenerate() {
   view.barSpacing = DEFAULT_BAR_SPACING;
   vpCacheKey = ''; vpCacheResult = null;
   oakPathKey = ''; oakPathCache = null;
-  if (oakScriptEnabled) { runOakScript(); }
+  if (oakScriptEnabled) { runAllIndicators(); }
   updateTradingPanel();
 }
 
@@ -268,7 +500,7 @@ canvas.addEventListener('mousemove', (e) => {
   if (scaleYDragging) {
     const dy = e.clientY - lastMY;
     if (dy !== 0) {
-      view.scaleY = Math.max(0.2, Math.min(5, view.scaleY + dy * 0.02));
+      view.scaleY = Math.max(0.2, Math.min(5, view.scaleY - dy * 0.02));
       lastMY = e.clientY;
     }
     return;
@@ -306,8 +538,8 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
     switch (e.key) {
       case '0': is3DMode = !is3DMode; visualAdapter.logAction('mode', `Switched to ${is3DMode ? '3D' : '2D'} mode`); updateUI(); break;
       case '1': document.getElementById('vp-settings-panel')?.classList.toggle('active'); visualAdapter.logAction('toggle', 'Volume profile'); break;
-      case '2': view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0; visualAdapter.logAction('frame', 'Frame all'); break;
-      case '3': e.preventDefault(); const vis = toggleEditor(); oakScriptEnabled = vis; if (vis) runOakScript(); visualAdapter.logAction('indicator', `OakScript ${vis ? 'opened' : 'closed'}`); updateUI(); break;
+      case '2': e.preventDefault(); const vis = toggleEditor(); oakScriptEnabled = vis; visualAdapter.logAction('indicator', `OakScript ${vis ? 'opened' : 'closed'}`); updateUI(); break;
+      case '3': view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0; visualAdapter.logAction('frame', 'Frame all'); break;
       case '4': setDrawTool(draw.getTool() === 'trend' ? 'none' : 'trend'); break;
       case '5': setDrawTool(draw.getTool() === 'hline' ? 'none' : 'hline'); break;
       case '6': setDrawTool(draw.getTool() === 'ray' ? 'none' : 'ray'); break;
@@ -326,7 +558,7 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && isEditorVisible()) {
     e.preventDefault();
     const ta = document.getElementById('os-textarea') as HTMLTextAreaElement;
-    if (ta) runOakScript();
+    if (ta) runAllIndicators();
   }
 
   const typing = (e.target as HTMLElement)?.tagName === 'TEXTAREA' || (e.target as HTMLElement)?.tagName === 'INPUT';
@@ -372,10 +604,10 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
       view.barSpacing = DEFAULT_BAR_SPACING;
       vpCacheKey = '';
       oakPathKey = '';
-      if (oakScriptEnabled) runOakScript();
+      if (oakScriptEnabled) runAllIndicators();
 
       if (statusEl) {
-        statusEl.textContent = `${sym} (${result.provider})`;
+        statusEl.textContent = `${sym} (${dataSourceMode === 'hybrid' ? `hybrid·${result.provider}` : result.provider})`;
         statusEl.className = 'loaded';
       }
 
@@ -383,23 +615,48 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
       updateAdvisorContext();
       updateTradingPanel();
     } else {
+      // Massive + yfinance both unavailable -> robust synthetic so the chart
+      // is NEVER blank.
+      useSyntheticData(sym, tfv as Timeframe);
       if (statusEl) {
-        statusEl.textContent = 'No data - using synthetic';
+        statusEl.textContent = `${sym} (synthetic)`;
         statusEl.className = 'error';
       }
-      dataProviderLabel = 'synthetic';
     }
   } catch (err: any) {
+    useSyntheticData(sym, tfv as Timeframe);
     if (statusEl) {
-      statusEl.textContent = `Error: ${err.message}`;
+      statusEl.textContent = `${sym} (synthetic — ${err?.message || 'offline'})`;
       statusEl.className = 'error';
     }
-    dataProviderLabel = 'synthetic';
   }
+}
+
+// Final fallback in the data chain: massive+yfinance -> yfinance -> THIS.
+// Generates robust synthetic bars and fully refreshes render state so the
+// chart always shows something, even with no backend / no network.
+function useSyntheticData(sym: string, tfv: Timeframe): void {
+  const count = bars.length >= 50 ? bars.length : 500;
+  bars = generateBars(count, tfv, sym);
+  dataProviderLabel = 'synthetic';
+  transformed = transformBars(bars, barType);
+  perBarVols = generatePerBarVolumes(transformed, 12);
+  view.scrollX = 0;
+  view.barSpacing = DEFAULT_BAR_SPACING;
+  vpCacheKey = '';
+  oakPathKey = '';
+  if (oakScriptEnabled) runAllIndicators();
+  updateUI();
+  updateAdvisorContext();
+  updateTradingPanel();
 }
 
 // ─── Advisor UI ────────────────────────────────────────────────────
 let currentAdvisorAgent = 'trade_advisor';
+
+function getCurrentModel(): string {
+  return advisor.config.model || 'auto';
+}
 
 function updateAdvisorContext(): void {
   const symEl = document.getElementById('advisorSymbol');
@@ -415,7 +672,7 @@ function updateAdvisorContext(): void {
 
   // Auto-inject chart context so advisor always knows what's on screen
   const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
-  const chartCtx = visualAdapter.buildChartContext(snapshot);
+  const chartCtx = visualAdapter.buildChartContext(snapshot, 'auto', getCurrentModel());
   if (transformed.length > 0) {
     // Replace any previous context message to avoid spamming
     const lastMsg = advisorMessages[advisorMessages.length - 1];
@@ -426,12 +683,22 @@ function updateAdvisorContext(): void {
   }
 }
 
-function captureChartSnapshot(): any {
-  const result = getCurrentResult();
+function captureChartSnapshot(): ChartSnapshot {
   const errors: string[] = [];
-  if (result && result.errors) {
-    result.errors.forEach((e: any) => errors.push(typeof e === 'string' ? e : String(e)));
+  const metrics: IndicatorMetrics[] = getActiveInstances().map(inst => ({
+    name: inst.name,
+    category: inst.category || 'Custom',
+    source: inst.source,
+    values: inst.plots.filter(p => p.type === 'line' && typeof p.value === 'number').map(p => ({ name: p.name || 'value', value: p.value as number, color: p.color || '#b48cff' })),
+    errors: inst.errors,
+    inputs: inst.inputs.map((inp: any) => ({ name: inp.name, title: inp.title || inp.name, value: inp.default ?? inp.value ?? 0 })),
+    barValues: [],
+  }));
+  for (const inst of getActiveInstances()) {
+    for (const e of inst.errors) errors.push(typeof e === 'string' ? e : String(e));
   }
+  const allPlots: OakPlot[] = [];
+  for (const inst of getActiveInstances()) allPlots.push(...inst.plots);
   return visualAdapter.captureSnapshot(
     bars,
     transformed,
@@ -439,7 +706,7 @@ function captureChartSnapshot(): any {
     timeframe,
     currentSymbol,
     dataProviderLabel,
-    result?.plots || [],
+    allPlots,
     errors,
     {
       mode: is3DMode ? '3D' : '2D',
@@ -454,18 +721,19 @@ function captureChartSnapshot(): any {
     },
     draw.count(),
     is3DMode,
+    metrics,
   );
 }
 
 let snapshotFrameCount = 0;
 function updateSnapshotEveryNthFrame(): void {
   snapshotFrameCount++;
-  if (snapshotFrameCount % 15 === 0) {
+  if (snapshotFrameCount % 60 === 0) {
     captureChartSnapshot();
   }
 }
 
-function appendAdvisorMessage(role: string, content: string, agentLabel?: string): HTMLDivElement {
+function appendAdvisorMessage(role: string, content: string, agentLabel?: string, thinking?: string): HTMLDivElement {
   const container = document.getElementById('advisorMessages');
   if (!container) { const d = document.createElement('div'); return d; }
   const div = document.createElement('div');
@@ -488,7 +756,24 @@ function appendAdvisorMessage(role: string, content: string, agentLabel?: string
     badge.className = 'agent-badge';
     badge.textContent = agentLabel;
     div.appendChild(badge);
-    div.appendChild(document.createTextNode(content));
+
+    // Collapsible thinking section
+    if (thinking) {
+      const details = document.createElement('details');
+      details.className = 'thinking-details';
+      const summary = document.createElement('summary');
+      summary.textContent = '💭 Chain of thought';
+      details.appendChild(summary);
+      const thinkDiv = document.createElement('div');
+      thinkDiv.className = 'thinking-content';
+      thinkDiv.textContent = thinking;
+      details.appendChild(thinkDiv);
+      div.appendChild(details);
+    }
+
+    const textSpan = document.createElement('span');
+    textSpan.textContent = content;
+    div.appendChild(textSpan);
     div.appendChild(copyBtn);
   } else {
     div.textContent = content;
@@ -538,7 +823,7 @@ async function sendAdvisorMessage(text?: string): Promise<void> {
 
   try {
     const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
-    const chartCtx = visualAdapter.buildChartContext(snapshot);
+    const chartCtx = visualAdapter.buildChartContext(snapshot, 'auto', 'auto');
     const enhancedMsg = `${msg}\n\n[Current Chart State]\n${chartCtx}`;
 
     const contextMessages = advisorMessages
@@ -562,9 +847,16 @@ async function sendAdvisorMessage(text?: string): Promise<void> {
 
     if (data.ok) {
       const reply = data.reply || '(empty response)';
-      appendAdvisorMessage('assistant', reply, currentAdvisorAgent === 'trade_advisor' ? 'Trade Advisor' : currentAdvisorAgent === 'market_intel' ? 'Market Intel' : 'Strategy Tuner');
+      appendAdvisorMessage('assistant', reply, currentAdvisorAgent === 'trade_advisor' ? 'Trade Advisor' : currentAdvisorAgent === 'market_intel' ? 'Market Intel' : 'Strategy Tuner', data.thinking || undefined);
       advisorMessages.push({ role: 'assistant', content: reply });
       voice.speak(reply.slice(0, 300));
+
+      // Detect OakScript code blocks in agent response and offer to apply
+      const codeBlocks = extractCodeBlocks(reply);
+      if (codeBlocks.length > 0 && osTextarea) {
+        const desc = msg.length > 80 ? msg.slice(0, 80) + '...' : msg;
+        applyAgentCode(codeBlocks[0], `From: "${desc}"`, 'create');
+      }
 
       try { advisor.localMemory.store({ content: `User: ${msg}\nAgent: ${reply.slice(0, 500)}`, type: 'conversation', agent: currentAdvisorAgent, tags: ['chat'] }); } catch {}
     } else {
@@ -588,7 +880,7 @@ async function analyzeChart(): Promise<void> {
 
   try {
     const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
-    const chartCtx = visualAdapter.buildChartContext(snapshot);
+    const chartCtx = visualAdapter.buildChartContext(snapshot, 'detailed', 'auto');
     const news = await webSearch.searchNews(currentSymbol);
     const earnings = await webSearch.searchEarnings(currentSymbol);
 
@@ -620,7 +912,7 @@ async function analyzeChart(): Promise<void> {
     const data = await resp.json();
     if (data.ok) {
       const reply = data.reply || '(empty response)';
-      appendAdvisorMessage('assistant', reply, 'Trade Advisor');
+      appendAdvisorMessage('assistant', reply, 'Trade Advisor', data.thinking || undefined);
       advisorMessages.push({ role: 'assistant', content: reply });
     } else {
       appendAdvisorMessage('error', data.detail || 'Analysis failed');
@@ -637,14 +929,16 @@ async function analyzeChart(): Promise<void> {
 let indicatorListEl: HTMLDivElement | null = null;
 function buildIndicatorList() {
   if (indicatorListEl) indicatorListEl.remove();
-  if (!oakScriptEnabled) return;
+  const active = getActiveInstances();
+  if (active.length === 0) return;
+
   indicatorListEl = document.createElement('div');
   indicatorListEl.id = 'indicator-list';
   Object.assign(indicatorListEl.style, {
     position: 'fixed', top: '12px', left: '12px', zIndex: '90',
     background: 'rgba(8, 8, 20, 0.85)', border: '1px solid rgba(180, 140, 255, 0.15)',
     borderRadius: '8px', padding: '8px 10px', backdropFilter: 'blur(12px)',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.4)', minWidth: '180px', maxWidth: '260px',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.4)', minWidth: '180px', maxWidth: '280px',
     fontSize: '11px', color: 'rgba(255,255,255,0.7)',
   });
 
@@ -653,118 +947,116 @@ function buildIndicatorList() {
     color: 'rgba(180,140,255,0.5)', fontSize: '9px', fontWeight: '600',
     textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px',
   });
-  title.textContent = 'Active Indicators';
+  title.textContent = `Active Indicators (${active.length})`;
   indicatorListEl.appendChild(title);
 
-  // Determine indicator name from the loaded script
-  const source = (document.getElementById('os-textarea') as HTMLTextAreaElement)?.value || '';
-  let name = localStorage.getItem('oakscript_active_name') || 'Custom Script';
-  
-  // Attempt exact match of the loaded source code to get the official name
-  const exactMatch = getIndicators().find(ind => source.trim() === ind.source.trim());
-  if (exactMatch) {
-    name = exactMatch.name;
-    localStorage.setItem('oakscript_active_name', name);
-  } else {
-    // If we have a saved active name, let's see if the source has been modified from its original
-    const savedName = localStorage.getItem('oakscript_active_name');
-    if (savedName) {
-      const origInd = getIndicators().find(ind => ind.name === savedName);
-      if (origInd && source.trim() !== origInd.source.trim()) {
-        name = `${savedName} (Modified)`;
-      } else if (!origInd) {
-        name = 'Custom Script';
-      }
-    } else {
-      name = 'Custom Script';
-    }
-  }
+  for (const inst of active) {
+    const section = document.createElement('div');
+    Object.assign(section.style, {
+      borderTop: '1px solid rgba(180,140,255,0.08)',
+      padding: '4px 0',
+    });
 
-  // 1. OakScript Indicator
-  if (oakScriptEnabled) {
+    // Header row with name, settings, remove
     const item = document.createElement('div');
     Object.assign(item.style, {
       display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-      padding: '4px 0', gap: '6px',
+      padding: '2px 0', gap: '4px',
     });
+
     const label = document.createElement('span');
-    label.textContent = name;
-    label.style.flex = '1';
-    label.style.overflow = 'hidden';
-    label.style.textOverflow = 'ellipsis';
-    label.style.whiteSpace = 'nowrap';
-    item.appendChild(label);
+    label.textContent = inst.name;
+    label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;';
 
     const settingsBtn = document.createElement('button');
     settingsBtn.textContent = '⚙';
-    settingsBtn.title = 'Open input settings';
+    settingsBtn.title = 'Configure inputs';
     Object.assign(settingsBtn.style, {
-      background: 'none', border: '1px solid rgba(180, 140, 255, 0.2)',
-      color: 'rgba(180, 140, 255, 0.5)', cursor: 'pointer', borderRadius: '4px',
-      width: '22px', height: '22px', fontSize: '12px', padding: '0',
+      background: 'none', border: '1px solid rgba(180,140,255,0.2)',
+      color: 'rgba(180,140,255,0.5)', cursor: 'pointer', borderRadius: '4px',
+      width: '20px', height: '20px', fontSize: '10px', padding: '0',
     });
     settingsBtn.onclick = () => {
-      const vis = toggleEditor();
-      if (!vis) toggleEditor();
-      const ed = document.getElementById('oakscript-editor');
-      if (ed) (ed.querySelector('[data-section="inputs"]') as HTMLElement)?.scrollIntoView({ behavior: 'smooth' });
+      activeInputsId = inst.id;
+      inputsPanel.update(inst.inputs, inst.name);
+      inputsPanel.show();
     };
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
-    closeBtn.title = 'Remove indicator';
+    closeBtn.title = 'Remove';
     Object.assign(closeBtn.style, {
       background: 'none', border: '1px solid rgba(255,68,119,0.2)',
       color: 'rgba(255,68,119,0.5)', cursor: 'pointer', borderRadius: '4px',
-      width: '22px', height: '22px', fontSize: '11px', padding: '0',
+      width: '20px', height: '20px', fontSize: '10px', padding: '0',
     });
     closeBtn.onclick = () => {
-      oakScriptEnabled = false;
-      if (isEditorVisible()) toggleEditor();
+      removeIndicator(inst.id);
+      if (activeInputsId === inst.id) {
+        activeInputsId = null;
+        inputsPanel.hide();
+      }
+      // Re-evaluate 3D state after removal. The old check only tore down 3D
+      // when EVERY indicator was gone, so removing just the one indicator
+      // that owned the main-pane (pane="3d") or lower-pane 3D slot — while
+      // OTHER indicators stayed active — left its Three.js scene/geometry
+      // rendering forever with no owning indicator (reported as "removing
+      // ChronoSphere left both ChronoSphere and Lorentzian's 3D active").
+      if (!hasPane3DActive() && isChart3DMode()) {
+        dispose3DScene();
+      }
+      const stillHasLowerPane3D = hasActiveIndicators()
+        && getCombinedPlots().plot3d.some(p => (p as any).pane === 'separate');
+      if (!stillHasLowerPane3D && isViz3DActive()) {
+        hide3D();
+        disposeViz();
+      }
+      if (getActiveInstances().length === 0) {
+        oakScriptEnabled = false;
+        inputsPanel.hide();
+        dashboard.hide();
+      }
+      runAllIndicators();
       updateUI();
     };
 
+    item.appendChild(label);
     item.appendChild(settingsBtn);
     item.appendChild(closeBtn);
-    indicatorListEl.appendChild(item);
+    section.appendChild(item);
 
-    // Enumerate the indicator's sub-plots (incl. secondary-pane series)
-    const res = getCurrentResult();
-    if (res && res.plots.length > 0) {
+    // Sub-plots (collapsed by default, shown as colored dots)
+    if (inst.plots.length > 0) {
       const seen = new Set<string>();
-      const subPlots: Array<{ name: string; color: string; pane?: string }> = [];
-      for (const p of res.plots) {
+      const names: Array<{ name: string; color: string; pane: string }> = [];
+      for (const p of inst.plots) {
         const n = (p.name || '').trim();
         if (n && !seen.has(n)) {
           seen.add(n);
-          subPlots.push({ name: n, color: p.color || '#b48cff', pane: p.pane || 'main' });
+          names.push({ name: n, color: p.color || '#b48cff', pane: p.pane || 'main' });
         }
       }
-      if (subPlots.length > 0) {
+      if (names.length > 0) {
         const sub = document.createElement('div');
         Object.assign(sub.style, {
-          padding: '2px 0 4px 14px', fontSize: '10px',
-          color: 'rgba(255,255,255,0.45)', lineHeight: '1.7',
+          padding: '1px 0 2px 10px', fontSize: '9px',
+          color: 'rgba(255,255,255,0.4)',
+          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
         });
-        for (const sp of subPlots) {
-          const row = document.createElement('div');
-          Object.assign(row.style, {
-            display: 'flex', alignItems: 'center', gap: '5px',
-            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-          });
-          const dot = document.createElement('span');
-          dot.style.width = '6px'; dot.style.height = '6px';
-          dot.style.borderRadius = '50%'; dot.style.background = sp.color;
-          dot.style.flexShrink = '0';
-          row.appendChild(dot);
-          const txt = document.createElement('span');
-          txt.textContent = sp.name + (sp.pane === 'separate' ? ' (osc)' : '');
-          row.appendChild(txt);
-          sub.appendChild(row);
-        }
-        indicatorListEl.appendChild(sub);
+        sub.textContent = names.map(n => n.pane === 'separate' ? `${n.name}(osc)` : n.name).join(', ');
+        section.appendChild(sub);
       }
     }
+
+    // Error count
+    if (inst.errors.length > 0) {
+      const errDiv = document.createElement('div');
+      errDiv.textContent = `⚠ ${inst.errors.length} error${inst.errors.length > 1 ? 's' : ''}`;
+      errDiv.style.cssText = 'color:#ff4477;font-size:9px;padding:1px 0 0 10px;';
+      section.appendChild(errDiv);
+    }
+
+    indicatorListEl.appendChild(section);
   }
 
   document.body.appendChild(indicatorListEl);
@@ -779,10 +1071,26 @@ function updateUI() {
   const tb = document.getElementById('mode-toggle');
   if (tb) { tb.textContent = is3DMode ? '3D' : '2D'; tb.classList.toggle('active', is3DMode); }
   const bt = document.getElementById('bar-type-select') as HTMLSelectElement;
-  if (bt) bt.value = barType;
+  if (bt) {
+    bt.value = barType;
+    // A 3D main-chart indicator renders its own bar geometry in the unified
+    // Three.js scene — switching bar type mid-3D would mean rebuilding that
+    // geometry from a different representation for no visual gain (the 3D
+    // bars don't follow Heikin-Ashi/Renko/etc.), so lock it while active.
+    const lock3D = hasPane3DActive();
+    bt.disabled = lock3D;
+    bt.title = lock3D ? 'Bar type is locked while a 3D main-chart indicator is active' : '';
+  }
   const tfSelect = document.getElementById('tf-select') as HTMLSelectElement;
-  if (tfSelect) tfSelect.value = timeframe;
-  document.getElementById('oakscript-toggle')?.classList.toggle('active', oakScriptEnabled);
+  if (tfSelect) {
+    tfSelect.value = timeframe;
+    for (const opt of Array.from(tfSelect.options)) {
+      if (opt.dataset.subMinute !== 'true') continue;
+      const supported = supportedSubMinuteTfs.has(opt.value);
+      opt.disabled = !supported;
+      opt.title = supported ? '' : 'Requires a provider with second-resolution data (e.g. Massive with an API key)';
+    }
+  }
   document.getElementById('os-status')?.classList.toggle('has-errors', oakScriptErrors.length > 0);
   document.getElementById('live-tick-toggle')?.classList.toggle('active', liveTicksEnabled);
   buildIndicatorList();
@@ -841,6 +1149,14 @@ function setupVPSettingsPanel() {
   showVA?.addEventListener('change', () => { vpSettings.showValueArea = showVA.checked; updateUI(); });
   showDelta?.addEventListener('change', () => { vpSettings.showDelta = showDelta.checked; updateUI(); });
   showNodes?.addEventListener('change', () => { vpSettings.showNodes = showNodes.checked; updateUI(); });
+
+  // Bar view toggle (2D / 3D Isometric) — controls is3DMode
+  const barViewSel = document.getElementById('vp-bar-view') as HTMLSelectElement;
+  barViewSel?.addEventListener('change', () => {
+    is3DMode = barViewSel.value === '3D';
+    visualAdapter.logAction('mode', `Switched to ${is3DMode ? '3D' : '2D'} mode`);
+    updateUI();
+  });
 }
 
 function syncVPSettingsPanel() {
@@ -864,6 +1180,8 @@ function syncVPSettingsPanel() {
   if (showVA) showVA.checked = vpSettings.showValueArea;
   if (showDelta) showDelta.checked = vpSettings.showDelta;
   if (showNodes) showNodes.checked = vpSettings.showNodes;
+  const barViewSel = document.getElementById('vp-bar-view') as HTMLSelectElement;
+  if (barViewSel) barViewSel.value = is3DMode ? '3D' : '2D';
 }
 
 // ─── Startup ─────────────────────────────────────────────────────
@@ -875,11 +1193,98 @@ async function startupChecks(): Promise<void> {
     if (resp.ok) {
       const statusEl = document.getElementById('data-status');
       if (statusEl) { statusEl.textContent = 'Backend OK'; statusEl.className = 'loaded'; }
+      // Prefetch model context size so token optimizer uses real limits
+      prefetchModelProfile().then(ctx => {
+        console.log(`[DAFE] Model context: ${ctx} tokens`);
+      });
     }
   } catch {
     const statusEl = document.getElementById('data-status');
     if (statusEl) { statusEl.textContent = 'Backend offline'; statusEl.className = 'error'; }
   }
+}
+
+// ─── Paper Trading ───────────────────────────────────────────────
+// Loaded once from localStorage so the commission/slippage model survives a
+// reload — the settings panel is the only UI for editing it (the widget
+// itself just shows Buy/Sell + the resulting positions/orders).
+function loadTradeSettings(): { cash: number; commission: CommissionConfig; slippage: { mode: SlippageMode; value: number; tickSize: number } } {
+  try {
+    const saved = JSON.parse(localStorage.getItem('dafe_trade_settings') || 'null');
+    if (saved) return saved;
+  } catch {}
+  return { cash: 100000, commission: DEFAULT_COMMISSION, slippage: DEFAULT_SLIPPAGE };
+}
+function saveTradeSettings(cfg: { cash: number; commission: CommissionConfig; slippage: { mode: SlippageMode; value: number; tickSize: number } }): void {
+  try { localStorage.setItem('dafe_trade_settings', JSON.stringify(cfg)); } catch {}
+}
+
+const initialTradeSettings = loadTradeSettings();
+let tradeCurrencyOverride: string | null = null;
+const broker = new PaperBroker({
+  currency: detectCurrency(currentSymbol),
+  startingCash: initialTradeSettings.cash,
+  commission: initialTradeSettings.commission,
+  slippage: initialTradeSettings.slippage,
+});
+broker.onFill((fill) => {
+  const note = document.getElementById('tradeFillNote');
+  if (note) {
+    note.innerHTML = `Last fill: ${fill.side.toUpperCase()} ${fill.qty} @ ${fill.price.toFixed(4)}<br>Commission: $${fill.commission.toFixed(2)} · Slippage: $${fill.slippage.toFixed(4)}`;
+  }
+  appendAdvisorMessage('system', `${fill.side.toUpperCase()} ${fill.qty} ${getQtyUnit(fill.symbol)} of ${fill.symbol} filled @ ${fill.price.toFixed(4)} (commission $${fill.commission.toFixed(2)}, slippage $${fill.slippage.toFixed(4)})`);
+  renderTradeAccount();
+  renderTradePositions();
+});
+broker.onOrderUpdate(() => renderTradeOrders());
+
+function renderTradeAccount(): void {
+  const acct = broker.getAccount();
+  const cashEl = document.getElementById('tradeCash');
+  const eqEl = document.getElementById('tradeEquity');
+  const rEl = document.getElementById('tradeRealizedPnL');
+  const uEl = document.getElementById('tradeUnrealizedPnL');
+  if (cashEl) cashEl.textContent = `${acct.cash.toFixed(2)} ${acct.currency}`;
+  if (eqEl) eqEl.textContent = `${acct.equity.toFixed(2)} ${acct.currency}`;
+  if (rEl) { rEl.textContent = acct.realizedPnL.toFixed(2); rEl.className = `val ${acct.realizedPnL >= 0 ? 'pos' : 'neg'}`; }
+  if (uEl) { uEl.textContent = acct.unrealizedPnL.toFixed(2); uEl.className = `val ${acct.unrealizedPnL >= 0 ? 'pos' : 'neg'}`; }
+}
+
+/** currentSymbol is free-typed user text, not a fixed enum — it must be
+ * escaped before landing in innerHTML (trade lists render it directly). */
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function renderTradePositions(): void {
+  const list = document.getElementById('tradePositionsList');
+  if (!list) return;
+  const positions = broker.getPositions();
+  if (positions.length === 0) { list.innerHTML = '<div class="trade-list-empty">No open positions</div>'; return; }
+  list.innerHTML = positions.map(p => {
+    const px = transformed[transformed.length - 1]?.close ?? p.avgPrice;
+    const unreal = (px - p.avgPrice) * p.qty;
+    return `<div class="trade-list-row"><span>${escapeHtml(p.symbol)} ${p.qty > 0 ? 'LONG' : 'SHORT'} ${Math.abs(p.qty)} @ ${p.avgPrice.toFixed(2)}</span><span class="${unreal >= 0 ? 'pos' : 'neg'}" style="color:${unreal >= 0 ? '#22cc88' : '#ff4477'}">${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}</span></div>`;
+  }).join('');
+}
+
+function renderTradeOrders(): void {
+  const list = document.getElementById('tradeOrdersList');
+  if (!list) return;
+  const working = broker.getOrders().filter(o => o.status === 'working');
+  if (working.length === 0) { list.innerHTML = '<div class="trade-list-empty">No open orders</div>'; return; }
+  list.innerHTML = working.map(o => {
+    const priceLabel = o.type === 'trailing-stop' ? `trail ${o.trailAmount}${o.trailIsPercent ? '%' : ''}`
+      : o.limitPrice !== undefined ? `@ ${o.limitPrice}` : o.stopPrice !== undefined ? `stop ${o.stopPrice}` : '';
+    return `<div class="trade-list-row"><span>${o.side.toUpperCase()} ${o.qty} ${escapeHtml(o.symbol)} ${o.type} ${escapeHtml(priceLabel)}</span><button class="cancel-order" data-order-id="${o.id}">✕</button></div>`;
+  }).join('');
+  list.querySelectorAll('.cancel-order').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = (btn as HTMLElement).dataset.orderId;
+      if (id) broker.cancelOrder(id);
+      renderTradeOrders();
+    });
+  });
 }
 
 function getQtyUnit(symbol: string): string {
@@ -908,10 +1313,36 @@ function updateTradingPanel(): void {
   if (buyPriceEl) buyPriceEl.textContent = ask.toFixed(2);
   if (spreadEl) spreadEl.textContent = spread.toFixed(2);
   if (qtyUnitEl) qtyUnitEl.textContent = getQtyUnit(currentSymbol);
+
+  broker.tick(currentSymbol, lastBar.close, Date.now());
+  renderTradeAccount();
+  renderTradePositions();
+  renderTradeOrders();
+
+  const autoEl = document.getElementById('tradeCurrencyAuto');
+  const curSel = document.getElementById('tradeCurrency') as HTMLSelectElement | null;
+  if (autoEl && curSel && !tradeCurrencyOverride) {
+    const detected = detectCurrency(currentSymbol);
+    autoEl.textContent = `auto: ${detected}`;
+    if (curSel.value !== detected) curSel.value = detected;
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   startupChecks();
+  refreshProviderCapabilities();
+
+  // Initialize GPU particle system. Allocate the full buffer (cheap, ~200KB)
+  // so the perf governor can scale the active count freely; start at the
+  // device-recommended tier.
+  initParticleSystem(canvas, {
+    count: tierParticleCount('ultra'),
+    colorMode: 'cosmic',
+    intensity: 1.0,
+  }).then(gpuOk => {
+    setParticleCount(tierParticleCount(perfMode));
+    if (gpuOk) console.log(`[DAFE] GPU particles ready — starting tier ${perfMode}`);
+  });
 
   // Drawing tools rail
   document.querySelectorAll('.draw-btn').forEach((btn) => {
@@ -937,15 +1368,51 @@ document.addEventListener('DOMContentLoaded', () => {
       (document.getElementById('live-tick-toggle') as HTMLElement).classList.add('active');
     }
   });
+  document.getElementById('btn-frame')?.addEventListener('click', () => {
+    view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0;
+    visualAdapter.logAction('frame', 'Reset chart view');
+  });
   document.getElementById('mode-toggle')?.addEventListener('click', () => {
     is3DMode = !is3DMode;
     visualAdapter.logAction('mode', `Switched to ${is3DMode ? '3D' : '2D'} mode`);
     updateUI();
   });
-  document.getElementById('btn-frame')?.addEventListener('click', () => {
-    view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0;
-    visualAdapter.logAction('frame', 'Reset chart view');
-  });
+
+  // Indicator select menu — populate from OakScript indicator library
+  const indSelect = document.getElementById('indicator-select') as HTMLSelectElement;
+  if (indSelect) {
+    const categories2 = getCategories();
+    for (const cat of categories2) {
+      const group = document.createElement('optgroup');
+      group.label = cat;
+      const catInds = getIndicators().filter(ind => ind.category === cat);
+      for (const ind of catInds) {
+        const opt = document.createElement('option');
+        opt.value = ind.name;
+        opt.textContent = ind.name;
+        group.appendChild(opt);
+      }
+      indSelect.appendChild(group);
+    }
+    indSelect.addEventListener('change', () => {
+      const name = indSelect.value;
+      if (!name) return;
+      const ind = getIndicators().find(i => i.name === name);
+      if (ind) {
+        const inst = addIndicator(ind);
+        runAllIndicators();
+        enforceSingle3DPerPosition(inst.id);
+        oakScriptEnabled = true;
+        activeInputsId = inst.id;
+        inputsPanel.update(inst.inputs, inst.name);
+        inputsPanel.show();
+        dashboard.show();
+        updateUI();
+      }
+      indSelect.value = '';
+    });
+  }
+
   document.getElementById('bar-type-select')?.addEventListener('change', (e) => {
     const newType = (e.target as HTMLSelectElement).value as BarType;
     visualAdapter.logAction('bar-type', `Changed from ${barType} to ${newType}`);
@@ -968,20 +1435,323 @@ document.addEventListener('DOMContentLoaded', () => {
   // Volume Profile settings panel
   setupVPSettingsPanel();
 
+  // Apply new source to the instance actually being worked on, instead of
+  // guessing from instance count. The old logic (separately duplicated in
+  // both the editor's onChange and the AI bridge's onRunScript) fell back to
+  // "just use active[0]" whenever more than one indicator was active — for
+  // the AI bridge that meant editing indicator #2 silently overwrote
+  // indicator #1's source AND DELETED every other active instance. Track
+  // the real target via activeInputsId (set whenever the user picks an
+  // indicator to edit, via its gear icon or the editor itself) and only
+  // fall back to count-based guessing when there is truly no known target.
+  function applyEditorSource(source: string): IndicatorInstance {
+    const active = getActiveInstances();
+    let inst = activeInputsId ? active.find(i => i.id === activeInputsId) : undefined;
+    if (!inst) inst = active.find(i => i.source === source);
+    if (!inst) {
+      if (active.length === 1) {
+        inst = active[0];
+        inst.source = source;
+      } else {
+        // Either nothing is active, or multiple instances exist with no
+        // known target — create a fresh instance rather than guessing which
+        // existing one to overwrite (and never delete unrelated instances).
+        inst = addIndicator({
+          name: 'Editor Script',
+          category: 'Custom',
+          source,
+          description: 'User-edited indicator',
+        });
+      }
+    } else {
+      inst.source = source;
+    }
+    activeInputsId = inst.id;
+    return inst;
+  }
+
   // OakScript editor
   const { textarea } = createEditor(document.body, (source: string) => {
-    runOakScript();
+    applyEditorSource(source);
+    runAllIndicators();
     updateUI();
   });
   textarea.id = 'os-textarea';
+  osTextarea = textarea;
 
-  // OakScript toggle button
-  document.getElementById('oakscript-toggle')?.addEventListener('click', () => {
-    const vis = toggleEditor();
-    oakScriptEnabled = vis;
-    if (vis) runOakScript();
-    updateUI();
+  // Initialize the OakScript-TradeAdvisor bridge
+  initBridge(advisor, {
+    editorTextarea: textarea,
+    onRunScript: (source: string) => {
+      if (textarea) {
+        textarea.value = source;
+        localStorage.setItem('oakscript_source', source);
+      }
+      applyEditorSource(source);
+      runAllIndicators();
+      updateUI();
+    },
+    getSnapshot: () => visualAdapter.getLastSnapshot() || captureChartSnapshot(),
+    getActiveInstances: () => getActiveInstances(),
+    getEditorSource: () => textarea?.value || '',
+    setEditorSource: (source: string) => {
+      if (textarea) {
+        textarea.value = source;
+        localStorage.setItem('oakscript_source', source);
+      }
+    },
+    getErrors: () => {
+      const errs: string[] = [];
+      for (const inst of getActiveInstances()) {
+        for (const e of inst.errors) errs.push(e);
+      }
+      return errs;
+    },
   });
+
+  // Wire the "send errors to advisor" button in the editor
+  setSendErrorsCallback((errors: string[], source: string) => {
+    if (advisorStreaming) return;
+    appendAdvisorMessage('system', `Sending ${errors.length} indicator error(s) to Trade Advisor for diagnosis...`);
+    (async () => {
+      advisorStreaming = true;
+      const typingEl = showAdvisorTyping();
+      try {
+        const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
+        const resp = await advisor.diagnoseErrors(source, errors, snapshot);
+        removeAdvisorTyping();
+        if (resp.ok) {
+          appendAdvisorMessage('assistant', resp.reply, 'Trade Advisor', resp.thinking || undefined);
+          advisorMessages.push({ role: 'assistant', content: resp.reply });
+          // Auto-apply code if we find a code block
+          const codeBlocks = extractCodeBlocks(resp.reply);
+          if (codeBlocks.length > 0) {
+            applyAgentCode(codeBlocks[0], `Auto-fix ${errors.length} error(s)`, 'fix', source);
+          }
+        } else {
+          appendAdvisorMessage('error', resp.reply);
+        }
+      } catch (err: any) {
+        removeAdvisorTyping();
+        appendAdvisorMessage('error', `Diagnosis failed: ${err.message}`);
+      } finally {
+        advisorStreaming = false;
+      }
+    })();
+  });
+
+  // ── Wire editor agent callbacks ──
+  setAgentActionCallback(async (action: string, data?: string) => {
+    const appendChat = (role: string, msg: string) => {
+      (window as any).__osAppendChat?.(role, msg);
+    };
+    if (action === 'fix') {
+      const errs: string[] = [];
+      for (const inst of getActiveInstances()) {
+        for (const e of inst.errors) errs.push(e);
+      }
+      if (errs.length === 0) { appendChat('agent', 'No errors to fix.'); return; }
+      appendChat('agent', `Diagnosing ${errs.length} error(s)...`);
+      await agentDiagnoseErrors((reply: string) => {
+        appendChat('agent', reply.slice(0, 200));
+      });
+    } else if (action === 'generate' && data) {
+      if (hasRealEditorScript()) {
+        // There's already a real script in the editor — this "New" request
+        // is almost always someone refining what they just asked for
+        // ("anchor the fib lines to swing points", "remove the lower
+        // visual"), not actually starting from scratch. Route through the
+        // context-aware edit path (current source + "you are EDITING this,
+        // not generating a new one") instead of a fresh Phase-1 design that
+        // has never seen the existing script and can't act on a follow-up
+        // that references it.
+        appendChat('agent', `Refining current script: "${data.slice(0, 80)}"...`);
+        await sendOakScriptChatMessage(data);
+      } else {
+        appendChat('agent', `Generating: "${data.slice(0, 80)}"...`);
+        await agentGenerateIndicatorPhased(data, undefined, (msg) => {
+          appendChat('agent', msg.slice(0, 200));
+        });
+      }
+    } else if (action === 'brainstorm') {
+      appendChat('agent', 'Brainstorming...');
+      await agentBrainstormIndicator(undefined, (reply: string) => {
+        appendChat('agent', reply.slice(0, 300));
+      });
+    } else if (action === 'metrics') {
+      if (getActiveInstances().length === 0) { appendChat('agent', 'No active indicators.'); return; }
+      appendChat('agent', 'Analyzing metrics...');
+      await agentAnalyzeMetrics((reply: string) => {
+        appendChat('agent', reply.slice(0, 300));
+      });
+    } else if (action === 'validate') {
+      await validateCurrentCode((result: string) => {
+        appendChat('agent', result);
+      });
+    }
+  });
+
+  // ── Wire editor agent chat ──
+  // Extracted to a named function so the "generate new indicator" entry
+  // points (the New button / Ctrl+Alt+G) can also reach it — see below,
+  // where it's used instead of a fresh Phase-1 generation whenever there's
+  // already a real script in the editor, so follow-up refinement requests
+  // ("anchor the fib lines to swing points", "remove the lower visual")
+  // actually see and build on the current script instead of starting over
+  // from just that one line of text with no memory of what came before.
+  async function sendOakScriptChatMessage(msg: string): Promise<void> {
+    const appendChat = (role: string, text: string) => {
+      (window as any).__osAppendChat?.(role, text);
+    };
+    try {
+      const source = osTextarea?.value || '';
+      const prefer3D = (window as any).__osGetPrefer3D?.() ?? true;
+
+      const active = getActiveInstances();
+      let stateInfo = '';
+      if (active.length > 0) {
+        const inst = active[0];
+        const plotTypes = new Set(inst.plots.map(p => p.type));
+        const signalCount = inst.plots.filter(p => p.type === 'shape').length;
+        const has3D = inst.plots.some(p => p.type === 'plot3d');
+        const errors = inst.errors.length > 0 ? `\nErrors (${inst.errors.length}): ${inst.errors.slice(0, 3).join('; ')}` : '';
+        stateInfo = `Indicator: ${inst.name} | Plots: ${plotTypes.size ? [...plotTypes].join(',') : 'none'} | Signals: ${signalCount} | 3D: ${has3D ? 'yes' : 'no'} | Prefer 3D: ${prefer3D}${errors}`;
+        if (signalCount === 0) stateInfo += '\nIssue: No signals generated.';
+        if (!has3D && prefer3D) stateInfo += '\nIssue: No 3D rendering.';
+      } else {
+        stateInfo = 'No active indicator.';
+      }
+
+      const promptText = `[OakScript Expert] ${msg}
+
+${stateInfo}
+
+CURRENT INDICATOR SOURCE (the script you MUST edit — output the COMPLETE modified version, never a different/simplified indicator):
+\`\`\`oakscript
+${source}
+\`\`\`
+
+CRITICAL RULES:
+- You are EDITING the script above, NOT generating a new one. Preserve ALL existing logic, calculations, variables, loops, signals, and structure.
+- Do NOT simplify, summarize, remove, or rename existing logic. Only ADD or MODIFY what the user asked for.
+- Output the COMPLETE script (every line, start to finish) inside \`\`\`oakscript fences. Never output a partial script or stop mid-script.
+- Block syntax: use { } braces around multi-statement bodies under if/else/for/while. A single statement may follow without braces. There is NO indentation-based block parsing — multi-statement blocks MUST use braces.
+- Colors MUST be hex strings: "#22cc88" NOT "green". Strings MUST be quoted.
+- == not = in conditions. Use input() for params.
+- The 3D engine supports plot3d(series, name, style, color, pane) with styles: surface, ribbon, scatter, bars3d, wireframe, mesh, line3d, helix, vortex, manifold, nebula, constellation, torus, trail. pane="main" renders a 3D scene on the main chart; pane="separate" renders in the lower 3D pane. Multiple plot3d("separate") calls stack side-by-side.
+- When the user asks for 3D visuals, ADD plot3d() calls while keeping every existing 2D plot and signal intact. Make it visually stunning — use surface/ribbon/bars3d/helix/vortex/manifold with vivid hex colors.
+- Goal: the best, most visually stunning version of the user's idea.`;
+      const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
+      const resp = await advisor.sendMessage(promptText, snapshot, undefined, 'oakscript_coder');
+
+      if (resp.ok) {
+        appendChat('agent', resp.reply.slice(0, 600));
+        const blocks = extractCodeBlocks(resp.reply);
+        if (blocks.length > 0) {
+          // Always surface the review panel (View / Test / Accept / Decline) so
+          // the user can act on the proposal — even a partial one, which they
+          // can Test before accepting. The accept handler guards against bad code.
+          applyAgentCode(blocks[0], msg.slice(0, 60), 'edit', source);
+        } else {
+          appendChat('agent', '⚠ No code block found in the response — try rephrasing the request.');
+        }
+      } else {
+        appendChat('agent', 'Error: ' + resp.reply.slice(0, 200));
+      }
+    } catch (err: any) {
+      appendChat('agent', 'Error: ' + err.message);
+    }
+  }
+  setAgentChatCallback(sendOakScriptChatMessage);
+
+  // True once there's a real script in the editor worth refining, as
+  // opposed to the blank placeholder or truly empty content — used to
+  // decide whether a "generate" request is actually a create-from-scratch
+  // or a follow-up refinement of what's already there.
+  function hasRealEditorScript(): boolean {
+    const src = (osTextarea?.value || '').trim();
+    return src.length > 0 && src !== getDefaultScript().trim();
+  }
+
+  // ── Wire editor visibility toggle ──
+  setToggleVisibilityCallback(() => {
+    const insts = getActiveInstances();
+    if (insts.length > 0) {
+      const inst = insts[0];
+      setInstanceEnabled(inst.id, !inst.enabled);
+      if (!inst.enabled) {
+        hide3D();
+        disposeViz();
+      } else {
+        runAllIndicators();
+      }
+      updateUI();
+    }
+  });
+
+  // ── Register editor keyboard shortcuts ──
+  registerEditorShortcuts([
+    {
+      key: 'F', ctrl: true, alt: true,
+      handler: () => {
+        const errors: string[] = [];
+        for (const inst of getActiveInstances()) {
+          for (const e of inst.errors) errors.push(e);
+        }
+        if (errors.length === 0) {
+          (window as any).__osAppendChat?.('agent', 'No errors to fix.');
+          return;
+        }
+        (window as any).__osAppendChat?.('agent', `Diagnosing ${errors.length} error(s)...`);
+        agentDiagnoseErrors((reply: string) => {
+          (window as any).__osAppendChat?.('agent', reply.slice(0, 200));
+        });
+      },
+    },
+    {
+      key: 'G', ctrl: true, alt: true,
+      handler: () => {
+        const t = prompt('Describe the indicator:');
+        if (t && osTextarea) {
+          if (hasRealEditorScript()) {
+            (window as any).__osAppendChat?.('agent', `Refining current script: "${t.slice(0, 50)}"...`);
+            sendOakScriptChatMessage(t);
+          } else {
+            (window as any).__osAppendChat?.('agent', `Generating: "${t.slice(0, 50)}..."`);
+            agentGenerateIndicatorPhased(t, undefined, (msg) => {
+              (window as any).__osAppendChat?.('agent', msg.slice(0, 200));
+            });
+          }
+        }
+      },
+    },
+    {
+      key: 'B', ctrl: true, alt: true,
+      handler: () => {
+        (window as any).__osAppendChat?.('agent', 'Brainstorming...');
+        agentBrainstormIndicator(undefined, (reply: string) => {
+          (window as any).__osAppendChat?.('agent', reply.slice(0, 300));
+        });
+      },
+    },
+    {
+      key: 'M', ctrl: true, alt: true,
+      handler: () => {
+        (window as any).__osAppendChat?.('agent', 'Analyzing metrics...');
+        agentAnalyzeMetrics((reply: string) => {
+          (window as any).__osAppendChat?.('agent', reply.slice(0, 300));
+        });
+      },
+    },
+    {
+      key: 'V', ctrl: true, alt: true,
+      handler: () => {
+        validateCurrentCode((result: string) => {
+          (window as any).__osAppendChat?.('agent', result);
+        });
+      },
+    },
+  ]);
 
   // ─── Securities Combo (search + dropdown) ───────────────────────
   const symbolInput = document.getElementById('symbol-input') as HTMLInputElement;
@@ -1039,16 +1809,16 @@ document.addEventListener('DOMContentLoaded', () => {
       ? securitiesCache.filter(s => s.symbol.includes(q) || s.name.toUpperCase().includes(q))
       : securitiesCache;
     if (filtered.length === 0) {
-      symbolDropdown.innerHTML = `<div style="padding:6px 10px;color:rgba(255,255,255,0.3)">No match — press Enter for "${filter}"</div>`;
+      symbolDropdown.innerHTML = `<div style="padding:6px 10px;color:rgba(255,255,255,0.3)">No match — press Enter for "${escapeHtml(filter)}"</div>`;
       symbolDropdown.style.display = 'block';
       return;
     }
     symbolDropdown.innerHTML = filtered.map((s, i) =>
-      `<div class="sym-item" data-idx="${i}" data-sym="${s.symbol}" style="padding:5px 10px;cursor:pointer;display:flex;justify-content:space-between;color:rgba(255,255,255,0.7);border-bottom:1px solid rgba(255,255,255,0.03);background:${i === selectedIdx ? 'rgba(0,204,255,0.12)' : 'transparent'}">
-        <span>${s.symbol}</span>
-        <span style="color:rgba(255,255,255,0.25);font-size:9px">${s.name}</span>
+      `<div class="sym-item" data-idx="${i}" data-sym="${escapeHtml(s.symbol)}" style="padding:5px 10px;cursor:pointer;display:flex;justify-content:space-between;color:rgba(255,255,255,0.7);border-bottom:1px solid rgba(255,255,255,0.03);background:${i === selectedIdx ? 'rgba(0,204,255,0.12)' : 'transparent'}">
+        <span>${escapeHtml(s.symbol)}</span>
+        <span style="color:rgba(255,255,255,0.25);font-size:9px">${escapeHtml(s.name)}</span>
       </div>`
-    ).join('') + `<div class="sym-item" data-sym="${filter}" style="padding:4px 10px;cursor:pointer;color:rgba(0,204,255,0.4);font-size:9px;border-top:1px solid rgba(255,255,255,0.05)">↩ Use "${filter}" as custom symbol</div>`;
+    ).join('') + `<div class="sym-item" data-sym="${escapeHtml(filter)}" style="padding:4px 10px;cursor:pointer;color:rgba(0,204,255,0.4);font-size:9px;border-top:1px solid rgba(255,255,255,0.05)">↩ Use "${escapeHtml(filter)}" as custom symbol</div>`;
     symbolDropdown.style.display = 'block';
     symbolDropdown.querySelectorAll('.sym-item').forEach(el => {
       el.addEventListener('mousedown', (e) => {
@@ -1102,11 +1872,30 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   settingsClose?.addEventListener('click', () => settingsPanel?.classList.remove('active'));
 
+  // Settings: Open OakScript Editor button
+  document.getElementById('set-open-editor')?.addEventListener('click', () => {
+    const vis2 = toggleEditor();
+    oakScriptEnabled = vis2;
+    settingsPanel?.classList.remove('active');
+    updateUI();
+  });
+
   document.getElementById('perf-select')?.addEventListener('change', () => {
     const val = (document.getElementById('perf-select') as HTMLSelectElement)?.value;
+    if (val === 'auto') {
+      // Hand control back to the adaptive governor.
+      perfAuto = true;
+      perfGovernor.setEnabled(true);
+      return;
+    }
     if (val === 'low' || val === 'medium' || val === 'high' || val === 'ultra') {
+      // User pinned a fixed tier — stop auto-adapting.
+      perfAuto = false;
+      perfGovernor.setEnabled(false);
+      perfGovernor.setTier(val);
       perfMode = val;
       setPerfMode(val);
+      setParticleCount(tierParticleCount(val));
     }
   });
 
@@ -1149,6 +1938,35 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Resizable toolbar — drag the right-edge handle to change max-width (the
+  // toolbar wraps its buttons onto more/fewer rows as it narrows/widens).
+  const resizeHandle = document.getElementById('toolbar-resize-handle');
+  if (tbar && resizeHandle) {
+    try {
+      const savedWidth = localStorage.getItem('dafe_toolbar_maxwidth');
+      if (savedWidth) tbar.style.maxWidth = `${savedWidth}px`;
+    } catch {}
+    let startW = 0, startMX = 0;
+    resizeHandle.addEventListener('mousedown', (e) => {
+      startW = tbar.getBoundingClientRect().width;
+      startMX = (e as MouseEvent).clientX;
+      const onMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startMX;
+        const newW = Math.max(320, Math.min(window.innerWidth * 0.98, startW + dx * 2));
+        tbar.style.maxWidth = `${newW}px`;
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        try { localStorage.setItem('dafe_toolbar_maxwidth', String(parseFloat(tbar.style.maxWidth))); } catch {}
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+  }
+
   // Draggable settings
   const settingsHeader = document.getElementById('settings-header');
   if (settingsPanel && settingsHeader) {
@@ -1173,28 +1991,182 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const resp = await fetch(`${BACKEND_URL}/api/settings`);
       const data = await resp.json();
-      const s = (s: string) => (document.getElementById(s) as HTMLInputElement);
+      const s = (id: string) => (document.getElementById(id) as HTMLInputElement);
+      const sel = (id: string) => (document.getElementById(id) as HTMLSelectElement);
       if (data.massive_api_key_masked) s('set-massive-key').value = data.massive_api_key_masked;
       if (data.serpapi_api_key_masked) s('set-serp-key').value = data.serpapi_api_key_masked;
       if (data.tradovate_password_masked) s('set-tradovate-pass').value = data.tradovate_password_masked;
       if (data.tradovate_username) s('set-tradovate-user').value = data.tradovate_username;
-      if (data.tradovate_environment) (document.getElementById('set-tradovate-env') as HTMLSelectElement).value = data.tradovate_environment;
-      if (data.llm_provider) (document.getElementById('set-llm-provider') as HTMLSelectElement).value = data.llm_provider;
+      if (data.tradovate_environment) sel('set-tradovate-env').value = data.tradovate_environment;
+      const advisorProvider = data.llm_provider || 'local';
+      sel('set-llm-provider').value = advisorProvider;
       if (data.ollama_base_url) s('set-ollama-url').value = data.ollama_base_url;
-      if (data.llm_trade_advisor_model) s('set-advisor-model').value = data.llm_trade_advisor_model;
+
+      // Populate model dropdowns from backend
+      await populateModelDropdowns();
+      await populateOllamaDropdowns();
+
+      // Restore advisor model into the right field for its provider.
+      if (advisorProvider === 'ollama') {
+        sel('set-advisor-model-cloud').value = data.llm_trade_advisor_model && data.llm_trade_advisor_model !== 'auto' ? data.llm_trade_advisor_model : '';
+      } else if (data.llm_trade_advisor_model) {
+        sel('set-advisor-model').value = data.llm_trade_advisor_model;
+      }
+      applyAdvisorProviderUI(advisorProvider);
+      // Coder: provider (local vs ollama cloud) + the right model field.
+      const coderProvider = data.llm_coder_provider || 'local';
+      sel('set-coder-provider').value = coderProvider;
+      if (coderProvider === 'ollama') {
+        sel('set-coder-model-cloud').value = data.llm_coder_model && data.llm_coder_model !== 'auto' ? data.llm_coder_model : '';
+      } else if (data.llm_coder_model) {
+        sel('set-coder-model').value = data.llm_coder_model;
+      }
+      applyCoderProviderUI(coderProvider);
+
+      // Hardware info
+      try {
+        const hwResp = await fetch(`${BACKEND_URL}/api/hardware`);
+        const hw = await hwResp.json();
+        if (hw.ok) {
+          const info = hw.hardware;
+          const hwEl = document.getElementById('set-hardware-info');
+          if (hwEl) {
+            const parts = [];
+            if (info.gpu) parts.push(`GPU: ${info.gpu_name} (${info.vram_mb}MB)`);
+            parts.push(`CPU: ${info.cpu_cores} cores`);
+            if (info.ram_gb) parts.push(`RAM: ${info.ram_gb}GB`);
+            parts.push(`Suggested ctx: ${info.suggested_ctx}`);
+            hwEl.textContent = parts.join(' | ');
+          }
+        }
+      } catch {}
+
       const voicePref = localStorage.getItem('dafe_voice_pref') || 'auto';
-      const voiceSel = document.getElementById('set-voice') as HTMLSelectElement;
+      const voiceSel = sel('set-voice');
       if (voiceSel) voiceSel.value = voicePref;
 
-      const bgSel = document.getElementById('set-bg-viz') as HTMLSelectElement;
-      if (bgSel) bgSel.value = bgViz;
-      if (data.market_data_source) (document.getElementById('set-data-source') as HTMLSelectElement).value = data.market_data_source;
+      const bgSel = sel('set-bg-viz');
+      if (bgSel) {
+        // Only set the dropdown's displayed value — do NOT mutate the live
+        // bgViz variable here. Opening settings (or toggling the dropdown)
+        // must not change the active background before Save is clicked;
+        // otherwise the star background flips to "plain" the moment the
+        // panel opens. The Save handler applies the choice for real.
+        bgSel.value = data.bg_viz || bgViz;
+      }
+      if (data.market_data_source) {
+        sel('set-data-source').value = data.market_data_source;
+        applyDataSourceMode(data.market_data_source);
+      }
+
       const hkMap: Record<string, string> = {hk3d:'hotkey_3d',hkvp:'hotkey_vp',hkframe:'hotkey_frame',hkoak:'hotkey_oak',hktrend:'hotkey_trend',hkhline:'hotkey_hline',hkray:'hotkey_ray',hkrect:'hotkey_rect',hkfib:'hotkey_fib',hkchannel:'hotkey_channel',hktext:'hotkey_text',hkundo:'hotkey_undo',hkclear:'hotkey_clear',hkdeselect:'hotkey_deselect'};
       for (const [id, key] of Object.entries(hkMap)) {
         const el = document.getElementById('hk-' + id.replace('hk','')) as HTMLInputElement;
         if (el && data[key]) el.value = data[key];
       }
     } catch { /* silent */ }
+  }
+
+  // ─── Paper Trading settings (client-side only — no backend round trip) ──
+  function updateTradeFormulaPreview(): void {
+    const preview = document.getElementById('set-trade-formula-preview');
+    if (!preview) return;
+    const cfg = broker.getConfig();
+    const lastPrice = transformed[transformed.length - 1]?.close ?? 100;
+    const qty = parseFloat((document.getElementById('tradeQuantity') as HTMLInputElement)?.value || '1') || 1;
+    const c = describeCommission(cfg.commission, qty);
+    const sl = describeSlippage(cfg.slippage, lastPrice);
+    preview.innerHTML = `Commission: ${c.formula}<br>Slippage: ${sl.formula}`;
+  }
+  function applyTradeSettingsFromForm(): void {
+    const cashEl = document.getElementById('set-trade-cash') as HTMLInputElement;
+    const commModeEl = document.getElementById('set-trade-comm-mode') as HTMLSelectElement;
+    const commValEl = document.getElementById('set-trade-comm-value') as HTMLInputElement;
+    const slipModeEl = document.getElementById('set-trade-slip-mode') as HTMLSelectElement;
+    const slipValEl = document.getElementById('set-trade-slip-value') as HTMLInputElement;
+    const tickSizeEl = document.getElementById('set-trade-tick-size') as HTMLInputElement;
+    const commission: CommissionConfig = { mode: (commModeEl?.value || 'per-trade') as CommissionMode, value: parseFloat(commValEl?.value || '1') || 0 };
+    const slippage = { mode: (slipModeEl?.value || 'fixed-ticks') as SlippageMode, value: parseFloat(slipValEl?.value || '1') || 0, tickSize: parseFloat(tickSizeEl?.value || '0.01') || 0.01 };
+    broker.updateConfig({ commission, slippage });
+    saveTradeSettings({ cash: parseFloat(cashEl?.value || '100000') || 100000, commission, slippage });
+    updateTradeFormulaPreview();
+  }
+  function populateTradeSettingsUI(): void {
+    const cfg = broker.getConfig();
+    const s = (id: string) => document.getElementById(id) as HTMLInputElement;
+    const sel = (id: string) => document.getElementById(id) as HTMLSelectElement;
+    if (s('set-trade-cash')) s('set-trade-cash').value = String(cfg.startingCash);
+    if (sel('set-trade-comm-mode')) sel('set-trade-comm-mode').value = cfg.commission.mode;
+    if (s('set-trade-comm-value')) s('set-trade-comm-value').value = String(cfg.commission.value);
+    if (sel('set-trade-slip-mode')) sel('set-trade-slip-mode').value = cfg.slippage.mode;
+    if (s('set-trade-slip-value')) s('set-trade-slip-value').value = String(cfg.slippage.value);
+    if (s('set-trade-tick-size')) s('set-trade-tick-size').value = String(cfg.slippage.tickSize);
+    updateTradeFormulaPreview();
+  }
+  populateTradeSettingsUI();
+  ['set-trade-cash', 'set-trade-comm-mode', 'set-trade-comm-value', 'set-trade-slip-mode', 'set-trade-slip-value', 'set-trade-tick-size'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('change', applyTradeSettingsFromForm);
+    document.getElementById(id)?.addEventListener('input', updateTradeFormulaPreview);
+  });
+
+  async function populateModelDropdowns() {
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/models`);
+      const data = await resp.json();
+      if (!data.ok || !data.models) return;
+      const dropdowns = ['set-advisor-model', 'set-coder-model'];
+      for (const ddId of dropdowns) {
+        const dd = document.getElementById(ddId) as HTMLSelectElement;
+        if (!dd) continue;
+        // Keep "Auto-detect" option, clear the rest
+        while (dd.options.length > 1) dd.remove(1);
+        for (const m of data.models) {
+          const opt = document.createElement('option');
+          opt.value = m.name.replace('.gguf', '');
+          // Show the context this model will get on THIS machine, when known.
+          const ctx = m.recommended?.ctx;
+          const ctxLabel = ctx ? ` · ${ctx >= 1024 ? (ctx / 1024) + 'k' : ctx} ctx` : '';
+          opt.textContent = `${m.name.replace('.gguf', '')} (${m.size_gb}GB${ctxLabel})`;
+          dd.appendChild(opt);
+        }
+      }
+    } catch { /* silent */ }
+  }
+
+  // Populate the two Ollama model dropdowns from the backend's /api/ollama/models
+  // proxy (which lists every tag the local Ollama daemon knows — local AND cloud).
+  async function populateOllamaDropdowns() {
+    const ids = ['set-advisor-model-cloud', 'set-coder-model-cloud'];
+    try {
+      const resp = await fetch(`${BACKEND_URL}/api/ollama/models`);
+      const data = await resp.json();
+      for (const ddId of ids) {
+        const dd = document.getElementById(ddId) as HTMLSelectElement;
+        if (!dd) continue;
+        const prev = dd.value;
+        dd.innerHTML = '';
+        if (!data.ok || !data.models || data.models.length === 0) {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = data.detail || 'No Ollama models — start Ollama or run `ollama signin`';
+          dd.appendChild(opt);
+          continue;
+        }
+        for (const m of data.models) {
+          const opt = document.createElement('option');
+          opt.value = m.name;
+          const parts: string[] = [m.name];
+          if (m.parameter_size) parts.push(m.parameter_size);
+          if (m.cloud) parts.push('cloud');
+          else if (m.size_gb) parts.push(`${m.size_gb}GB`);
+          const ctx = m.context_length;
+          if (ctx) parts.push(ctx >= 1024 ? `${Math.round(ctx / 1024)}k ctx` : `${ctx} ctx`);
+          opt.textContent = parts.join(' · ');
+          dd.appendChild(opt);
+        }
+        if (prev && Array.from(dd.options).some(o => o.value === prev)) dd.value = prev;
+      }
+    } catch { /* leave placeholder */ }
   }
 
   document.getElementById('settings-save')?.addEventListener('click', async () => {
@@ -1207,32 +2179,149 @@ document.addEventListener('DOMContentLoaded', () => {
       tradovate_password: g('set-tradovate-pass'),
       tradovate_environment: sel('set-tradovate-env'),
       llm_provider: sel('set-llm-provider'),
-      ollama_base_url: g('set-ollama-url'),
-      llm_trade_advisor_model: g('set-advisor-model'),
+      ollama_base_url: g('set-ollama-url') || 'http://localhost:11434',
+      llm_trade_advisor_model: sel('set-llm-provider') === 'ollama'
+        ? (g('set-advisor-model-cloud').trim() || 'qwen3:latest')
+        : sel('set-advisor-model'),
+      llm_coder_provider: sel('set-coder-provider'),
+      // Coder model comes from the cloud text field when provider is ollama.
+      llm_coder_model: sel('set-coder-provider') === 'ollama'
+        ? (g('set-coder-model-cloud').trim() || 'qwen3-coder:480b-cloud')
+        : sel('set-coder-model'),
       market_data_source: sel('set-data-source'),
+      bg_viz: sel('set-bg-viz'),
       hotkey_3d: g('hk-3d'), hotkey_vp: g('hk-vp'), hotkey_frame: g('hk-frame'),
       hotkey_oak: g('hk-oak'), hotkey_trend: g('hk-trend'), hotkey_hline: g('hk-hline'),
       hotkey_ray: g('hk-ray'), hotkey_rect: g('hk-rect'), hotkey_fib: g('hk-fib'),
       hotkey_channel: g('hk-channel'), hotkey_text: g('hk-text'), hotkey_undo: g('hk-undo'),
       hotkey_clear: g('hk-clear'), hotkey_deselect: g('hk-deselect'),
     };
+    const btn = document.getElementById('settings-save') as HTMLButtonElement;
+    const status = document.getElementById('settings-status');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
     try {
       const resp = await fetch(`${BACKEND_URL}/api/settings`, {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
       });
       const data = await resp.json();
-      const status = document.getElementById('settings-status');
-      if (status) { status.textContent = data.ok ? 'Saved!' : 'Error saving'; status.style.display = ''; setTimeout(() => status.style.display = 'none', 3000); }
-    } catch { /* silent */ }
+      if (status) {
+        status.textContent = data.ok ? '✓ Settings saved successfully' : '✕ Error saving: ' + (data.detail || 'Unknown error');
+        status.style.display = '';
+        status.style.color = data.ok ? '#22cc88' : '#ff4477';
+        setTimeout(() => { status.style.display = 'none'; }, 4000);
+      }
+      if (data.ok) {
+        bgViz = (document.getElementById('set-bg-viz') as HTMLSelectElement)?.value as any || bgViz;
+        // Auto-reload model if the selection changed
+        const newModel = sel('set-advisor-model');
+        if (newModel && newModel !== (window as any).__dafeLastModel) {
+          (window as any).__dafeLastModel = newModel;
+          switchModelNow();
+        }
+        // Also update advisor's model reference
+        if (newModel) advisor.config.model = newModel;
+        // Massive key may have just been added/removed — re-check which
+        // sub-minute timeframes are actually servable.
+        refreshProviderCapabilities();
+      }
+    } catch (err: any) {
+      if (status) {
+        status.textContent = '✕ Connection error - is backend running?';
+        status.style.display = '';
+        status.style.color = '#ff4477';
+        setTimeout(() => { status.style.display = 'none'; }, 4000);
+      }
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save Settings'; }
+    }
   });
+
+  // ── Hot-swap model button ──
+  async function switchModelNow(): Promise<void> {
+    const status = document.getElementById('set-switch-status');
+    const btn = document.getElementById('set-switch-model') as HTMLButtonElement;
+    if (!status || !btn) return;
+    status.style.display = '';
+    status.textContent = 'Stopping current model...';
+    status.style.color = '#FFB800';
+    btn.disabled = true;
+    try {
+      const model = (document.getElementById('set-advisor-model') as HTMLSelectElement)?.value || 'auto';
+      status.textContent = `Loading ${model}... (may take 30-60s)`;
+      const resp = await fetch(`${BACKEND_URL}/api/model/reload`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        status.textContent = `✓ ${data.model || model} loaded (ctx: ${data.ctx || '?'})`;
+        status.style.color = '#22cc88';
+        // Refresh token optimizer with new context size
+        import('./trade-advisor/token-optimizer').then(m => m.prefetchModelProfile());
+      } else if (data.loading) {
+        // Model is still loading (large / partially-offloaded). Poll status
+        // until it becomes ready instead of reporting a hard failure.
+        status.textContent = `${data.model || model} loading… still warming up`;
+        status.style.color = '#FFB800';
+        const ok = await pollModelReady(180_000);
+        if (ok) {
+          status.textContent = `✓ ${data.model || model} ready`;
+          status.style.color = '#22cc88';
+          import('./trade-advisor/token-optimizer').then(m => m.prefetchModelProfile());
+        } else {
+          status.textContent = `⚠ ${data.model || model} still loading — try chatting in a moment`;
+          status.style.color = '#FFB800';
+        }
+      } else {
+        status.textContent = `✕ ${data.detail || 'Failed to load'}`;
+        status.style.color = '#ff4477';
+      }
+    } catch (err: any) {
+      status.textContent = '✕ Backend unreachable — is it running?';
+      status.style.color = '#ff4477';
+    } finally {
+      btn.disabled = false;
+      setTimeout(() => { status.style.display = 'none'; }, 10000);
+    }
+  }
+
+  // Poll /api/model/status until the server reports a running model.
+  async function pollModelReady(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const r = await fetch(`${BACKEND_URL}/api/model/status`);
+        const d = await r.json();
+        if (d.ok && d.running) return true;
+      } catch {}
+    }
+    return false;
+  }
+
+  document.getElementById('set-switch-model')?.addEventListener('click', switchModelNow);
 
   document.getElementById('set-voice')?.addEventListener('change', () => {
     const val = (document.getElementById('set-voice') as HTMLSelectElement)?.value || 'auto';
     voice.setVoicePreference(val as any);
   });
 
+  // Background viz is only applied on Save — changing the dropdown here must
+  // NOT mutate the live bgViz, or the background flips before saving.
   document.getElementById('set-bg-viz')?.addEventListener('change', () => {
-    bgViz = (document.getElementById('set-bg-viz') as HTMLSelectElement)?.value as any || 'particles';
+    // no-op live; the Save button reads this dropdown's value and applies it.
+  });
+
+  document.getElementById('set-data-source')?.addEventListener('change', () => {
+    applyDataSourceMode((document.getElementById('set-data-source') as HTMLSelectElement)?.value || 'yahoo');
+  });
+
+  document.getElementById('set-coder-provider')?.addEventListener('change', () => {
+    applyCoderProviderUI((document.getElementById('set-coder-provider') as HTMLSelectElement)?.value || 'local');
+  });
+
+  document.getElementById('set-llm-provider')?.addEventListener('change', () => {
+    applyAdvisorProviderUI((document.getElementById('set-llm-provider') as HTMLSelectElement)?.value || 'local');
   });
 
   // ─── News Box ────────────────────────────────────────────────────
@@ -1322,9 +2411,15 @@ document.addEventListener('DOMContentLoaded', () => {
     return '';
   }
 
-  // Fetch news periodically — silent refreshes so no flash
+  // Fetch news periodically — silent refreshes so no flash. Skip when the tab
+  // is hidden or the news panel is collapsed to avoid pointless web-search load.
   setTimeout(() => fetchNews(), 3000);
-  setInterval(() => fetchNews({ silent: true }), 120000);
+  setInterval(() => {
+    if (document.hidden) return;
+    const body = document.getElementById('news-body');
+    if (body && body.classList.contains('collapsed')) return;
+    fetchNews({ silent: true });
+  }, 300000);
 
   // ─── Trade Advisor Controls ─────────────────────────────────────
   const fab = document.getElementById('advisor-fab');
@@ -1404,10 +2499,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  document.getElementById('advisor-close')?.addEventListener('click', () => {
+    advisorOpen = false;
+    panel?.classList.remove('visible');
+    fab?.classList.remove('open');
+  });
+
   // ─── Trading Panel ─────────────────────────────────────────────
   const tradingPanel = document.getElementById('trading-panel');
   const tradingPanelHeader = document.getElementById('tradingPanelHeader');
   const tradingPanelCollapse = document.getElementById('tradingPanelCollapse');
+  const tradingPanelClose = document.getElementById('tradingPanelClose');
   const tradingPanelBody = document.getElementById('tradingPanelBody');
 
   if (tradingPanelCollapse && tradingPanel) {
@@ -1416,6 +2518,46 @@ document.addEventListener('DOMContentLoaded', () => {
       tradingPanelCollapse.textContent = tradingPanel.classList.contains('collapsed') ? '+' : '−';
     });
   }
+  tradingPanelClose?.addEventListener('click', () => {
+    if (tradingPanel) tradingPanel.style.display = 'none';
+  });
+
+  // ─── Widget Registry (close/reopen menu) ────────────────────────
+  const newsBoxEl = document.getElementById('news-box');
+  document.getElementById('news-close')?.addEventListener('click', () => {
+    if (newsBoxEl) newsBoxEl.style.display = 'none';
+  });
+
+  registerWidget({
+    name: 'Dashboard',
+    show: () => dashboard.show(),
+    hide: () => dashboard.hide(),
+    isVisible: () => dashboard.panel.style.display !== 'none',
+  });
+  registerWidget({
+    name: 'News & Events',
+    show: () => { if (newsBoxEl) newsBoxEl.style.display = ''; },
+    hide: () => { if (newsBoxEl) newsBoxEl.style.display = 'none'; },
+    isVisible: () => !!newsBoxEl && newsBoxEl.style.display !== 'none',
+  });
+  registerWidget({
+    name: 'Trade Advisor',
+    show: () => {
+      advisorOpen = true;
+      panel?.classList.add('visible');
+      fab?.classList.add('open');
+      updateAdvisorContext();
+    },
+    hide: () => { advisorOpen = false; panel?.classList.remove('visible'); fab?.classList.remove('open'); },
+    isVisible: () => !!panel?.classList.contains('visible'),
+  });
+  registerWidget({
+    name: 'Trading',
+    show: () => { if (tradingPanel) tradingPanel.style.display = ''; },
+    hide: () => { if (tradingPanel) tradingPanel.style.display = 'none'; },
+    isVisible: () => !!tradingPanel && tradingPanel.style.display !== 'none',
+  });
+  initWidgetMenu('widgets-toggle', 'widgets-menu');
 
   if (tradingPanel && tradingPanelHeader) {
     let tOffX = 0, tOffY = 0;
@@ -1440,15 +2582,62 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  document.getElementById('tradeSell')?.addEventListener('click', () => {
-    const qty = (document.getElementById('tradeQuantity') as HTMLInputElement)?.value || '1';
-    appendAdvisorMessage('system', `SELL ${qty} ${getQtyUnit(currentSymbol)} of ${currentSymbol} at market`);
+  // ─── Order form: type-dependent rows + submit ──────────────────
+  const orderTypeSel = document.getElementById('tradeOrderType') as HTMLSelectElement | null;
+  const limitRow = document.getElementById('tradeLimitRow');
+  const stopRow = document.getElementById('tradeStopRow');
+  const trailRow = document.getElementById('tradeTrailRow');
+  function syncOrderRows(): void {
+    const t = (orderTypeSel?.value || 'market') as OrderType;
+    limitRow?.classList.toggle('hidden', t !== 'limit' && t !== 'stop-limit');
+    stopRow?.classList.toggle('hidden', t !== 'stop' && t !== 'stop-limit');
+    trailRow?.classList.toggle('hidden', t !== 'trailing-stop');
+  }
+  orderTypeSel?.addEventListener('change', syncOrderRows);
+  syncOrderRows();
+
+  document.getElementById('tradeCurrency')?.addEventListener('change', (e) => {
+    tradeCurrencyOverride = (e.target as HTMLSelectElement).value;
+    broker.updateConfig({ currency: tradeCurrencyOverride });
+    const autoEl = document.getElementById('tradeCurrencyAuto');
+    if (autoEl) autoEl.textContent = 'manual';
+    renderTradeAccount();
   });
 
-  document.getElementById('tradeBuy')?.addEventListener('click', () => {
-    const qty = (document.getElementById('tradeQuantity') as HTMLInputElement)?.value || '1';
-    appendAdvisorMessage('system', `BUY ${qty} ${getQtyUnit(currentSymbol)} of ${currentSymbol} at market`);
-  });
+  function submitOrder(side: 'buy' | 'sell'): void {
+    const qty = parseFloat((document.getElementById('tradeQuantity') as HTMLInputElement)?.value || '1') || 1;
+    const type = (orderTypeSel?.value || 'market') as OrderType;
+    const limitPrice = parseFloat((document.getElementById('tradeLimitPrice') as HTMLInputElement)?.value || '');
+    const stopPrice = parseFloat((document.getElementById('tradeStopPrice') as HTMLInputElement)?.value || '');
+    const trailAmount = parseFloat((document.getElementById('tradeTrailAmount') as HTMLInputElement)?.value || '');
+    const trailIsPercent = (document.getElementById('tradeTrailUnit') as HTMLSelectElement)?.value === 'pct';
+
+    if ((type === 'limit' || type === 'stop-limit') && !isFinite(limitPrice)) {
+      appendAdvisorMessage('system', 'Enter a limit price for this order type.'); return;
+    }
+    if ((type === 'stop' || type === 'stop-limit') && !isFinite(stopPrice)) {
+      appendAdvisorMessage('system', 'Enter a stop price for this order type.'); return;
+    }
+    if (type === 'trailing-stop' && !isFinite(trailAmount)) {
+      appendAdvisorMessage('system', 'Enter a trail amount for this order type.'); return;
+    }
+
+    const order = broker.placeOrder({
+      symbol: currentSymbol, side, type, qty,
+      limitPrice: isFinite(limitPrice) ? limitPrice : undefined,
+      stopPrice: isFinite(stopPrice) ? stopPrice : undefined,
+      trailAmount: isFinite(trailAmount) ? trailAmount : undefined,
+      trailIsPercent,
+    });
+    if (order.status === 'rejected') {
+      appendAdvisorMessage('system', `Order rejected: ${order.rejectReason}`);
+    } else if (order.status === 'working') {
+      appendAdvisorMessage('system', `${side.toUpperCase()} ${qty} ${getQtyUnit(currentSymbol)} of ${currentSymbol} — ${type} order working`);
+    }
+    renderTradeOrders();
+  }
+  document.getElementById('tradeSell')?.addEventListener('click', () => submitOrder('sell'));
+  document.getElementById('tradeBuy')?.addEventListener('click', () => submitOrder('buy'));
 
   updateUI();
   updateTradingPanel();
@@ -1510,9 +2699,34 @@ interface OakPathCache {
 }
 let oakPathCache: OakPathCache | null = null;
 
+// Content fingerprint of the unified 3D scene's plot3d series — distinct from
+// oakPathKey (which only tracks plot COUNT). Scripts like ChronoSphere/Echo
+// Chamber emit the same fixed number of plot3d() calls every bar, so a
+// count-only key never changes after the indicator is first toggled on,
+// and the 3D geometry rebuild (mark3DSceneDirty) would never fire again as
+// new bars/ticks stream in — leaving indicator geometry frozen or absent
+// while the bar group (built independently) keeps rendering.
+let chart3DSig = '';
+
 function frame(now: number) {
+  // A throw anywhere in frameBody() must not kill the recursive rAF chain —
+  // otherwise one bad render (e.g. NaN/Infinity from a buggy indicator
+  // reaching the 3D builders) permanently freezes the canvas with no
+  // visible error, which looks exactly like a browser crash to the user.
+  try {
+    frameBody(now);
+  } catch (e) {
+    console.error('[DAFE] frame() error — render loop recovering:', e);
+  }
+  requestAnimationFrame(frame);
+}
+
+function frameBody(now: number) {
   time = now;
   const { width, height } = canvas;
+
+  // Adaptive performance governor — samples FPS and retunes quality live.
+  perfGovernor.sample(now);
 
   updateSnapshotEveryNthFrame();
 
@@ -1537,65 +2751,117 @@ function frame(now: number) {
     vpCacheBins = volumeBins;
   }
 
-  if (is3DMode) {
+  // ── 3D indicator scene takes over when pane='3d' is active ──
+  // getCombinedPlots() walks every plot of every active indicator (which can
+  // be thousands of entries — plot()/hline() push once per BAR, not once per
+  // indicator) — compute it once per frame here and reuse it below instead
+  // of calling it again, which was doubling that cost on every single frame.
+  const activeIndicators = hasActiveIndicators();
+  const combined3d = activeIndicators ? getCombinedPlots() : null;
+  const hasPane3d = combined3d ? combined3d.plot3d.some(p => p.pane === '3d') : false;
+
+  if (hasPane3d) {
+    // 3D indicator mode: render bars + indicator geometry in Three.js every frame
+    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.width, canvas.height);
+    // Draw time axis on the 2D canvas (always needed)
+    drawTimeAxis(ctx, transformed, view);
+  } else if (is3DMode) {
     draw3DScene(ctx, transformed, view, {
       barType, perBarVols: vpiEnabled ? perBarVols : undefined,
       volumeBins, volumeMode: vpSettings.mode, visualEngine: vpSettings.visualEngine,
       volumeEnabled, vpiEnabled, time, profileWidth: vpSettings.profileWidth, vpComputed,
+      bgViz,
     });
     drawTimeAxis(ctx, transformed, view);
   } else {
     // 2D mode — background layer based on bgViz
     if (bgViz === 'stars') drawBackground(ctx, time);
+    else if (bgViz === 'graph') {
+      // Subtle graph-paper grid
+      ctx.fillStyle = '#080816';
+      ctx.fillRect(0, 0, width, height);
+      ctx.strokeStyle = 'rgba(30,30,60,0.4)';
+      ctx.lineWidth = 0.5;
+      const gs = 40;
+      for (let x = 0; x < width; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
+      for (let y = 0; y < height; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+    }
     else { ctx.fillStyle = '#0a0a18'; ctx.fillRect(0, 0, width, height); }
     drawGrid(ctx, transformed, view, time);
     drawBars(ctx, transformed, view, time, barType, vpiEnabled ? perBarVols : undefined);
     drawTimeAxis(ctx, transformed, view);
   }
 
-  if (bgViz === 'particles') { updateParticles(time, width, height); drawParticles(ctx); }
-
-  if (bgViz === 'particles') { updateParticles(time, width, height); drawParticles(ctx); }
+  if (bgViz === 'particles') {
+    updateGPUParticles(time);
+    drawCPUParticles(ctx, time, width, height, perfMode === 'low' ? 0.4 : perfMode === 'medium' ? 0.7 : 1.0);
+  }
 
   const is2DVolMode = vpSettings.mode === '2D-Side' || vpSettings.mode === '2D-Per-Bar';
-  if (volumeEnabled && (!is3DMode || is2DVolMode)) {
+  if (volumeEnabled && !hasPane3d && (!is3DMode || is2DVolMode)) {
     drawVolumeProfile(ctx, volumeBins, vpSettings.mode, time, vpComputed, vpSettings.profileWidth);
   }
 
-  // OakScript plots — cache filtered arrays to avoid re-filtering every frame
-  if (oakScriptEnabled) {
-    const result = getCurrentResult();
-    if (result && result.plots.length > 0) {
-      const filterKey = result.plots.length + (result.plots[0]?.type || '');
-      if (filterKey !== oakPathKey || !oakPathCache) {
-        oakPathKey = filterKey;
-        oakPathCache = {
-          mainPlots: result.plots.filter(p => p.pane !== 'separate' && p.type !== 'plot3d'),
-          sepPlots: result.plots.filter(p => p.pane === 'separate' && p.type !== 'plot3d'),
-        };
-        // Extract 3D plots — separate pane goes to lower, main pane goes to chart overlay
-        const all3D = result.plots.filter(p => p.type === 'plot3d') as OakPlot3D[];
-        const sep3D = all3D.filter(p => p.pane === 'separate');
-        const main3D = all3D.filter(p => p.pane !== 'separate');
+  // OakScript plots — combined from all active indicator instances
+  if (hasActiveIndicators()) {
+    const combined = getCombinedPlots();
+    const filterKey = combined.main.length + combined.sep.length + combined.plot3d.length;
+
+    if (hasPane3d) {
+      // Rebuild the 3D scene whenever the indicator's actual series data
+      // changes (new bar/tick), not just when the plot count changes.
+      const p3d = combined.plot3d as OakPlot3D[];
+      const sig = p3d.map(p => `${p.name}|${p.style}|${p.pane}|${p.series.length}|${p.series[p.series.length - 1]}`).join(';');
+      if (sig !== chart3DSig) {
+        chart3DSig = sig;
+        mark3DSceneDirty();
+      }
+    }
+
+    if (String(filterKey) !== oakPathKey || !oakPathCache) {
+      oakPathKey = String(filterKey);
+      oakPathCache = { mainPlots: combined.main, sepPlots: combined.sep };
+
+      if (hasPane3d) {
+        // 3D indicator active: no separate pane 3D, no 2D overlays
+        hide3D();
+        if (isViz3DActive()) disposeViz();
+      } else {
+        // Regular mode: handle separate pane 3D + overlay 3D
+        const sep3D = combined.plot3d.filter(p => p.pane === 'separate') as OakPlot3D[];
         show3D(sep3D);
+        const main3D = combined.plot3d.filter(p => p.pane !== 'separate') as OakPlot3D[];
         if (main3D.length > 0 && !isViz3DActive()) toggle3DViz(transformed, view, canvas.width, canvas.height);
         if (main3D.length === 0 && isViz3DActive()) { disposeViz(); }
       }
-      if (oakPathCache.mainPlots.length > 0) drawOakScriptPlots(ctx, oakPathCache.mainPlots, transformed, view);
-      if (oakPathCache.sepPlots.length > 0) drawSecondaryChart(secCtx, oakPathCache.sepPlots, transformed, view);
-      // renderLowerPane();
+    }
+    if (filterKey > 0) {
+      if (hasPane3d) {
+        // 3D indicator active: clear secondary canvas, no 2D plots
+        secCtx.fillStyle = '#0a0a18';
+        secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
+      } else {
+        if (oakPathCache.mainPlots.length > 0 && !isChart3DMode()) {
+          drawOakScriptPlots(ctx, oakPathCache.mainPlots, transformed, view);
+        }
+        if (oakPathCache.sepPlots.length > 0) drawSecondaryChart(secCtx, oakPathCache.sepPlots, transformed, view);
+      }
     } else {
       secCtx.fillStyle = '#0a0a18';
       secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
+      if (isViz3DActive()) disposeViz();
+      if (isChart3DMode()) dispose3DScene();
+      hide3D();
     }
   } else {
     secCtx.fillStyle = '#0a0a18';
     secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
     if (isViz3DActive()) disposeViz();
+    if (isChart3DMode()) dispose3DScene();
     hide3D();
   }
 
-  if (!is3DMode) draw.drawAll(ctx, transformed, view);
+  if (!is3DMode && !hasPane3d) draw.drawAll(ctx, transformed, view);
 
   if (mouseX >= 0 && mouseY >= 0) {
     drawCrosshair(ctx, mouseX, mouseY);
@@ -1603,24 +2869,29 @@ function frame(now: number) {
   }
 
   // Status bar — only rebuild string when content changes (not every frame)
-  const poc = vpComputed?.poc || null;
   const osCount = oakPathCache ? oakPathCache.mainPlots.length + oakPathCache.sepPlots.length : 0;
   const osErr = oakScriptErrors.length;
-  const statusKey = `${currentSymbol}|${dataProviderLabel}|${is3DMode ? 3 : 2}|${barType}|${timeframe}|${vpiEnabled}|${oakScriptEnabled}|${osCount}|${osErr}|${volumeEnabled}|${vpSettings.mode}|${volumeBins.length}|${view.barSpacing.toFixed(1)}`;
-  if (statusKey !== vpCacheKey + '_status') {
+  const hybridActive = dataSourceMode === 'hybrid' && hybridEngine.isActive();
+  const hybridSt = hybridActive ? hybridEngine.getStatus() : null;
+  const hybridAcc = hybridSt ? (hybridSt.accuracy * 100).toFixed(1) : '';
+  const hybridMode = hybridSt ? (hybridSt.mode === 'blend' ? 'blend' : hybridSt.mode === 'paid-only' ? 'paid' : 'synth') : '';
+  const statusKey = `${currentSymbol}|${dataProviderLabel}|${is3DMode ? 3 : 2}|${barType}|${timeframe}|${volumeEnabled}|${vpSettings.mode}|${view.barSpacing.toFixed(1)}|${liveTicksEnabled}|${hybridAcc}|${hybridMode}`;
+  if (statusKey !== (window as any).__dafeStatusKey) {
     (window as any).__dafeStatusKey = statusKey;
-    const status = [
-      `DAFE ${currentSymbol}`, `Data: ${dataProviderLabel}`, `Mode: ${is3DMode ? '3D' : '2D'}`,
-      `Type: ${barType}`, `TF: ${timeframe}`, `VPI: ${vpiEnabled ? 'ON' : 'OFF'}`,
-      `Live: ${liveTicksEnabled ? '◆' : '-'}`,
+    const parts = [
+      `DAFE ${currentSymbol}`,
+      `Data: ${dataProviderLabel}`,
+      `Mode: ${is3DMode ? '3D' : '2D'}`,
+      `Type: ${barType}`,
+      `TF: ${timeframe}`,
+      `Live: ${liveTicksEnabled ? (hybridActive ? `⚡Hybrid ${hybridMode} ${hybridAcc}%` : '◆') : '-'}`,
       getMarketStatus(currentSymbol) === 'open' ? '●' : '○',
-      `Oak: ${oakScriptEnabled ? osCount + ' plots' + (osErr ? ` (${osErr} err)` : '') : 'OFF'}`,
-      `Vol: ${vpSettings.mode}${volumeEnabled ? '' : ' OFF'}`, `Zoom: ${view.barSpacing.toFixed(1)}px`,
-    ].join('  │  ');
-    drawStatusBar(ctx, status);
+    ];
+    if (osCount > 0 || osErr > 0) parts.push(`Oak: ${osCount}${osErr ? ` (${osErr} err)` : ''}`);
+    parts.push(`Vol: ${volumeEnabled ? vpSettings.mode : 'OFF'}`);
+    parts.push(`Zoom: ${view.barSpacing.toFixed(1)}px`);
+    drawStatusBar(ctx, parts.join('  │  '));
   }
-
-  requestAnimationFrame(frame);
 }
 
 requestAnimationFrame(frame);

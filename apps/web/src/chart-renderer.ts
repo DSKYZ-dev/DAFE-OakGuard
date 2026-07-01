@@ -92,6 +92,95 @@ export function priceToY(price: number, minP: number, pRange: number, height: nu
   return cBot - ((price - minP) / pRange) * cH + (view.offsetY || 0);
 }
 
+/**
+ * Shared rich-series renderer for OakScript plot() output.
+ * Honors per-bar colors and PineScript-style render styles so users can
+ * combine/layer/manipulate plots into expressive indicators.
+ */
+export interface RichPoint { x: number; y: number; value: number; color: string }
+export function renderRichSeries(
+  ctx: CanvasRenderingContext2D,
+  pts: RichPoint[],
+  opts: { style: string; linewidth: number; baselineY: number; barSpacing: number; glow?: boolean },
+): void {
+  if (pts.length === 0) return;
+  const { style, linewidth: lw, baselineY, barSpacing } = opts;
+  const glow = opts.glow !== false;
+  const colorsUniform = pts.every(p => p.color === pts[0].color);
+
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (style === 'histogram' || style === 'columns') {
+    const bw = Math.max(1, barSpacing * 0.7);
+    for (const p of pts) {
+      ctx.fillStyle = p.color;
+      const top = Math.min(p.y, baselineY), h = Math.abs(p.y - baselineY);
+      ctx.fillRect(p.x - bw / 2, top, bw, Math.max(1, h));
+    }
+    return;
+  }
+  if (style === 'circles') {
+    for (const p of pts) { ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, lw + 1.5, 0, Math.PI * 2); ctx.fill(); }
+    return;
+  }
+  if (style === 'cross') {
+    ctx.lineWidth = lw + 0.5;
+    for (const p of pts) {
+      ctx.strokeStyle = p.color;
+      ctx.beginPath();
+      ctx.moveTo(p.x - 4, p.y); ctx.lineTo(p.x + 4, p.y);
+      ctx.moveTo(p.x, p.y - 4); ctx.lineTo(p.x, p.y + 4); ctx.stroke();
+    }
+    return;
+  }
+  if (pts.length < 2) return;
+  const stepped = style === 'stepline';
+
+  // Build the polyline once (stepped or straight).
+  const line = (): void => {
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let k = 1; k < pts.length; k++) {
+      if (stepped) ctx.lineTo(pts[k].x, pts[k - 1].y);
+      ctx.lineTo(pts[k].x, pts[k].y);
+    }
+  };
+
+  if (style === 'area') {
+    // Fill to baseline using the latest color at low alpha, then stroke on top.
+    ctx.beginPath();
+    line();
+    ctx.lineTo(pts[pts.length - 1].x, baselineY);
+    ctx.lineTo(pts[0].x, baselineY);
+    ctx.closePath();
+    ctx.fillStyle = hexToRgba(pts[pts.length - 1].color, 0.18);
+    ctx.fill();
+  }
+
+  if (colorsUniform) {
+    const col = pts[0].color;
+    if (glow) {
+      ctx.strokeStyle = col; ctx.lineWidth = lw + 2;
+      ctx.shadowBlur = 8; ctx.shadowColor = hexToRgba(col, 0.25);
+      ctx.beginPath(); line(); ctx.stroke(); ctx.shadowBlur = 0;
+    }
+    ctx.strokeStyle = col; ctx.lineWidth = lw;
+    ctx.beginPath(); line(); ctx.stroke();
+  } else {
+    // Per-bar color: stroke each segment in the destination point's color.
+    ctx.lineWidth = lw;
+    ctx.shadowBlur = 0;
+    for (let k = 1; k < pts.length; k++) {
+      ctx.strokeStyle = pts[k].color;
+      ctx.beginPath();
+      ctx.moveTo(pts[k - 1].x, pts[k - 1].y);
+      if (stepped) ctx.lineTo(pts[k].x, pts[k - 1].y);
+      ctx.lineTo(pts[k].x, pts[k].y);
+      ctx.stroke();
+    }
+  }
+}
+
 /** Inverse of priceToY — pixel y back to a price. */
 export function yToPrice(y: number, minP: number, pRange: number, height: number, view: ViewState): number {
   const cTop = height * TOP_FRAC;
@@ -103,12 +192,19 @@ export function yToPrice(y: number, minP: number, pRange: number, height: number
 /** Visible price range (min + span) for the current view — used by overlays/drawings. */
 export function getPriceRange(bars: BaseBar[], view: ViewState, width: number): { minP: number; pRange: number; start: number; vLen: number } {
   const { start, end } = getVisibleRange(view, width, bars.length);
-  const visible = bars.slice(start, Math.min(end + 1, bars.length));
-  if (visible.length === 0) return { minP: 0, pRange: 1, start, vLen: 0 };
-  const prices = visible.flatMap(b => [b.high, b.low]);
-  const minP = Math.min(...prices);
-  const maxP = Math.max(...prices);
-  return { minP, pRange: (maxP - minP) || 1, start, vLen: visible.length };
+  const endIdx = Math.min(end + 1, bars.length);
+  const vLen = Math.max(0, endIdx - start);
+  if (vLen === 0) return { minP: 0, pRange: 1, start, vLen: 0 };
+  // Single-pass min/max over the visible range instead of slicing the array,
+  // flat-mapping into a new [high,low,...] array, and spreading it into
+  // Math.min/max twice — this runs every frame via drawBars/xToBarIndex.
+  let minP = Infinity, maxP = -Infinity;
+  for (let i = start; i < endIdx; i++) {
+    const b = bars[i];
+    if (b.high > maxP) maxP = b.high;
+    if (b.low < minP) minP = b.low;
+  }
+  return { minP, pRange: (maxP - minP) || 1, start, vLen };
 }
 
 /** Pixel x → absolute bar index (may be fractional / out of range). */
@@ -136,7 +232,7 @@ export function drawBackground(ctx: CanvasRenderingContext2D, time: number): voi
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, width, height);
 
-  // Subtle starfield
+  // Subtle starfield — reduced stars for performance
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
   const starSeed = 54321;
@@ -144,24 +240,25 @@ export function drawBackground(ctx: CanvasRenderingContext2D, time: number): voi
     const x = Math.sin(starSeed + n) * 10000;
     return x - Math.floor(x);
   };
-  for (let i = 0; i < 100; i++) {
+  const starCount = _perf === 'low' ? 0 : _perf === 'medium' ? 40 : 100;
+  for (let i = 0; i < starCount; i++) {
     const sx = pseudo(i * 2) * width;
     const sy = pseudo(i * 3) * height;
-    const size = 0.4 + pseudo(i) * 1.0;
     const twinkle = 0.25 + 0.3 * Math.sin(time * 0.0012 + i * 0.9);
     ctx.fillStyle = `rgba(255,255,255,${twinkle})`;
-    ctx.beginPath(); ctx.arc(sx, sy, size, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(sx, sy, 0.6, 0, Math.PI * 2); ctx.fill();
   }
   ctx.restore();
 
-  // Floating dot lattice
-  const spacing = 48;
-  ctx.fillStyle = `rgba(180, 140, 255, ${0.03 + Math.sin(time * 0.001) * 0.012})`;
-  for (let x = 0; x < width; x += spacing) {
-    for (let y = 0; y < height; y += spacing) {
-      ctx.beginPath();
-      ctx.arc(x, y, 0.5 + Math.sin(x * 0.08 + y * 0.08 + time * 0.0004) * 0.25, 0, Math.PI * 2);
-      ctx.fill();
+  // Floating dot lattice — skip in low/medium perf
+  if (_perf === 'high' || _perf === 'ultra') {
+    const spacing = 48;
+    ctx.fillStyle = `rgba(180, 140, 255, ${0.03 + Math.sin(time * 0.001) * 0.012})`;
+    for (let x = 0; x < width; x += spacing) {
+      for (let y = 0; y < height; y += spacing) {
+        const r = 0.5 + Math.sin(x * 0.08 + y * 0.08 + time * 0.0004) * 0.25;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      }
     }
   }
 
@@ -206,6 +303,8 @@ export function drawTimeAxis(ctx: CanvasRenderingContext2D, bars: BaseBar[], vie
 }
 
 // ─── GLOWING GRID ───────────────────────────────────────────────────
+// Pre-allocated price array to avoid per-frame allocations
+const _gridPrices: number[] = [];
 export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, time: number): void {
   const { width, height } = ctx.canvas;
   const { start, end } = getVisibleRange(view, width, bars.length);
@@ -213,9 +312,14 @@ export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
   if (visible.length === 0) return;
 
-  const prices = visible.flatMap(b => [b.high, b.low]);
-  const minP = Math.min(...prices);
-  const maxP = Math.max(...prices);
+  // Reuse pre-allocated array
+  _gridPrices.length = 0;
+  for (let i = 0; i < visible.length; i++) {
+    const b = visible[i];
+    _gridPrices.push(b.high, b.low);
+  }
+  const minP = _gridPrices.reduce((a, b) => a < b ? a : b, Infinity);
+  const maxP = _gridPrices.reduce((a, b) => a > b ? a : b, -Infinity);
   const range = maxP - minP || 1;
   const lines = 8;
   const right = chartRight(width);
@@ -263,6 +367,8 @@ export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
 }
 
 // ─── BAR RENDERER ──────────────────────────────────────────────────
+// Pre-allocated arrays to reduce GC pressure per frame
+const _barPrices: number[] = [];
 export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, time: number, barType: BarType, perBarVol?: PerBarVolume[]): void {
   const { width, height } = ctx.canvas;
   const { start, end } = getVisibleRange(view, width, bars.length);
@@ -270,9 +376,16 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
   if (visible.length === 0) return;
 
-  const allPrices = visible.flatMap(b => [b.high, b.low]);
-  const minP = Math.min(...allPrices);
-  const maxP = Math.max(...allPrices);
+  _barPrices.length = 0;
+  for (let i = 0; i < visible.length; i++) {
+    const b = visible[i];
+    _barPrices.push(b.high, b.low);
+  }
+  let minP = Infinity, maxP = -Infinity;
+  for (let i = 0; i < _barPrices.length; i++) {
+    if (_barPrices[i] < minP) minP = _barPrices[i];
+    if (_barPrices[i] > maxP) maxP = _barPrices[i];
+  }
   const pRange = maxP - minP || 1;
   const bs = view.barSpacing;
   const cW = Math.max(1, bs * 0.7);
@@ -741,34 +854,30 @@ export function drawSecondaryChart(ctx: CanvasRenderingContext2D, plots: OakPlot
     ctx.fillText(val.toFixed(1), 4, y - 2);
   }
 
-  // Group line plots into series
-  const seriesMap = new Map<string, Array<{ idx: number; value: number }>>();
-  const styleMap = new Map<string, { color: string; linewidth: number }>();
-
   // Line plots already have per-bar values in order — reconstruct series
-  const lineData = new Map<string, Array<{ idx: number; value: number }>>();
-  const lineStyles = new Map<string, { color: string; linewidth: number }>();
+  const lineData = new Map<string, Array<{ idx: number; value: number; color: string }>>();
+  const lineStyles = new Map<string, { linewidth: number; style: string }>();
 
   for (const p of linePlots) {
     if (p.type === 'hline') continue;
     const key = p.name || 'plot';
     if (!lineData.has(key)) {
       lineData.set(key, []);
-      lineStyles.set(key, { color: p.color || '#b48cff', linewidth: p.linewidth || 1 });
+      lineStyles.set(key, { linewidth: p.linewidth || 1, style: (p as any).style || 'line' });
     }
     const idx = typeof p.barIdx === 'number' ? p.barIdx : lineData.get(key)!.length;
     const val = typeof p.value === 'number' ? p.value : NaN;
-    lineData.get(key)!.push({ idx, value: val });
+    lineData.get(key)!.push({ idx, value: val, color: p.color || '#b48cff' });
   }
 
-  // Draw line series
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  // Baseline for area/histogram in oscillator space (value 0 if visible, else floor).
+  const oscBaseY = Math.min(cBot, Math.max(cTop, cBot - ((0 - minV) / adjRange) * cH));
+
+  // Draw line series (per-bar color + render style)
   for (const [name, data] of lineData) {
-    if (data.length < 2) continue;
-    const style = lineStyles.get(name)!;
-    const col = style.color;
-    const path: { x: number; y: number; value: number }[] = [];
+    if (data.length < 1) continue;
+    const st = lineStyles.get(name)!;
+    const pts: { x: number; y: number; value: number; color: string }[] = [];
     for (const pt of data) {
       const bar = bars[pt.idx];
       if (!bar || isNaN(pt.value)) continue;
@@ -776,29 +885,15 @@ export function drawSecondaryChart(ctx: CanvasRenderingContext2D, plots: OakPlot
       if (idxInView < 0 || idxInView >= vLen) continue;
       const x = barX(idxInView, vLen, width, view.barSpacing, view.scrollX);
       const y = cBot - ((pt.value - minV) / adjRange) * cH;
-      path.push({ x, y, value: pt.value });
+      pts.push({ x, y, value: pt.value, color: pt.color });
     }
-    if (path.length < 2) continue;
+    if (pts.length < 1) continue;
 
-    ctx.strokeStyle = col;
-    ctx.lineWidth = style.linewidth + 2;
-    ctx.shadowBlur = 8;
-    ctx.shadowColor = hexToRgba(col, 0.35);
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    ctx.strokeStyle = col;
-    ctx.lineWidth = style.linewidth;
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
-    ctx.stroke();
+    renderRichSeries(ctx, pts, { style: st.style, linewidth: st.linewidth, baselineY: oscBaseY, barSpacing: view.barSpacing });
 
     // Latest value label
-    const last = path[path.length - 1];
+    const last = pts[pts.length - 1];
+    const col = last.color;
     const label = `${name} ${last.value.toFixed(1)}`;
     const pad = 4;
     ctx.font = '9px "Inter", monospace';
@@ -853,7 +948,8 @@ export function drawSecondaryChart(ctx: CanvasRenderingContext2D, plots: OakPlot
   // Draw label on the left
   if (lineData.size > 0) {
     const firstName = Array.from(lineData.keys())[0];
-    ctx.fillStyle = lineStyles.get(firstName)?.color || 'rgba(255,255,255,0.3)';
+    const firstPts = lineData.get(firstName)!;
+    ctx.fillStyle = firstPts[firstPts.length - 1]?.color || 'rgba(255,255,255,0.3)';
     ctx.font = '9px monospace';
     ctx.fillText(firstName, width - 80, 10);
   }
@@ -865,30 +961,39 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length || plots.length === 0) return;
 
-  const visible = bars.slice(start, Math.min(end + 1, bars.length));
-  if (visible.length === 0) return;
-  const allPrices = visible.flatMap(b => [b.high, b.low]);
-  const minP = Math.min(...allPrices);
-  const maxP = Math.max(...allPrices);
+  const endIdx = Math.min(end + 1, bars.length);
+  const vLen = Math.max(0, endIdx - start);
+  if (vLen === 0) return;
+  // Single-pass min/max instead of slicing + flat-mapping into a new array
+  // and spreading it into Math.min/max twice — this runs every frame
+  // whenever any OakScript indicator has main-pane plots.
+  let minP = Infinity, maxP = -Infinity;
+  for (let i = start; i < endIdx; i++) {
+    const b = bars[i];
+    if (b.high > maxP) maxP = b.high;
+    if (b.low < minP) minP = b.low;
+  }
   const pRange = maxP - minP || 1;
-  const vLen = visible.length;
 
   ctx.save();
 
-  // Collect line series plots
-  const linePlots = plots.filter(p => p.type === 'line' || p.type === 'hline');
+  // Bucket by type in a single pass instead of 3 separate .filter() calls
+  // over the same (potentially thousand-plus entry) array — plot()/hline()
+  // push once per BAR, so this array is not small.
+  const linePlots: OakPlot[] = [];
+  const shapePlots: OakPlot[] = [];
+  const bgColors: OakPlot[] = [];
+  for (const p of plots) {
+    if (p.type === 'line' || p.type === 'hline') linePlots.push(p);
+    else if (p.type === 'shape') shapePlots.push(p);
+    else if (p.type === 'bgcolor') bgColors.push(p);
+  }
 
   // For each line plot, we need to find the series values
   // Since plot() outputs individual values per bar, we reconstruct the series
   // This is a simplified approach — the interpreter already ran bar-by-bar
   // and we have one 'line' plot per bar per plot name.
   const seriesMap = new Map<string, { values: number[]; color: string; linewidth: number }>();
-
-  // Shape plots (special markers)
-  const shapePlots = plots.filter(p => p.type === 'shape');
-
-  // Background colors
-  const bgColors = plots.filter(p => p.type === 'bgcolor');
 
   // Draw background colors as vertical columns per bar
   for (const bp of bgColors) {
@@ -905,33 +1010,32 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
   // Group line plots by name to draw continuous lines
   // Each plot() call in the script creates one entry per bar
   // We use a Map from plot name to array of {barIdx, value}
-  const lineData = new Map<string, Array<{ idx: number; value: number }>>();
-  const lineStyles = new Map<string, { color: string; linewidth: number }>();
+  const lineData = new Map<string, Array<{ idx: number; value: number; color: string }>>();
+  const lineStyles = new Map<string, { linewidth: number; style: string }>();
 
   for (const p of linePlots) {
     if (p.type === 'hline') continue;
     const key = p.name || 'plot';
     if (!lineData.has(key)) {
       lineData.set(key, []);
-      lineStyles.set(key, { color: p.color || '#b48cff', linewidth: p.linewidth || 1 });
+      lineStyles.set(key, { linewidth: p.linewidth || 1, style: (p as any).style || 'line' });
     }
     // Preserve bar index so NaN gaps don't shift the series.
     const idx = typeof p.barIdx === 'number' ? p.barIdx : lineData.get(key)!.length;
     const val = typeof p.value === 'number' ? p.value : NaN;
-    lineData.get(key)!.push({ idx, value: val });
+    lineData.get(key)!.push({ idx, value: val, color: p.color || '#b48cff' });
   }
 
-  // Draw line series
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  for (const [name, data] of lineData) {
-    if (data.length < 2) continue;
-    const style = lineStyles.get(name)!;
-    const col = style.color;
-    const lw = style.linewidth;
+  // Baseline (price 0) clamped to the pane — anchor for area/histogram styles.
+  const baselineY = Math.min(height, Math.max(0, priceToY(0, minP, pRange, height, view)));
 
-    // Build visible path
-    const path: { x: number; y: number; value: number }[] = [];
+  // Draw line series (per-bar color + render style)
+  for (const [name, data] of lineData) {
+    if (data.length < 1) continue;
+    const st = lineStyles.get(name)!;
+
+    // Build visible points with per-bar colors.
+    const pts: RichPoint[] = [];
     for (const pt of data) {
       const bar = bars[pt.idx];
       if (!bar || isNaN(pt.value)) continue;
@@ -939,31 +1043,15 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
       if (idxInView < 0 || idxInView >= vLen) continue;
       const x = barX(idxInView, vLen, width, view.barSpacing, view.scrollX);
       const y = priceToY(pt.value, minP, pRange, height, view);
-      path.push({ x, y, value: pt.value });
+      pts.push({ x, y, value: pt.value, color: pt.color });
     }
-    if (path.length < 2) continue;
+    if (pts.length < 1) continue;
 
-    // Outer glow stroke
-    ctx.strokeStyle = col;
-    ctx.lineWidth = lw + 2;
-    ctx.shadowBlur = 8;
-    ctx.shadowColor = hexToRgba(col, 0.25);
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Core stroke
-    ctx.strokeStyle = col;
-    ctx.lineWidth = lw;
-    ctx.beginPath();
-    ctx.moveTo(path[0].x, path[0].y);
-    for (let k = 1; k < path.length; k++) ctx.lineTo(path[k].x, path[k].y);
-    ctx.stroke();
+    renderRichSeries(ctx, pts, { style: st.style, linewidth: st.linewidth, baselineY, barSpacing: view.barSpacing });
 
     // Price label at the latest visible point
-    const last = path[path.length - 1];
+    const last = pts[pts.length - 1];
+    const col = last.color;
     const right = chartRight(width);
     const label = `${name} ${last.value.toFixed(2)}`;
     const pad = 4;
@@ -1019,9 +1107,9 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
     const col = p.color || '#b48cff';
     const style = p.style || 'circle';
 
-    // Push buy shapes below the bar, sell shapes above — centered + small gap
-    if (style === 'triangleup') y += 12;
-    if (style === 'triangledown') y -= 12;
+    const gap = Math.max(8, view.barSpacing * 1.5);
+    if (style === 'triangleup' || style === 'arrowup') y += gap;
+    if (style === 'triangledown' || style === 'arrowdown') y -= gap;
 
     ctx.fillStyle = col;
     ctx.shadowBlur = 16;
@@ -1046,14 +1134,51 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
         ctx.stroke();
         break;
       }
+      case 'arrowup': {
+        ctx.beginPath();
+        ctx.moveTo(x, y - 12); ctx.lineTo(x - 6, y - 2); ctx.lineTo(x - 2.5, y - 2);
+        ctx.lineTo(x - 2.5, y + 9); ctx.lineTo(x + 2.5, y + 9); ctx.lineTo(x + 2.5, y - 2);
+        ctx.lineTo(x + 6, y - 2); ctx.closePath(); ctx.fill();
+        ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+        break;
+      }
+      case 'arrowdown': {
+        ctx.beginPath();
+        ctx.moveTo(x, y + 12); ctx.lineTo(x - 6, y + 2); ctx.lineTo(x - 2.5, y + 2);
+        ctx.lineTo(x - 2.5, y - 9); ctx.lineTo(x + 2.5, y - 9); ctx.lineTo(x + 2.5, y + 2);
+        ctx.lineTo(x + 6, y + 2); ctx.closePath(); ctx.fill();
+        ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
+        break;
+      }
       case 'circle': {
         ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
         break;
       }
       case 'cross': {
+        // PineScript 'cross' is a plus sign (+).
         ctx.strokeStyle = col; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y);
+        ctx.moveTo(x, y - 6); ctx.lineTo(x, y + 6); ctx.stroke();
+        break;
+      }
+      case 'xcross': {
+        // 'xcross' is a diagonal X.
+        ctx.strokeStyle = col; ctx.lineWidth = 2.4;
         ctx.beginPath(); ctx.moveTo(x - 5, y - 5); ctx.lineTo(x + 5, y + 5);
         ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
+        break;
+      }
+      case 'square': {
+        ctx.fillRect(x - 5, y - 5, 10, 10);
+        ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.strokeRect(x - 5, y - 5, 10, 10);
+        break;
+      }
+      case 'diamond': {
+        ctx.beginPath();
+        ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 6); ctx.lineTo(x - 6, y);
+        ctx.closePath(); ctx.fill();
+        ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.stroke();
         break;
       }
       case 'label': {

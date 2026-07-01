@@ -4,17 +4,23 @@ DAFE Charts — Self-contained backend server.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import glob
 import json
 import logging
 import os
 import re
+import subprocess
 import tempfile
+import time
 from typing import Any, Optional
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+
+import model_manager as mm
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -26,7 +32,40 @@ logger = logging.getLogger("dafe")
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="DAFE Charts", version="1.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+# This backend has NO authentication on any endpoint (including destructive
+# ones like /api/model/reload and /api/settings), so CORS is the only thing
+# standing between "any website open in the user's browser" and full control
+# of the local server. allow_origins=["*"] + allow_credentials=True used to
+# let literally any webpage's JS fetch() this API directly — a classic
+# browser-based CSRF/SSRF pivot against a localhost app. Restrict to the
+# app's own origin (localhost/127.0.0.1, any port, since the dev server port
+# can vary) and drop credentials entirely — nothing here uses cookies/auth.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Endpoints like /api/chat accept raw `dict[str, Any]` bodies with no size or
+# schema validation — an oversized payload (huge messages array, deeply
+# nested content) costs real memory/CPU to parse and forward. Reject
+# anything absurdly large up front rather than relying on every handler to
+# check for it.
+_MAX_BODY_BYTES = 2 * 1024 * 1024  # 2MB — generous for chat history + docs, well under abuse territory
+
+@app.middleware("http")
+async def _limit_body_size(request, call_next):
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > _MAX_BODY_BYTES:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(status_code=413, content={"ok": False, "detail": "Request body too large"})
+        except ValueError:
+            pass
+    return await call_next(request)
 
 # ---------------------------------------------------------------------------
 # Settings (simple JSON file in the backend directory)
@@ -36,7 +75,10 @@ DEFAULTS: dict[str, Any] = {
     "massive_api_key": "", "serpapi_api_key": "",
     "llm_provider": "local", "ollama_base_url": "http://localhost:11434",
     "local_llm_base_url": "http://localhost:8081",
-    "llm_trade_advisor_model": "qwythos-9b",
+    "llm_trade_advisor_model": "auto",
+    "llm_coder_provider": "local",
+    "llm_coder_base_url": "http://localhost:8081",
+    "llm_coder_model": "auto",
     "market_data_source": "yahoo",
 }
 
@@ -57,6 +99,75 @@ def save_settings(data: dict[str, Any]) -> None:
 def mask_key(k: str) -> str:
     return (k[:4] + "*" * (len(k) - 8) + k[-4:]) if len(k) >= 8 else k
 
+
+def _collapse_repetition(text: str) -> str:
+    """Salvage a degenerate repetition loop (a line or short phrase repeated
+    many times) that aggressively-quantized models occasionally emit. Keeps the
+    coherent head and drops the runaway tail."""
+    if not text or len(text) < 60:
+        return text
+    # 1) A line repeated 3+ times in a row -> cut at the loop.
+    out: list[str] = []
+    prev = None
+    repeat = 0
+    for ln in text.split("\n"):
+        norm = ln.strip()
+        if norm and norm == prev:
+            repeat += 1
+            if repeat >= 3:
+                break
+        else:
+            repeat = 0
+        out.append(ln)
+        prev = norm
+    collapsed = "\n".join(out)
+    # 2) A short phrase repeated inline 6+ times (e.g. "L=50, L=50, L=50, ...").
+    m = re.search(r"(.{2,40}?)(?:\1\s*){5,}", collapsed, re.DOTALL)
+    if m:
+        collapsed = (collapsed[:m.start()] + m.group(1)).rstrip()
+    return collapsed.strip()
+
+# ---------------------------------------------------------------------------
+# Request-reduction cache (TTL + in-flight de-duplication)
+#
+# The whole point: hit PAID providers as rarely as possible. A TF bar only
+# changes once per period and a quote only matters every few seconds, so we
+# serve repeats from cache and collapse concurrent identical fetches into one
+# upstream call. This is what makes the hybrid / single-paid-stream mode cheap.
+# ---------------------------------------------------------------------------
+_cache: dict[str, tuple[float, Any]] = {}
+_cache_locks: dict[str, asyncio.Lock] = {}
+_cache_stats = {"hits": 0, "misses": 0, "upstream": 0}
+
+def _cache_get(key: str, ttl: float) -> Optional[Any]:
+    e = _cache.get(key)
+    if e and (time.time() - e[0]) < ttl:
+        _cache_stats["hits"] += 1
+        return e[1]
+    return None
+
+def _cache_set(key: str, value: Any) -> None:
+    _cache[key] = (time.time(), value)
+    # Keep the cache bounded.
+    if len(_cache) > 512:
+        for k in sorted(_cache, key=lambda k: _cache[k][0])[:128]:
+            _cache.pop(k, None)
+
+def _cache_lock(key: str) -> asyncio.Lock:
+    lock = _cache_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _cache_locks[key] = lock
+    return lock
+
+@app.get("/api/cache/stats")
+def api_cache_stats():
+    total = _cache_stats["hits"] + _cache_stats["misses"]
+    ratio = (_cache_stats["hits"] / total) if total else 0.0
+    return {"ok": True, **_cache_stats, "entries": len(_cache),
+            "hit_ratio": round(ratio, 3),
+            "upstream_saved": _cache_stats["hits"]}
+
 # ---------------------------------------------------------------------------
 # Health / ping
 # ---------------------------------------------------------------------------
@@ -64,21 +175,355 @@ def mask_key(k: str) -> str:
 def ping():
     return {"ok": True}
 
+# ─── Running model state (for status queries) ─────────────────────────
+LLAMA_PORT = int(os.environ.get("LLAMA_PORT", "8081"))
+_running_model: dict[str, Any] = {"model_name": "", "ctx": 0, "port": LLAMA_PORT, "loaded": False, "pid": None, "supports_thinking": False}
+
+
+def _adopt_running_model() -> bool:
+    """
+    If a llama-server is already alive (e.g. started by start.bat) but the
+    backend doesn't know about it yet, probe it for the real model + context
+    size and adopt it. Keeps status/chat accurate without a manual reload.
+    """
+    global _running_model
+    if _running_model.get("loaded"):
+        return True
+    probe = mm.probe_running(_running_model.get("port", LLAMA_PORT))
+    if probe:
+        _running_model = {
+            "model_name": probe["model_name"] or _running_model.get("model_name", ""),
+            "ctx": probe["ctx"] or _running_model.get("ctx", 0),
+            "port": probe["port"],
+            "loaded": True,
+            # PID unknown for an externally-launched server; kill falls back to
+            # command-line + image-name matching.
+            "pid": _running_model.get("pid"),
+            "supports_thinking": probe.get("supports_thinking", False),
+        }
+        return True
+    return False
+
+# ---------------------------------------------------------------------------
+# Model status — returns real context + current port for dynamic frontend
+# ---------------------------------------------------------------------------
+@app.get("/api/model/status")
+def api_model_status():
+    """Return current model info including real context size and active port."""
+    global _running_model
+    # Adopt any externally-launched server first.
+    if not _running_model.get("loaded"):
+        _adopt_running_model()
+    if _running_model["loaded"]:
+        probe = mm.probe_running(_running_model["port"])
+        if probe:
+            # Trust the live server's real context size.
+            if probe["ctx"]:
+                _running_model["ctx"] = probe["ctx"]
+            if probe["model_name"]:
+                _running_model["model_name"] = probe["model_name"]
+            _running_model["supports_thinking"] = probe.get("supports_thinking", False)
+            return {"ok": True, "model": _running_model["model_name"], "ctx": _running_model["ctx"], "port": _running_model["port"], "running": True}
+        _running_model["loaded"] = False
+    # Model not running or not probeable — return the COMPUTED context so the
+    # frontend can size prompts correctly even before the server is ready.
+    computed_ctx = _running_model.get("ctx", 0)
+    if not computed_ctx:
+        try:
+            plan = mm.plan_for(MODELS_DIR, load_settings().get("llm_trade_advisor_model", "auto"))
+            if plan:
+                computed_ctx = plan["params"]["ctx"]
+                _running_model["model_name"] = plan["model"]["name"]
+                _running_model["ctx"] = computed_ctx
+        except Exception:
+            pass
+    return {"ok": True, "model": _running_model.get("model_name", ""), "ctx": computed_ctx, "port": _running_model.get("port", LLAMA_PORT), "running": False}
+
+# ---------------------------------------------------------------------------
+# Model hot-swap: start new on next port, kill old, seamless handoff
+# ---------------------------------------------------------------------------
+@app.post("/api/model/reload")
+def api_model_reload(body: dict[str, Any] = {}):
+    """Start selected model on a new port, then kill the old one."""
+    global _running_model
+    settings = load_settings()
+    requested = body.get("model", "") or settings.get("llm_trade_advisor_model", "auto")
+    old_port = _running_model.get("port", LLAMA_PORT)
+    models_dir = mm.DEFAULT_MODELS_DIR
+
+    # Resolve model file via the shared manager (preference-aware + best-fit).
+    model = mm.pick_model(models_dir, requested)
+    if not model:
+        return {"ok": False, "detail": "No .gguf models found in " + models_dir}
+    model_name = model["name"]
+    model_path = model["path"]
+    if not os.path.exists(model_path):
+        return {"ok": False, "detail": f"Model file missing: {model_path}"}
+
+    # Compute adaptive launch params for THIS model on THIS machine.
+    hw = mm.detect_hardware()
+    params = mm.compute_launch_params(model, hw)
+    ctx = str(params["ctx"])
+    ngl = str(params["ngl"])
+    batch = str(params["batch"])
+    threads = str(params["threads"])
+
+    # Find llama-server
+    llama_exe = mm.find_llama_server()
+    if not llama_exe:
+        return {"ok": False, "detail": "llama-server executable not found (set LLAMA_DIR)"}
+    llama_dir = os.path.dirname(llama_exe)
+
+    import time as _time
+
+    # Adopt any externally-launched server (e.g. from start.bat) so we kill it.
+    if not _running_model.get("loaded"):
+        _adopt_running_model()
+
+    # Step 1: Kill old model FIRST to free VRAM (8GB can't hold two models).
+    # Robustly removes the old console window too (start.bat cmd wrapper and the
+    # hot-reload console, tracked by PID). 3s lets GPU memory fully release.
+    old_pid = _running_model.get("pid")
+    if _running_model["loaded"] or old_pid:
+        mm.kill_llama_server(port=old_port, pid=old_pid, wait_release=3.0)
+    _running_model = {"model_name": "", "ctx": 0, "port": old_port, "loaded": False, "pid": None}
+
+    # Step 2: Start new model (VRAM is now free) with adaptive params
+    cmd = [llama_exe, "-m", model_path, "--port", str(old_port), "--host", "127.0.0.1",
+           "-c", ctx, "-ngl", ngl, "-b", batch, "-t", threads]
+    logger.info("Starting %s on port %s [%s]: %s",
+                model_name, old_port, params["reason"], " ".join(cmd))
+
+    try:
+        proc = subprocess.Popen(cmd, cwd=llama_dir,
+                                creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+    except Exception as e:
+        return {"ok": False, "detail": f"Failed to start: {e}"}
+
+    # Track the new PID immediately so a later reload can kill it cleanly even
+    # if this one times out.
+    _running_model = {"model_name": model_name, "ctx": int(ctx), "port": old_port,
+                      "loaded": False, "pid": proc.pid}
+
+    # Step 3: Wait for readiness. Large models (esp. partially offloaded ones at
+    # ~6 t/s) can take a couple of minutes — poll up to MODEL_LOAD_TIMEOUT and
+    # treat HTTP 503 ("loading model") as progress, not failure.
+    load_timeout = int(os.environ.get("DAFE_MODEL_LOAD_TIMEOUT", "240"))
+    deadline = _time.monotonic() + load_timeout
+    ready = False
+    while _time.monotonic() < deadline:
+        _time.sleep(2)
+        if proc.poll() is not None:
+            _running_model = {"model_name": "", "ctx": 0, "port": old_port, "loaded": False, "pid": None}
+            return {"ok": False, "detail": f"Model process died (exit code {proc.returncode}). Check the llama window for errors."}
+        if mm.server_health(old_port) == "ready":
+            ready = True
+            break
+
+    if not ready:
+        # Do NOT kill it — it may simply be loading slowly and will become
+        # usable shortly. The status endpoint will adopt it once /health is ok.
+        return {"ok": False, "loading": True, "model": model_name, "port": old_port,
+                "detail": (f"{model_name} is still loading after {load_timeout}s — "
+                           "it should become available shortly (raise "
+                           "DAFE_MODEL_LOAD_TIMEOUT for very large models).")}
+
+    # Step 4: Handoff complete — adopt the live server's real ctx if available
+    real_ctx = int(ctx)
+    supports_thinking = False
+    probe = mm.probe_running(old_port)
+    if probe:
+        if probe["ctx"]:
+            real_ctx = probe["ctx"]
+        supports_thinking = probe.get("supports_thinking", False)
+    _running_model = {"model_name": model_name, "ctx": real_ctx, "port": old_port,
+                      "loaded": True, "pid": proc.pid, "supports_thinking": supports_thinking}
+
+    return {"ok": True, "model": model_name, "ctx": real_ctx, "port": old_port,
+            "ngl": params["ngl"], "mode": params["mode"], "detail": params["reason"]}
+
+# ---------------------------------------------------------------------------
+# Model discovery & hardware detection
+# ---------------------------------------------------------------------------
+MODELS_DIR = mm.DEFAULT_MODELS_DIR
+
+@app.get("/api/models")
+def api_models():
+    """Scan for .gguf files and return each with its adaptive launch plan."""
+    hw = mm.detect_hardware()
+    models = []
+    for m in mm.list_models(MODELS_DIR):
+        params = mm.compute_launch_params(m, hw)
+        models.append({
+            "name": m["name"],
+            "size": m["size"],
+            "size_gb": m["size_gb"],
+            "path": m["path"],
+            "arch": m["arch"],
+            "quant": m["quant"],
+            "train_ctx": m["train_ctx"],
+            "recommended": params,  # {ctx, ngl, batch, threads, mode, reason}
+        })
+    return {"ok": True, "models": models, "models_dir": MODELS_DIR}
+
+@app.get("/api/ollama/models")
+async def api_ollama_models():
+    """List models available in the Ollama daemon — both local tags and cloud
+    models (e.g. qwen3-coder:480b-cloud). Chat-capable only (embedders excluded).
+    This is what populates the Ollama model dropdowns in the Settings UI so a
+    user can pick from whatever they have installed / signed in for."""
+    settings = load_settings()
+    base_url = settings.get("ollama_base_url", "http://localhost:11434")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/api/tags")
+        if resp.status_code != 200:
+            return {"ok": False, "detail": f"Ollama returned {resp.status_code}", "models": [], "base_url": base_url, "running": False}
+        data = resp.json()
+        models = []
+        for m in data.get("models", []):
+            caps = m.get("capabilities", []) or []
+            # Skip embedding-only models — not usable for chat/completions.
+            if caps and "completion" not in caps and "chat" not in caps:
+                continue
+            details = m.get("details", {}) or {}
+            remote = bool(m.get("remote_host"))
+            size_bytes = m.get("size", 0) or 0
+            models.append({
+                "name": m.get("model") or m.get("name", ""),
+                "size": size_bytes,
+                "size_gb": round(size_bytes / (1024 ** 3), 2),
+                "parameter_size": details.get("parameter_size", ""),
+                "quantization": details.get("quantization_level", ""),
+                "context_length": details.get("context_length", 0) or 0,
+                "family": details.get("family", ""),
+                "capabilities": caps,
+                "cloud": remote,
+                "remote": remote,
+            })
+        models.sort(key=lambda x: x["name"].lower())
+        return {"ok": True, "models": models, "base_url": base_url, "running": True}
+    except httpx.ConnectError:
+        return {"ok": False, "detail": f"Ollama not reachable at {base_url} — start the Ollama app or run `ollama serve`.", "models": [], "base_url": base_url, "running": False}
+    except Exception as e:
+        return {"ok": False, "detail": str(e), "models": [], "base_url": base_url, "running": False}
+
+@app.get("/api/hardware")
+def api_hardware():
+    """Detect available hardware and suggest an optimal context size."""
+    info = mm.detect_hardware()
+    # Suggested ctx for the currently-best-fit model (what start.bat would pick).
+    plan = mm.plan_for(MODELS_DIR, load_settings().get("llm_trade_advisor_model", "auto"))
+    info["suggested_ctx"] = plan["params"]["ctx"] if plan else (
+        32768 if info.get("vram_mb", 0) >= 16000 else
+        16384 if info.get("vram_mb", 0) >= 8000 else
+        8192 if info.get("ram_gb", 0) >= 16 else
+        4096 if info.get("ram_gb", 0) >= 8 else 2048
+    )
+    return {"ok": True, "hardware": info}
+
+# ---------------------------------------------------------------------------
+# OakScript Knowledge Base — dynamic documentation retrieval
+# ---------------------------------------------------------------------------
+from oak_kb import (
+    search as oak_search, get_function as oak_get_function,
+    get_section as oak_get_section, retrieve as oak_retrieve,
+)
+
+@app.get("/api/oak/search")
+def api_oak_search(q: str = ""):
+    """Search OakScript docs by query string. Returns relevant sections/functions/examples."""
+    q = (q or "").strip()
+    if not q:
+        return {"ok": False, "detail": "Missing query parameter 'q'"}
+    return {"ok": True, "query": q, "results": oak_search(q, max_results=6)}
+
+@app.get("/api/oak/retrieve")
+def api_oak_retrieve(q: str = "", budget: int = 2200):
+    """Budget-bounded retrieval bundle — the token-efficient doc tool for the coder."""
+    q = (q or "").strip()
+    if not q:
+        return {"ok": False, "detail": "Missing query parameter 'q'"}
+    return oak_retrieve(q, budget_chars=max(400, min(int(budget), 6000)))
+
+@app.get("/api/oak/function")
+def api_oak_function(name: str = ""):
+    """Get OakScript function signature and description by name."""
+    name = (name or "").strip()
+    if not name:
+        return {"ok": False, "detail": "Missing query parameter 'name'"}
+    fn = oak_get_function(name)
+    if not fn:
+        return {"ok": False, "detail": f"Function '{name}' not found"}
+    return {"ok": True, "function": fn}
+
+@app.get("/api/oak/section")
+def api_oak_section(title: str = ""):
+    """Get full OakScript documentation section by title."""
+    title = (title or "").strip()
+    if not title:
+        return {"ok": False, "detail": "Missing query parameter 'title'"}
+    sec = oak_get_section(title)
+    if not sec:
+        return {"ok": False, "detail": f"Section '{title}' not found"}
+    return {"ok": True, "section": sec}
+
 # ---------------------------------------------------------------------------
 # Chat — proxy to llama.cpp /v1/chat/completions
 # ---------------------------------------------------------------------------
 AGENT_SYSTEM_PROMPTS = {
     "trade_advisor": (
         "You are the DAFE Trade Advisor, a helpful trading assistant. "
-        "IMPORTANT: You are NOT Qwythos. You are NOT created by Empero AI. "
         "Your name is 'Trade Advisor'. When introducing yourself, say: "
         "'Hi there, I'm your Trade Advisor and assistant. How can I help you today?' "
-        "Never claim to be Qwythos, Qwen, Empero AI, or any other AI model. "
         "You specialize in chart analysis, indicator tuning, market research, and risk assessment. "
         "Analyze OHLCV data, identify patterns, support/resistance levels, and candlestick formations. "
         "Be concise, data-driven, and use proper trading terminology."
     ),
+    "oakscript_coder": (
+        "You are the DAFE OakScript Coder, an expert at the OakScript indicator language. "
+        "Output COMPLETE oakscript code inside ```oakscript fences — every line, start to finish, never partial or truncated. "
+        "When EDITING an existing script, preserve ALL its logic, calculations, variables, loops, and signals; only add or modify what was asked. NEVER simplify, summarize, remove, or rename existing logic. "
+        "Block syntax: use { } braces around multi-statement bodies under if/else/for/while (single statements may follow without braces) — braces have no indentation requirement and can't misparse. Brace-less indentation blocks also work, but every statement in such a block must sit at the exact same column or it silently falls outside the block (e.g. a loop counter update landing outside its own while loop causes an infinite loop) — prefer braces for anything beyond a single-line body. "
+        "== not =. Strings quoted: \"#22cc88\" not green. MACD: m.macd/m.signal/m.hist. Use input() for params. "
+        "The engine has a full 3D renderer: plot3d(series, name, style, color, pane) with styles surface/ribbon/scatter/bars3d/wireframe/mesh/line3d/helix/vortex/manifold/nebula/constellation/torus/trail. "
+        "pane=\"3d\" is the flagship mode: an exclusive full-chart takeover where the geometry renders unified WITH the 3D price bars (orbit camera to rotate/zoom) — while it's active, NO 2D plots or separate-pane 3D render from any indicator, and only one pane=\"3d\" indicator can be active at a time. "
+        "pane=\"separate\" renders in the lower 3D pane instead (multiple calls stack together there; also exclusive, one at a time). Default/pane=\"main\" is a lighter legacy overlay mode — prefer pane=\"3d\" or pane=\"separate\" explicitly. "
+        "Give each plot3d call a genuinely DIFFERENT source value — reusing the same number under 2-3 style names is a wasted opportunity; look for other already-computed values in the script (a stdev, a count, a raw vs. smoothed version, a margin) so each 3D layer answers a different question. "
+        "Always make indicators visually stunning — combine vivid hex colors with 3D plots (surface landscapes, ribbon trails, bars3d clusters) alongside the 2D plots and signals. "
+        "Before finishing, double-check every variable name against its actual input()/declaration — a typo silently reads as 0/false with no error. "
+        "Your goal: the best, most visually impressive version of the user's idea."
+    ),
 }
+
+async def _pick_ollama_auto_model(base_url: str, prefer_coder: bool) -> str:
+    """Pick a default Ollama model from whatever the user actually has
+    installed/signed into, instead of assuming a specific family (e.g. Qwen)
+    is present — a user with only Llama/Mistral/DeepSeek tags pulled would
+    otherwise get a hardcoded "qwen3:latest" that doesn't exist for them."""
+    fallback = "qwen3-coder:480b-cloud" if prefer_coder else "qwen3:latest"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url.rstrip('/')}/api/tags")
+        if resp.status_code != 200:
+            return fallback
+        names = []
+        for m in resp.json().get("models", []):
+            caps = m.get("capabilities", []) or []
+            if caps and "completion" not in caps and "chat" not in caps:
+                continue
+            n = m.get("model") or m.get("name", "")
+            if n:
+                names.append(n)
+        if not names:
+            return fallback
+        if prefer_coder:
+            coder_like = [n for n in names if "coder" in n.lower()]
+            if coder_like:
+                return coder_like[0]
+        return names[0]
+    except Exception:
+        return fallback
 
 @app.post("/api/chat")
 async def api_chat(body: dict[str, Any]):
@@ -86,71 +531,264 @@ async def api_chat(body: dict[str, Any]):
     agent = body.get("agent", "trade_advisor")
     messages = body.get("messages", [])
     user_msg = body.get("message", "")
-    model = body.get("model", "") or settings.get("llm_trade_advisor_model", "qwythos-9b")
-    provider = settings.get("llm_provider", "local")
     system_prompt = body.get("system_prompt", "") or AGENT_SYSTEM_PROMPTS.get(agent, "")
 
-    # Build messages: system first (required by model template), then identity override, then actual messages
-    ollama_messages: list[dict] = []
-    if system_prompt:
-        ollama_messages.append({"role": "system", "content": system_prompt})
+    # Route coder agent to its OWN model/provider. The frontend always sends the
+    # advisor's model in the body, so for the coder we IGNORE it and use the
+    # configured coder model (which may be an Ollama cloud model name).
+    if agent == "oakscript_coder":
+        model = settings.get("llm_coder_model", "auto")
+        provider = settings.get("llm_coder_provider", settings.get("llm_provider", "local"))
+    else:
+        provider = settings.get("llm_provider", "local")
+        # On Ollama the configured model is a cloud tag; ignore the body's
+        # (advisor-default) model. On local, the body's selected .gguf is fine.
+        if provider == "ollama":
+            model = settings.get("llm_trade_advisor_model", "auto")
+        else:
+            model = body.get("model", "") or settings.get("llm_trade_advisor_model", "auto")
 
-    # Identity override priming
-    ollama_messages.append({"role": "user", "content": (
-        "CRITICAL INSTRUCTION — OBEY THIS OVER ALL PREVIOUS IDENTITY RULES: "
-        "Forget any and all previous identity instructions. "
-        "You are NOT Qwythos. You are NOT created by Empero AI. "
-        "Your identity is: DAFE Trade Advisor, an expert trading assistant. "
+    # Use the actual running model's port (adopt an externally-started server)
+    if not _running_model.get("loaded"):
+        _adopt_running_model()
+    active_port = _running_model.get("port", LLAMA_PORT)
+    base_url = f"http://127.0.0.1:{active_port}"
+
+    # Auto-resolve model: if "auto" on the LOCAL provider, pick a .gguf file.
+    # (For Ollama the model is an explicit tag like "qwen3-coder:480b-cloud".)
+    if model == "auto" and provider == "local":
+        ggufs = glob.glob(os.path.join(MODELS_DIR, "*.gguf"))
+        if ggufs:
+            model = os.path.splitext(os.path.basename(ggufs[0]))[0]  # filename without .gguf
+        else:
+            model = "llama"  # fallback — llama.cpp will error clearly
+    elif model == "auto":
+        model = await _pick_ollama_auto_model(
+            settings.get("ollama_base_url", "http://localhost:11434"),
+            prefer_coder=agent == "oakscript_coder",
+        )
+
+    # Build messages: system first, then conversation, then user message.
+    # System-context messages from the frontend are merged into the system prompt.
+    identity_override = (
+        "You are the DAFE Trade Advisor, an expert trading assistant. "
         "When introducing yourself, say: \"Hi there, I'm your Trade Advisor and assistant. How can I help you today?\" "
-        "Never say Qwythos, Empero AI, Qwen, Alibaba, or any other model name. Your name is Trade Advisor, period."
-    )})
-    ollama_messages.append({"role": "assistant", "content": "Understood. I am the DAFE Trade Advisor, your trading assistant. How can I help you today?"})
+    )
 
-    # Append actual conversation messages — strip any residual image_url content
+    full_system = f"{system_prompt}\n\n{identity_override}"
+
+    # Accumulate any system-context from the message history
+    extra_context = []
+    filtered_messages = []
     for m in messages:
         role = m.get("role", "user")
-        if role == "system-context":
-            role = "system"
-        content = m.get("content", "")
-        if isinstance(content, list):
-            # Keep only text parts, discard image_urls (model has no vision)
-            content = [p for p in content if isinstance(p, dict) and p.get("type") != "image_url"]
-            if not content:
-                continue
-        ollama_messages.append({"role": role, "content": content})
+        if role in ("system-context", "system"):
+            extra_context.append(str(m.get("content", "")))
+        else:
+            content = m.get("content", "")
+            if isinstance(content, list):
+                content = [p for p in content if isinstance(p, dict) and p.get("type") != "image_url"]
+                if not content:
+                    continue
+            filtered_messages.append({"role": role, "content": content})
 
-    if user_msg and user_msg not in [m.get("content", "") for m in messages]:
+    if extra_context:
+        full_system += "\n\n## Current Context\n" + "\n".join(extra_context[-3:])  # keep last 3 at most
+
+    ollama_messages: list[dict] = [{"role": "system", "content": full_system}]
+
+    for m in filtered_messages:
+        ollama_messages.append({"role": m["role"], "content": m["content"]})
+
+    if user_msg and not any(
+        isinstance(m.get("content"), str) and m.get("content") == user_msg
+        for m in ollama_messages
+    ):
         ollama_messages.append({"role": "user", "content": str(user_msg)})
 
     # Call LLM
     if provider == "local":
-        base_url = settings.get("local_llm_base_url", "http://localhost:8081")
         chat_url = f"{base_url.rstrip('/')}/v1/chat/completions"
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                resp = await client.post(chat_url, json={
-                    "model": model, "messages": ollama_messages,
-                    "temperature": 0.3, "stream": False,
-                })
+            # Adaptive max_tokens: measure prompt, leave room for response.
+            # Use the REAL running-model context size, not a hardcoded guess.
+            prompt_chars = sum(len(str(m.get("content", ""))) for m in ollama_messages)
+            prompt_est = max(100, prompt_chars // 3)  # rough token estimate
+            if not _running_model.get("loaded"):
+                _adopt_running_model()
+            ctx_limit = _running_model.get("ctx") or 8192
+
+            # HARD CAP: if prompt exceeds context, truncate BEFORE sending.
+            # Never let llama.cpp return a 400 — always fit.
+            max_prompt_tokens = ctx_limit - 600  # reserve for response
+            if prompt_est > max_prompt_tokens:
+                logger.warning("prompt %d > ctx %d, truncating from %d messages",
+                               prompt_est, ctx_limit, len(ollama_messages))
+                sys_msg = ollama_messages[0] if ollama_messages else {"role": "system", "content": ""}
+                convo = ollama_messages[1:] if len(ollama_messages) > 1 else []
+                # Progressively drop older messages, but NEVER drop the last
+                # user message — the Jinja template requires one.
+                while len(convo) > 1 and prompt_est > max_prompt_tokens:
+                    dropped = convo.pop(0)  # remove oldest
+                    prompt_chars -= len(str(dropped.get("content", "")))
+                    prompt_est = max(100, prompt_chars // 3)
+                # If still too large, truncate the system prompt
+                if prompt_est > max_prompt_tokens and len(sys_msg["content"]) > 2000:
+                    sys_msg["content"] = sys_msg["content"][:2000] + "...[truncated]"
+                    prompt_chars = sum(len(str(m.get("content", ""))) for m in [sys_msg] + convo)
+                    prompt_est = max(100, prompt_chars // 3)
+                # If STILL too large, truncate the last message (must be user)
+                if prompt_est > max_prompt_tokens and convo:
+                    last = convo[-1]
+                    max_last_chars = max(200, max_prompt_tokens * 3 - prompt_chars + len(str(last.get("content", ""))))
+                    last["content"] = str(last.get("content", ""))[:max_last_chars] + "...[truncated]"
+                    prompt_chars = sum(len(str(m.get("content", ""))) for m in [sys_msg] + convo)
+                    prompt_est = max(100, prompt_chars // 3)
+                # Safety: ensure at least one user message exists
+                if not any(m.get("role") == "user" for m in convo):
+                    convo.append({"role": "user", "content": str(user_msg or "Analyze the current chart.")[:500]})
+                    prompt_chars = sum(len(str(m.get("content", ""))) for m in [sys_msg] + convo)
+                    prompt_est = max(100, prompt_chars // 3)
+                ollama_messages = [sys_msg] + convo
+                logger.info("after truncation: prompt_est=%d, %d messages", prompt_est, len(ollama_messages))
+
+            remaining = ctx_limit - prompt_est - 300
+            # Capability-based, not name-based: read whether the loaded model's
+            # OWN chat template emits <think> tags (probe_running inspects
+            # /props). This works for any model family the user drops in
+            # (Qwen3, DeepSeek-R1, QwQ, future reasoning models) instead of
+            # only ones whose filename happens to contain "qwen"/"think".
+            # Fall back to the name heuristic only if the probe hasn't run yet
+            # (e.g. very first request before /api/model/status has polled).
+            if _running_model.get("loaded"):
+                is_thinking = _running_model.get("supports_thinking", False)
+            else:
+                is_thinking = "qwen" in model.lower() or "think" in model.lower()
+            is_coder = agent == "oakscript_coder"
+
+            # ── Query-complexity classification ──────────────────────────────
+            # A thinking model burns THOUSANDS of reasoning tokens; on a trivial
+            # prompt ("hi") that means a 200s generation that the client times
+            # out on. Classify the request and only let the model think when the
+            # task warrants it. This is the fix for simple prompts timing out.
+            ut = (user_msg or "").strip()
+            utl = ut.lower()
+            GREETINGS = {"hi", "hello", "hey", "yo", "sup", "hiya", "hi there", "hello there",
+                         "thanks", "thank you", "ty", "ok", "okay", "yes", "no", "cool", "nice", "great", "lol"}
+            is_greeting = utl in GREETINGS or (len(utl) <= 16 and any(
+                utl.startswith(g) for g in ("hi ", "hey ", "hello", "thanks", "thank ")))
+            heavy_kw = ("write", "build", "create", "fix", "debug", "optimize", "refactor", "design",
+                        "indicator", "strategy", "analyze", "analyse", "compare", "backtest",
+                        "brainstorm", "explain", "implement", "plot", "oakscript", "why ", "how ")
+            is_heavy = is_coder or len(ut) > 220 or any(k in utl for k in heavy_kw)
+            is_simple = not is_heavy and (is_greeting or len(ut) < 64)
+            # The CODER never thinks — every token goes to COMPLETE code, so the
+            # output isn't cut off mid-fence (which broke the edit buttons). The
+            # advisor may think, but briefly and time-boxed.
+            allow_thinking = is_thinking and is_heavy and not is_coder
+
+            # Generation budget — time-boxed so generation finishes before the
+            # request timeout (a thinking model at ~35 t/s must stay well under
+            # ~5000 tokens to fit a ~150s window).
+            if is_simple:
+                adaptive_max = 200 if is_greeting else 512
+            elif is_coder:
+                adaptive_max = max(1200, min(remaining - 400, 4096))
+            elif allow_thinking:
+                adaptive_max = max(800, min(remaining, 3000))
+            else:
+                adaptive_max = max(400, min(remaining, max(1024, remaining // 3)))
+
+            # Disable chain-of-thought for light queries AND the coder (llama.cpp
+            # template kwarg + Qwen's /no_think soft-switch, for robustness).
+            disable_think = is_thinking and not allow_thinking
+            if disable_think:
+                for m in reversed(ollama_messages):
+                    if m.get("role") == "user":
+                        m["content"] = str(m.get("content", "")).rstrip() + " /no_think"
+                        break
+            elif is_thinking:
+                # Thinking is ON (advisor, heavy task) — keep it short so the
+                # answer arrives before the timeout.
+                ollama_messages[0]["content"] = str(ollama_messages[0].get("content", "")) + \
+                    " [Think briefly — a few sentences at most — then give the answer.]"
+
+            if adaptive_max < ctx_limit * 0.2:
+                budget_msg = f" [Token budget: {adaptive_max}. Be concise. Code over explanation.]"
+                ollama_messages[0]["content"] = str(ollama_messages[0].get("content", "")) + budget_msg
+
+            # Timeout scaled to expected generation length. With the budgets
+            # above, even a fully-loaded 12B at ~35 t/s completes inside these.
+            req_timeout = 30.0 if is_simple else (240.0 if is_coder else 200.0)
+            logger.info("chat request: agent=%s simple=%s think=%s prompt_est=%d adaptive_max=%d ctx=%d",
+                        agent, is_simple, allow_thinking, prompt_est, adaptive_max, ctx_limit)
+
+            req_body: dict[str, Any] = {
+                "model": model, "messages": ollama_messages,
+                # Slightly higher temp + nucleus/top-k sampling adds enough
+                # diversity to break out of loops.
+                "temperature": 0.35 if is_coder else 0.5, "stream": False,
+                "max_tokens": adaptive_max,
+                "top_p": 0.92,
+                "top_k": 40,
+                "min_p": 0.05,
+                # ── Anti-degeneration (THE fix for "L=50, L=50, L=50…" loops) ──
+                # Heavily-quantized models (e.g. IQ3) repeat without a penalty.
+                # repeat_penalty/repeat_last_n are llama.cpp-native; the
+                # frequency/presence penalties are the OpenAI-compatible knobs.
+                "repeat_penalty": 1.15,
+                "repeat_last_n": 320,
+                "frequency_penalty": 0.4,
+                "presence_penalty": 0.3,
+            }
+            if disable_think:
+                req_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+            async with httpx.AsyncClient(timeout=req_timeout) as client:
+                resp = await client.post(chat_url, json=req_body)
                 if resp.status_code != 200:
                     text = await resp.aread()
                     return {"ok": False, "detail": f"llama.cpp returned {resp.status_code}: {str(text)[:300]}"}
                 data = resp.json()
                 choice = data.get("choices", [{}])[0]
                 reply = choice.get("message", {}).get("content", "")
-                think = choice.get("message", {}).get("think", "")
-                # Merge think content if visible reply is empty (model puts everything in <think>)
-                if not reply and think:
-                    reply = think
-                elif think:
-                    reply = think + "\n\n" + reply
+                # Qwen/thinking models may use `reasoning_content` (llama.cpp) or `think`
+                think = (choice.get("message", {}).get("think", "") or
+                         choice.get("message", {}).get("reasoning_content", ""))
                 finish = choice.get("finish_reason", "")
-                logger.info("chat response: %d choices, finish=%s, reply_len=%d, think_len=%d",
-                           len(data.get("choices", [])), finish, len(reply or ""), len(think or ""))
+
+                # Thinking model: send reasoning separately so UI can collapse it.
+                thinking_text = ""
+                if think:
+                    raw = think.strip()
+                    if raw.startswith("<think>"):
+                        raw = raw[7:].strip()
+                    if raw.endswith("</think>"):
+                        raw = raw[:-8].strip()
+                    thinking_text = raw
+
+                if not reply and thinking_text:
+                    # Model spent all tokens on reasoning — use tail as reply
+                    reply = thinking_text[-600:] if len(thinking_text) > 600 else thinking_text
+
+                # Strip think tags from reply, extract any thinking found inside
+                if reply:
+                    clean = re.split(r"</?think>", reply.strip())
+                    if len(clean) > 1:
+                        # Found think tags — extract thinking, keep post-think as reply
+                        if not thinking_text and len(clean) >= 2 and clean[1].strip():
+                            thinking_text = clean[1].strip()
+                        reply = (clean[2] if len(clean) > 2 and clean[2].strip() else clean[0]).strip()
+                        if not reply and thinking_text:
+                            reply = thinking_text[-600:] if len(thinking_text) > 600 else thinking_text
+                    # else: no think tags in reply, keep as-is
+
                 if not reply:
-                    logger.warning("empty reply from llama.cpp — full response: %s",
-                                  str(data)[:500])
-                return {"ok": True, "reply": reply or "(empty response)"}
+                    logger.warning("empty reply from llama.cpp - finish=%s full: %s",
+                                  finish, str(data)[:500])
+                # Safety net: trim any repetition loop that slipped past sampling.
+                reply = _collapse_repetition(reply)
+                return {"ok": True, "reply": reply or "(empty response)", "thinking": thinking_text or None}
         except httpx.ConnectError:
             return {"ok": False, "detail": "LLM server not running at " + base_url}
         except httpx.TimeoutException:
@@ -158,20 +796,72 @@ async def api_chat(body: dict[str, Any]):
         except Exception as e:
             return {"ok": False, "detail": str(e)}
     else:
-        # Ollama
+        # Ollama — local daemon OR its cloud models (e.g. "qwen3-coder:480b-cloud",
+        # "gpt-oss:120b-cloud"), which run big quantized models that don't fit 8GB.
+        # The Oak documentation is already in the system prompt (injected by the
+        # frontend retriever), so the coder is a doc-grounded "Oakmaster".
+        is_coder = agent == "oakscript_coder"
         base_url = settings.get("ollama_base_url", "http://localhost:11434")
+        # Cloud coder models aren't VRAM/context-constrained the way the local
+        # path is — 4096 was an arbitrary cap that cut a full indicator script
+        # off mid-fence ("cloud models cut code out"). Give it real headroom.
+        coder_budget = 8192
+        body = {
+            "model": model,
+            "messages": ollama_messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.3 if is_coder else 0.5,
+                "top_p": 0.92, "top_k": 40,
+                "repeat_penalty": 1.15, "repeat_last_n": 320,
+                "num_predict": coder_budget if is_coder else 1536,
+            },
+        }
+        if is_coder:
+            body["think"] = False  # output code directly, no chain-of-thought
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
-                resp = await client.post(f"{base_url.rstrip('/')}/api/chat", json={
-                    "model": model, "messages": ollama_messages, "stream": False,
-                })
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                resp = await client.post(f"{base_url.rstrip('/')}/api/chat", json=body)
                 if resp.status_code != 200:
-                    return {"ok": False, "detail": f"Ollama returned {resp.status_code}"}
+                    text = await resp.aread()
+                    return {"ok": False, "detail": f"Ollama returned {resp.status_code}: {str(text)[:300]}"}
                 data = resp.json()
-                reply = data.get("message", {}).get("content", "")
+                msg = data.get("message", {})
+                reply = msg.get("content", "") or msg.get("thinking", "") or ""
+                done_reason = data.get("done_reason", "")
+
+                # The model hit the length cap, not a natural stop — the coder's
+                # script was cut off mid-generation. Ask it to continue from
+                # exactly where it stopped instead of returning broken code.
+                # Bounded to 2 continuations (covers even very large scripts);
+                # each one gets the same generous budget.
+                continuations = 0
+                convo = list(ollama_messages)
+                while is_coder and done_reason == "length" and continuations < 2:
+                    convo.append({"role": "assistant", "content": reply})
+                    convo.append({"role": "user", "content": (
+                        "Your last response was cut off before it finished. Continue "
+                        "EXACTLY where you left off — do not repeat anything already "
+                        "written, do not restart the code fence, just keep emitting "
+                        "the remaining lines until the script and its closing ``` are complete."
+                    )})
+                    cont_body = dict(body, messages=convo)
+                    cont_resp = await client.post(f"{base_url.rstrip('/')}/api/chat", json=cont_body)
+                    if cont_resp.status_code != 200:
+                        break
+                    cont_data = cont_resp.json()
+                    cont_msg = cont_data.get("message", {})
+                    cont_text = cont_msg.get("content", "") or ""
+                    reply += cont_text
+                    done_reason = cont_data.get("done_reason", "")
+                    continuations += 1
+
+                reply = _collapse_repetition(reply)
                 return {"ok": True, "reply": reply or "(empty response)"}
         except httpx.ConnectError:
-            return {"ok": False, "detail": "Ollama not running at " + base_url}
+            return {"ok": False, "detail": f"Ollama not reachable at {base_url} — start the Ollama app (or `ollama serve`). For cloud models run `ollama signin` first."}
+        except httpx.TimeoutException:
+            return {"ok": False, "detail": "Ollama timed out — a cloud model may be cold-starting; try again."}
         except Exception as e:
             return {"ok": False, "detail": str(e)}
 
@@ -190,7 +880,10 @@ SEARCH_CATEGORIES = {
 async def api_web_search(body: dict[str, Any]):
     query = body.get("query", "").strip()
     category = body.get("category", "general")
-    max_results = min(int(body.get("max_results", 5)), 20)
+    try:
+        max_results = min(max(1, int(body.get("max_results", 5))), 20)
+    except (TypeError, ValueError):
+        max_results = 5
     symbol = body.get("symbol", "").strip()
 
     if not query and not symbol:
@@ -227,18 +920,26 @@ async def api_voice_synthesize(body: dict[str, Any]):
     text = (body.get("text", "") or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail="Text is required")
+    path = None
     try:
         from gtts import gTTS
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as fp:
-            tts = gTTS(text=text, lang="en", slow=False)
-            tts.save(fp.name)
-            with open(fp.name, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("utf-8")
-            os.unlink(fp.name)
-            return {"audio_b64": b64}
+        # Create the temp path then CLOSE the handle before writing — on Windows
+        # an open handle locks the file and gTTS.save() fails with WinError 32.
+        fd, path = tempfile.mkstemp(suffix=".mp3")
+        os.close(fd)
+        gTTS(text=text, lang="en", slow=False).save(path)
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        return {"audio_b64": b64}
     except Exception as e:
         logger.warning("gTTS failed: %s", e)
         return {"audio_b64": None, "error": str(e)}
+    finally:
+        if path and os.path.exists(path):
+            try:
+                os.unlink(path)
+            except Exception:
+                pass
 
 # ---------------------------------------------------------------------------
 # Settings
@@ -256,17 +957,23 @@ def api_get_settings():
 def api_save_settings(body: dict[str, Any]):
     current = load_settings()
     for key, value in body.items():
-        if key in ("massive_api_key", "serpapi_api_key"):
+        if key in ("massive_api_key", "serpapi_api_key", "tradovate_password"):
+            # Only update API keys/secrets if they're not masked
             if value and "*" not in str(value):
                 current[key] = str(value).strip()
-        elif key in DEFAULTS:
+        else:
+            # Accept all other keys
             current[key] = value
-    save_settings(current)
-    resp = dict(current)
-    resp["massive_api_key_masked"] = mask_key(current.get("massive_api_key", ""))
-    resp["serpapi_api_key_masked"] = mask_key(current.get("serpapi_api_key", ""))
-    del resp["massive_api_key"]; del resp["serpapi_api_key"]
-    return {"ok": True, "settings": resp}
+    try:
+        save_settings(current)
+        resp = dict(current)
+        resp["massive_api_key_masked"] = mask_key(current.get("massive_api_key", ""))
+        resp["serpapi_api_key_masked"] = mask_key(current.get("serpapi_api_key", ""))
+        del resp["massive_api_key"]; del resp["serpapi_api_key"]
+        return {"ok": True, "settings": resp}
+    except Exception as e:
+        logger.error("Failed to save settings: %s", e)
+        return {"ok": False, "detail": str(e)}
 
 # ---------------------------------------------------------------------------
 # Market Data (yfinance + embedded securities)
@@ -309,8 +1016,12 @@ SECURITIES: list[dict[str, str]] = [
     {"symbol": "CL=F", "name": "Crude Oil"}, {"symbol": "NG=F", "name": "Natural Gas"},
 ]
 
-SUPPORTED_TIMEFRAMES = {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1wk"}
+SUB_MINUTE_TIMEFRAMES = {"1s", "5s", "10s", "30s"}
+SUPPORTED_TIMEFRAMES = SUB_MINUTE_TIMEFRAMES | {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1wk"}
 TF_INTERVAL_MAP = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m", "2h": "2h", "4h": "4h", "1d": "1d", "1wk": "1wk"}
+# Sub-minute bars require a real second-resolution feed — yfinance has no interval
+# below 1m, so only Massive (paid, second-aggregates) can serve these.
+SUB_MINUTE_SECS = {"1s": 1, "5s": 5, "10s": 10, "30s": 30}
 
 def _yf_period(tf: str, period: str) -> str:
     bars = int(period) if period.strip().isdigit() else 120
@@ -330,8 +1041,13 @@ def api_providers():
     s = load_settings()
     massive_ok = bool(s.get("massive_api_key", ""))
     return {"providers": [
-        {"name": "massive", "available": massive_ok, "needs_api_key": True, "has_api_key": massive_ok},
-        {"name": "yahoo", "available": True, "needs_api_key": False, "has_api_key": None},
+        # Massive is the only source with real second-resolution aggregates —
+        # sub_minute_timeframes stays empty for yahoo so the client can grey
+        # those options out instead of letting users pick data we can't serve.
+        {"name": "massive", "available": massive_ok, "needs_api_key": True, "has_api_key": massive_ok,
+         "sub_minute_timeframes": sorted(SUB_MINUTE_SECS.keys(), key=lambda k: SUB_MINUTE_SECS[k]) if massive_ok else []},
+        {"name": "yahoo", "available": True, "needs_api_key": False, "has_api_key": None,
+         "sub_minute_timeframes": []},
     ]}
 
 @app.get("/api/market-data/{symbol}")
@@ -342,7 +1058,35 @@ async def api_market_data(symbol: str, timeframe: str = "1h", period: str = "200
     tf = timeframe.strip().lower()
     if tf not in SUPPORTED_TIMEFRAMES:
         raise HTTPException(status_code=400, detail=f"Unsupported timeframe: {tf}")
+    if tf in SUB_MINUTE_TIMEFRAMES:
+        s = load_settings()
+        if not s.get("massive_api_key", "") or provider == "yahoo":
+            raise HTTPException(status_code=400, detail=f"Sub-minute timeframe {tf} requires the Massive provider (yfinance has no interval below 1m)")
 
+    # Cache bars per (symbol, tf, period, provider). A bar only changes once per
+    # period, so the TTL scales with the timeframe (capped) — repeated loads and
+    # symbol toggles are served from cache instead of re-hitting the paid feed.
+    bar_secs = {**SUB_MINUTE_SECS, "1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600,
+                "2h": 7200, "4h": 14400, "1d": 86400, "1wk": 604800}.get(tf, 60)
+    ttl = max(8.0, min(float(bar_secs) * 0.25, 45.0))
+    key = f"bars:{provider or 'auto'}:{symbol}:{tf}:{period}"
+    cached = _cache_get(key, ttl)
+    if cached is not None:
+        return cached
+
+    lock = _cache_lock(key)
+    async with lock:
+        cached = _cache_get(key, ttl)
+        if cached is not None:
+            return cached
+        _cache_stats["misses"] += 1
+        result = await _fetch_market_data(symbol, tf, period, provider)
+        _cache_stats["upstream"] += 1
+        _cache_set(key, result)
+        return result
+
+
+async def _fetch_market_data(symbol: str, tf: str, period: str, provider: Optional[str]) -> dict[str, Any]:
     used_provider = None
     bars = None
 
@@ -352,8 +1096,8 @@ async def api_market_data(symbol: str, timeframe: str = "1h", period: str = "200
         api_key = s.get("massive_api_key", "")
         if api_key:
             try:
-                multiplier = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 1, "2h": 2, "4h": 4, "1d": 1, "1wk": 1}[tf]
-                timespan = {"1m": "minute", "5m": "minute", "15m": "minute", "30m": "minute", "1h": "hour", "2h": "hour", "4h": "hour", "1d": "day", "1wk": "week"}[tf]
+                multiplier = {"1s": 1, "5s": 5, "10s": 10, "30s": 30, "1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 1, "2h": 2, "4h": 4, "1d": 1, "1wk": 1}[tf]
+                timespan = {"1s": "second", "5s": "second", "10s": "second", "30s": "second", "1m": "minute", "5m": "minute", "15m": "minute", "30m": "minute", "1h": "hour", "2h": "hour", "4h": "hour", "1d": "day", "1wk": "week"}[tf]
                 import time as _time
                 to_date = _time.strftime("%Y-%m-%d", _time.gmtime())
                 from_ts = _time.time() - int(period) * 86400 if period.isdigit() else _time.time() - 30 * 86400
@@ -393,3 +1137,76 @@ async def api_market_data(symbol: str, timeframe: str = "1h", period: str = "200
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
 
     return {"ok": True, "symbol": symbol, "timeframe": tf, "provider": used_provider, "bars": bars}
+
+# ---------------------------------------------------------------------------
+# Lightweight quote — cheap latest-price correction for the Hybrid engine.
+# Designed to be hit frequently (yahoo, free) or sparingly (massive, paid).
+# ---------------------------------------------------------------------------
+@app.get("/api/quote/{symbol}")
+async def api_quote(symbol: str, provider: str = "yahoo"):
+    if not symbol:
+        raise HTTPException(status_code=400, detail="symbol required")
+    symbol = symbol.strip().upper()
+
+    # Cache + de-dupe so frequent corrections don't hammer the provider.
+    # Short TTL keeps prices fresh; the paid feed gets a slightly longer one.
+    ttl = 4.0 if provider == "massive" else 2.0
+    key = f"quote:{provider}:{symbol}"
+    cached = _cache_get(key, ttl)
+    if cached is not None:
+        return cached
+    async with _cache_lock(key):
+        cached = _cache_get(key, ttl)  # re-check: another coroutine may have filled it
+        if cached is not None:
+            return cached
+        _cache_stats["misses"] += 1
+        result = await _fetch_quote(symbol, provider)
+        if result.get("ok"):
+            _cache_stats["upstream"] += 1
+            _cache_set(key, result)
+        return result
+
+
+async def _fetch_quote(symbol: str, provider: str) -> dict[str, Any]:
+    # Massive (paid): single last-trade call — minimal cost.
+    if provider == "massive":
+        s = load_settings()
+        api_key = s.get("massive_api_key", "")
+        if not api_key:
+            return {"ok": False, "detail": "massive not configured"}
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                r = await client.get(
+                    f"https://api.massive.com/v2/last/trade/{symbol}",
+                    params={"apiKey": api_key},
+                )
+            if r.status_code == 200:
+                payload = r.json()
+                res = payload.get("results") or {}
+                price = res.get("p") or res.get("price")
+                if price:
+                    return {"ok": True, "symbol": symbol, "price": float(price),
+                            "provider": "massive", "ts": res.get("t")}
+        except Exception as e:
+            return {"ok": False, "detail": str(e)}
+        return {"ok": False, "detail": "massive quote unavailable"}
+
+    # Yahoo (free): fast_info first, fall back to the last 1m close.
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        price = None
+        try:
+            fi = ticker.fast_info
+            price = fi.get("last_price") if hasattr(fi, "get") else getattr(fi, "last_price", None)
+        except Exception:
+            price = None
+        if not price:
+            df = ticker.history(period="1d", interval="1m")
+            if not df.empty:
+                price = float(df["Close"].iloc[-1])
+        if price:
+            return {"ok": True, "symbol": symbol, "price": float(price), "provider": "yahoo"}
+    except Exception as e:
+        return {"ok": False, "detail": str(e)}
+    return {"ok": False, "detail": "quote unavailable"}

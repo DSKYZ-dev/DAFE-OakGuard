@@ -1,7 +1,7 @@
 import type { BaseBar, Tick, VolumeBin } from '@dafe/types';
 
 export type BarType = 'candlestick' | 'heikin-ashi' | 'renko' | 'range-bar' | 'volume-bar' | 'tick-bar' | 'kagi' | 'footprint' | 'line' | 'area' | 'dollar-bar' | 'imbalance-bar';
-export type Timeframe = '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';
+export type Timeframe = '1s' | '5s' | '10s' | '30s' | '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';
 
 export interface PerBarVolume {
   levels: { price: number; volume: number; buyVol: number; sellVol: number }[];
@@ -9,6 +9,7 @@ export interface PerBarVolume {
 }
 
 const TIMEFRAMES_MS: Record<Timeframe, number> = {
+  '1s': 1000, '5s': 5000, '10s': 10000, '30s': 30000,
   '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000,
   '1h': 3600000, '4h': 14400000, '1d': 86400000, '1w': 604800000,
 };
@@ -110,13 +111,13 @@ export function transformBars(bars: BaseBar[], type: BarType, params?: Record<st
     case 'renko': return transformRenko(bars, params?.brickSize ?? 50);
     case 'range-bar': return transformRangeBar(bars, params?.range ?? 100);
     case 'volume-bar': return transformVolumeBar(bars, params?.volTarget ?? 10000);
-    case 'tick-bar': return bars; // same base data; interpretation differs
+    case 'tick-bar': return transformTickBar(bars, params?.tickCount ?? 10);
     case 'kagi': return transformKagi(bars, params?.reversal ?? 50);
     case 'footprint': return bars; // footprint adds per-level data; base OHLC same
     case 'line': return bars;
     case 'area': return bars;
-    case 'dollar-bar': return bars;
-    case 'imbalance-bar': return bars;
+    case 'dollar-bar': return transformDollarBar(bars, params?.dollarTarget ?? 1_000_000);
+    case 'imbalance-bar': return transformImbalanceBar(bars, params?.imbalanceThreshold ?? 0.3);
     default: return bars;
   }
 }
@@ -242,6 +243,86 @@ function transformKagi(bars: BaseBar[], reversal: number): BaseBar[] {
         close: bar.close,
         volume: bar.volume,
       });
+    }
+  }
+  return result.length > 0 ? result : bars.slice(0, 1);
+}
+
+function transformTickBar(bars: BaseBar[], tickCount: number): BaseBar[] {
+  // No raw trade-tick stream at this layer, so each source bar stands in for
+  // one "tick" — a fixed count of source bars forms one tick-bar.
+  const result: BaseBar[] = [];
+  for (let i = 0; i < bars.length; i += tickCount) {
+    const chunk = bars.slice(i, i + tickCount);
+    if (chunk.length === 0) continue;
+    result.push({
+      timestamp: chunk[0].timestamp,
+      open: chunk[0].open,
+      high: Math.max(...chunk.map(b => b.high)),
+      low: Math.min(...chunk.map(b => b.low)),
+      close: chunk[chunk.length - 1].close,
+      volume: chunk.reduce((s, b) => s + b.volume, 0),
+    });
+  }
+  return result.length > 0 ? result : bars.slice(0, 1);
+}
+
+function transformDollarBar(bars: BaseBar[], dollarTarget: number): BaseBar[] {
+  const result: BaseBar[] = [];
+  let openB = bars[0].open;
+  let highB = bars[0].high;
+  let lowB = bars[0].low;
+  let volB = 0;
+  let dollarB = 0;
+  let tsB = bars[0].timestamp;
+  let closeB = bars[0].close;
+
+  for (const bar of bars) {
+    highB = Math.max(highB, bar.high);
+    lowB = Math.min(lowB, bar.low);
+    volB += bar.volume;
+    dollarB += bar.close * bar.volume;
+    closeB = bar.close;
+    if (dollarB >= dollarTarget) {
+      result.push({ timestamp: tsB, open: openB, high: highB, low: lowB, close: closeB, volume: volB });
+      openB = bar.close;
+      highB = bar.high;
+      lowB = bar.low;
+      volB = 0;
+      dollarB = 0;
+      tsB = bar.timestamp;
+    }
+  }
+  return result.length > 0 ? result : bars.slice(0, 1);
+}
+
+function transformImbalanceBar(bars: BaseBar[], imbalanceThreshold: number): BaseBar[] {
+  // Closes a bar once the running buy/sell volume imbalance (using close>=open
+  // as a buy-tick proxy) exceeds the threshold fraction of accumulated volume.
+  const result: BaseBar[] = [];
+  let openB = bars[0].open;
+  let highB = bars[0].high;
+  let lowB = bars[0].low;
+  let volB = 0;
+  let signedVolB = 0;
+  let tsB = bars[0].timestamp;
+  let closeB = bars[0].close;
+
+  for (const bar of bars) {
+    highB = Math.max(highB, bar.high);
+    lowB = Math.min(lowB, bar.low);
+    const sign = bar.close >= bar.open ? 1 : -1;
+    volB += bar.volume;
+    signedVolB += sign * bar.volume;
+    closeB = bar.close;
+    if (volB > 0 && Math.abs(signedVolB) / volB >= imbalanceThreshold && volB > (bars[0].volume || 1)) {
+      result.push({ timestamp: tsB, open: openB, high: highB, low: lowB, close: closeB, volume: volB });
+      openB = bar.close;
+      highB = bar.high;
+      lowB = bar.low;
+      volB = 0;
+      signedVolB = 0;
+      tsB = bar.timestamp;
     }
   }
   return result.length > 0 ? result : bars.slice(0, 1);

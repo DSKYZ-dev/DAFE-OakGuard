@@ -5,453 +5,1364 @@ export interface DocSection {
 
 export function getDocumentation(): DocSection[] {
   return [
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Overview',
-      content: `OakScript is a PineScript-inspired scripting language for the TradingVision platform.
-It executes bar-by-bar across historical data, computing technical indicators and generating chart plots.
+      content: `OakScript is the DAFE Charts indicator scripting language — a PineScript-inspired
+bar-by-bar execution engine that computes technical indicators and renders them on
+the chart in both 2D and 3D.
 
-Key concepts:
-- Bar-by-bar execution — your script runs once for each bar in the dataset
-- Series access — close, open, high, low, volume, time give the current bar's values
-- Persistent state — var and varip keep values between bars and recalculations
-- Built-in library — sma, ema, rsi, macd, crossover, and many more
-- Chart integration — plot(), plotshape(), hline(), bgcolor() render directly on the chart`,
+KEY PRINCIPLES:
+- Your script runs once for every bar in the dataset, oldest bar first
+- Built-in variables (close, open, high, low, volume, time, bar_index)
+  are automatically set to the current bar's values before each execution
+- var variables persist their value from one bar to the next
+- varip variables persist across full script recalculations
+- All plot calls (plot, plotshape, hline, plot3d, etc.) are collected
+  during execution and rendered together on the final chart`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Comments',
-      content: `// Single-line comment — everything after // is ignored
+      content: `// Single-line comment — everything after // on the line is ignored
 
 /* Multi-line
-   comment */`,
+   comment — C-style block comments */
+
+Use comments to document your indicator logic. The Trade Advisor agent can
+read your comments to understand intent when fixing or enhancing code.`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Literals & Data Types',
       content: `Numbers:   42, 3.14, -7, 100.0
-Strings:   "hello", 'hello'  (single or double quotes)
+Strings:   "hello", 'hello'  (single or double quotes — MUST be quoted)
 Booleans:  true, false
 Nil:       null, nil
 Arrays:    [1, 2, 3], ["a", "b", "c"]
 
-Type coercion: Numbers, strings, booleans, and nil interoperate freely.
-  - nil/null is falsy
-  - 0 and NaN are falsy
-  - Empty string "" is falsy
-  - Everything else is truthy`,
+Falsy values (treated as false in conditions):
+  null, nil, 0, NaN, "" (empty string)
+Everything else is truthy.
+
+CRITICAL: String arguments in function calls MUST be quoted.
+  Correct:   plot3d(v, "RSI", "surface", "#b48cff", "separate")
+  Wrong:     plot3d(v, RSI, surface, #b48cff, separate)  ← SYNTAX ERROR`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Variables & Assignment',
-      content: `Regular variable:
+      content: `Assignment (declare or reassign):
     x = 10
     name = "AAPL"
 
-Reassignment:
-    x := x + 1
-    x = x + 1
+Reassignment operator (required when changing a value from outer scope):
+    x := x + 1     // reassign with :=
+    x = x + 1      // also valid
 
-Persistent variable (survives across bars):
+Persistent variable — survives across bars, but RESETS when script is reloaded:
     var total = 0.0
     total := total + close
 
-Varip variable (survives across bars AND full recalculations):
-    varip count = 0
-    count := count + 1
+Varip variable — survives across bars AND full recalculations:
+    varip counter = 0
+    counter := counter + 1
 
-Difference: var resets when script re-runs on new data; varip persists across full re-executions.
+Use var for state that resets when you change inputs.
+Use varip for state that must survive input changes (rare).
 
-Built-in variables (read-only):
-    close      — current bar's closing price
-    open       — current bar's opening price
-    high       — current bar's high
-    low        — current bar's low
-    volume     — current bar's volume
-    time       — current bar's timestamp (unix ms)
-    bar_index  — current bar index (0-based)
-    barstate   — object with isnew, isrealtime, isconfirmed`,
+Built-in variables (read-only, set per bar):
+    close       — current bar's closing price
+    open        — current bar's opening price
+    high        — current bar's high price
+    low         — current bar's low price
+    volume      — current bar's trading volume
+    time        — current bar's timestamp (unix milliseconds)
+    bar_index   — current bar index (0 = first bar in dataset)
+    barstate    — object: { isnew, isrealtime, isconfirmed }`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Operators',
       content: `Arithmetic:   +  -  *  /  %
-Comparison:  ==  !=  <  >  <=  >=  =>
+Comparison:  ==  !=  <  >  <=  >=  =>  (use == not = in conditions!)
 Logical:     and  or  not  !
 Unary:       -  !
-Assignment:  =  :=
+
+Ternary (conditional) — cond ? valueIfTrue : valueIfFalse
+  Evaluated every bar. The KEY to dynamic, data-driven indicators:
+    trend = close > ema(close,50) ? 1 : -1
+    col   = rsi(close,14) > 70 ? "#ff4477" : "#22cc88"
+  Ternaries nest (right-associative):
+    zone = r > 70 ? "#ff4477" : r < 30 ? "#22cc88" : "#888888"
 
 String concatenation:
-    "Hello " + "World"    → "Hello World"`,
+    "Hello " + "World"    → "Hello World"
+    "Price: " + tostring(close)`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Conditionals',
-      content: `if condition
-    statement
+      title: 'Control Flow',
+      content: `Both block styles below are valid OakScript syntax. Braces are the
+SAFER choice for any block with more than one statement — use them whenever
+in doubt, especially for nested if/while/for or loop bodies.
 
-if condition
-    statement1
-    statement2
-else
-    statement3
+Brace blocks (recommended for multi-statement bodies):
+    if condition {
+        statement1
+        statement2
+    } else {
+        statement3
+    }
 
-if condition
-    statement
-else if otherCondition
-    statement
-else
-    statement
+    while condition {
+        statement1
+        statement2
+    }
 
-Braces are optional for single statements. For multiple statements,
-indent them under the if/else (PineScript style) or use { } blocks.`,
+Indentation blocks (PineScript style, single line or simple bodies):
+    if condition
+        statement
+
+    if condition
+        statement1
+        statement2
+    else
+        statement3
+
+    if condition
+        action1
+    else if otherCondition
+        action2
+    else
+        action3
+
+For loop:
+    for i = 0 to 10
+        statement
+
+    for i = 0 to 10 by 2        // step by 2
+
+    for i = 10 downto 0          // count down
+
+    for (var i = 0; i < 10; i = i + 1)   // C-style
+
+While loop:
+    while condition
+        statement
+
+Loop control:  break   continue
+
+CRITICAL — indentation-block rule: every statement in a brace-less block
+must start at the EXACT SAME column as the block's first statement. The
+block ends at the first line that dedents to a shallower column. Mixing
+tab/space indentation, or indenting two statements of the same block
+differently, silently breaks the block boundary — a later statement (e.g. a
+loop counter's increment/decrement) can end up OUTSIDE the loop it was meant
+to be part of, which can produce an infinite loop. When a block has more
+than one statement, or contains nested if/while/for, prefer { } braces —
+they have no indentation requirement and cannot misparse this way.`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Loops',
-      content: `// Numeric for loop
-for i = 0 to 10
-    statement
+      title: 'Arrays — Complete Reference',
+      content: `Arrays are the foundation of advanced indicator logic — order queues, scale-in
+levels, performance histories, adaptive metrics, and state machines all use arrays.
 
-for i = 0 to 10 by 2
-    statement
+═══════════════════════════════════════════════════════════════════
+ARRAY CREATION
+═══════════════════════════════════════════════════════════════════
 
-for i = 10 downto 0
-    statement
+    arr = []                // empty array literal
+    arr = [1, 2, 3]         // literal with values
+    arr = array(10)         // pre-allocate size 10 (sparse)
 
-// For-in loop (iterate array elements)
-for val in array
-    statement
+═══════════════════════════════════════════════════════════════════
+CORE OPERATIONS (PineScript-compatible)
+═══════════════════════════════════════════════════════════════════
 
-// C-style for loop
-for (var i = 0; i < 10; i = i + 1)
-    statement
+    array.get(arr, i)       — get element at index i
+    array.set(arr, i, val)  — set element at index i
+    array.push(arr, val)    — append value to end
+    array.pop(arr)          — remove & return last element (LIFO)
+    array.shift(arr)        — remove & return first element (FIFO)
+    array.size(arr)         — number of elements
 
-// While loop
-while condition
-    statement
+    Index shortcut:
+    value = arr[0]          — same as array.get(arr, 0)
+    arr[0] = 42             — same as array.set(arr, 0, 42)
 
-Loop control: break, continue`,
+═══════════════════════════════════════════════════════════════════
+QUEUE & ORDER MANAGEMENT
+═══════════════════════════════════════════════════════════════════
+
+    array.unshift(arr, val) — insert at beginning
+    array.remove(arr, i)    — remove element at index i
+    array.insert(arr, i, v) — insert value v at index i
+    array.clear(arr)        — remove all elements
+
+    FIFO queue pattern (pending orders):
+    if condition
+        array.push(que, id)     // enqueue
+    if fillCondition
+        id = array.shift(que)   // dequeue
+
+    LIFO stack pattern (recent values):
+    array.push(stack, price)
+    if someCondition
+        last = array.pop(stack)
+
+═══════════════════════════════════════════════════════════════════
+SEARCH & INSPECTION
+═══════════════════════════════════════════════════════════════════
+
+    array.includes(arr, val) — true if val exists in arr
+    array.indexOf(arr, val)  — first index of val, or -1
+    array.head(arr, n)       — first n elements
+    array.tail(arr, n)       — last n elements
+
+═══════════════════════════════════════════════════════════════════
+TRANSFORMATION
+═══════════════════════════════════════════════════════════════════
+
+    array.slice(arr, from, to)  — extract sub-array [from, to)
+    array.copy(arr)             — shallow copy
+    array.reverse(arr)          — reverse in place
+    array.sort(arr, "asc")      — sort ascending (default)
+    array.sort(arr, "desc")     — sort descending
+    array.fill(arr, val)        — fill all with val
+    array.fill(arr, val, 2, 5)  — fill indices 2..4 with val
+    array.join(arr, ",")        — join elements into string
+
+═══════════════════════════════════════════════════════════════════
+STATISTICAL (numeric arrays)
+═══════════════════════════════════════════════════════════════════
+
+    array.sum(arr)           — sum of all numeric elements
+    array.avg(arr)           — arithmetic mean
+    array.min(arr)           — minimum value
+    array.max(arr)           — maximum value
+    array.median(arr)        — median value
+    array.stdev(arr)         — population standard deviation
+    array.percentile(arr, p) — p-th percentile (0-100)
+
+═══════════════════════════════════════════════════════════════════
+GENERATION
+═══════════════════════════════════════════════════════════════════
+
+    array.range(start, end, step?) — arithmetic progression
+    array.range(0, 10)        → [0,1,2,3,4,5,6,7,8,9,10]
+    array.range(0, 10, 2)     → [0,2,4,6,8,10]
+    array.range(10, 0)        → [10,9,8,7,6,5,4,3,2,1,0]
+
+═══════════════════════════════════════════════════════════════════
+INDEX ACCESS
+═══════════════════════════════════════════════════════════════════
+
+    arr[0]     — first element
+    arr[size-1] — last element
+    arr[size]  — nil (out of bounds returns null)
+
+═══════════════════════════════════════════════════════════════════
+ADVANCED PATTERNS
+═══════════════════════════════════════════════════════════════════
+
+── 1. Capped FIFO Queue (safePush pattern) ──
+    var buf = []
+    safePush(val) =>
+        if array.size(buf) >= 50
+            array.shift(buf)     // evict oldest
+        array.push(buf, val)
+
+── 2. Parallel Arrays (pseudo-multi-dim) ──
+    var prices = []
+    var sizes = []
+    var times = []
+    addOrder(price, size) =>
+        array.push(prices, price)
+        array.push(sizes, size)
+        array.push(times, bar_index)
+
+── 3. Scale-In Levels ──
+    var scalePrices = []
+    var scaleSizes = []
+    for i = 1 to 3
+        array.push(scalePrices, close - atr(high,low,close,14) * 0.5 * i)
+        array.push(scaleSizes, 1)
+
+── 4. Rolling Performance History ──
+    var pnlHist = []
+    updatePnl(pnl) =>
+        safePush(pnlHist, pnl)
+        winRate = array.avg(array.map... ??)  // use statistical methods
+        avgWin = array.avg(array.head(pnlHist, 20))
+
+── 5. Cooldown Tracker ──
+    var missHistory = []
+    trackFill(success) =>
+        safePush(missHistory, success ? 0 : 1)
+        missRate = array.avg(missHistory)
+        // adapt position size based on missRate
+        posSize = missRate > 0.5 ? 0.5 : 1.0
+
+── 6. Safe Access Helper ──
+    safeGet(arr, i) =>
+        if i >= 0 and i < array.size(arr)
+            arr[i]
+        else
+            0`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Arrays',
-      content: `// Create array
-arr = [1, 2, 3]
-arr = array(size)     // pre-allocate
+      title: 'OakRing — Circular Buffer',
+      content: `OakRing is a fixed-size circular buffer (ring buffer) that automatically
+overwrites the oldest value when full. Unlike arrays, OakRing has bounded
+memory — push a million values and it still uses exactly N slots.
 
-// Array operations
-array.get(arr, index)   — get element
-array.set(arr, index, val) — set element
-array.push(arr, val)    — append
-array.pop(arr)          — remove & return last
-array.size(arr)         — length
+Perfect for rolling windows, real-time tick buffers, and any streaming
+computation where you only care about the last N values.
 
-// Index access
-value = arr[0]
-arr[1] = 42`,
+═══════════════════════════════════════════════════════════════════
+CREATION
+═══════════════════════════════════════════════════════════════════
+
+    ring = oakring(20)       // ring buffer of capacity 20
+    ring = oakring()         // default capacity 10
+
+═══════════════════════════════════════════════════════════════════
+METHODS
+═══════════════════════════════════════════════════════════════════
+
+    ring.push(val)           — append value (auto-evicts oldest if full)
+    ring.pop()               — remove & return last (newest)
+    ring.clear()             — empty the buffer
+    ring.toArray()           — export as plain array [oldest..newest]
+    ring.fill(val)           — fill all slots with val
+
+═══════════════════════════════════════════════════════════════════
+PROPERTIES
+═══════════════════════════════════════════════════════════════════
+
+    ring.size                — number of elements currently stored
+    ring.capacity            — maximum capacity (fixed at creation)
+
+═══════════════════════════════════════════════════════════════════
+ACCESSORS
+═══════════════════════════════════════════════════════════════════
+
+    ring.first()             — oldest element (first pushed)
+    ring.last()              — newest element (last pushed)
+    ring[0]                  — newest element (last pushed)
+    ring[1]                  — second newest
+    ring[size-1]             — oldest (same as ring.first())
+
+═══════════════════════════════════════════════════════════════════
+STATISTICS (numeric buffers)
+═══════════════════════════════════════════════════════════════════
+
+    ring.sum()               — sum of all elements
+    ring.avg()               — arithmetic mean
+    ring.min()               — minimum value
+    ring.max()               — maximum value
+    ring.median()            — median value
+    ring.std()               — population standard deviation
+    ring.percentile(p)       — p-th percentile (0-100)
+
+═══════════════════════════════════════════════════════════════════
+USE CASES
+═══════════════════════════════════════════════════════════════════
+
+── 1. Rolling ATR Buffer ──
+    var atrRing = oakring(14)
+    tr = max(high - low, abs(high - close[1]), abs(low - close[1]))
+    atrRing.push(tr)
+    avgAtr = atrRing.avg()       // rolling mean of last 14 TR values
+
+── 2. Tick Pressure Monitor ──
+    var tickRing = oakring(100)
+    tickRing.push(close > close[1] ? 1 : close < close[1] ? -1 : 0)
+    pressure = tickRing.avg()    // -1 to 1, direction bias
+
+── 3. Fill Miss Rate ──
+    var fillRing = oakring(50)
+    fillRing.push(fillSuccess ? 0 : 1)
+    if fillRing.avg() > 0.6
+        // reduce position size — too many misses
+
+── 4. Rolling Volatility ──
+    var volRing = oakring(20)
+    volRing.push(roc(close, 1))
+    vol = volRing.std()          // rolling standard deviation of returns`,
     },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Matrix — 2D Grid',
+      content: `Matrix provides two-dimensional grid storage for multi-variable data,
+covariance calculations, portfolio analysis, and advanced mathematical
+operations on trading data.
+
+═══════════════════════════════════════════════════════════════════
+CREATION
+═══════════════════════════════════════════════════════════════════
+
+    m = matrix(3, 3)             // 3×3 zero matrix
+    m = matrix(2, 4, 1.0)        // 2×4 matrix filled with 1.0
+
+═══════════════════════════════════════════════════════════════════
+METHODS
+═══════════════════════════════════════════════════════════════════
+
+    m.get(row, col)              — get element at (r, c)
+    m.set(row, col, val)         — set element at (r, c)
+    m.row(r)                     — get row r as array
+    m.col(c)                     — get column c as array
+    m.sum()                      — sum of all elements
+    m.transpose()                — return new transposed matrix
+    m.multiply(other)            — matrix multiplication
+    m.add(other)                 — element-wise addition
+    m.subtract(other)            — element-wise subtraction
+    m.toArray()                  — export as 2D array
+
+═══════════════════════════════════════════════════════════════════
+PROPERTIES
+═══════════════════════════════════════════════════════════════════
+
+    m.rows                       — number of rows
+    m.cols                       — number of columns
+
+═══════════════════════════════════════════════════════════════════
+INDEX ACCESS
+═══════════════════════════════════════════════════════════════════
+
+    m[0]                         — first row (as array)
+    m[0][1]                      — element at row 0, column 1
+
+═══════════════════════════════════════════════════════════════════
+USE CASES
+═══════════════════════════════════════════════════════════════════
+
+── 1. Multi-Symbol Correlation Matrix ──
+    // Track 3 symbols' returns in a 3×N window
+    var corrMat = matrix(3, 3)
+
+── 2. Covariance-Based Position Sizing ──
+    // Build covariance matrix from asset returns
+    // Use matrix operations to compute optimal weights
+
+── 3. Feature Matrix for ML ──
+    // Store [rsi, macd, volume, atr] per bar as rows
+    var features = matrix(100, 4)
+    barIdx = bar_index
+    if barIdx < 100
+        features.set(barIdx, 0, rsi(close, 14))
+        features.set(barIdx, 1, macd(close, 12, 26, 9).macd)
+        features.set(barIdx, 2, volume)
+        features.set(barIdx, 3, atr(high, low, close, 14))
+
+── 4. Portfolio Weights ──
+    // weights × returns = portfolio return
+    weights = matrix(1, 3)
+    weights.set(0, 0, 0.5)
+    weights.set(0, 1, 0.3)
+    weights.set(0, 2, 0.2)
+    returns = matrix(3, 1)
+    returns.set(0, 0, roc(close, 1))
+    portfolioReturn = weights.multiply(returns)`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Input Parameters',
-      content: `input() makes your indicator adjustable through the UI.
+      content: `input() makes your indicator adjustable through the UI settings panel.
 
-// Number input
-len = input(14, "Length")
+Number input:
+    len = input(14, "Length")
 
-// Number with range
-len = input(14, "RSI Length", 1, 50, 1)
-    //                          min max step
+Number with min/max/step:
+    len = input(14, "RSI Length", 1, 50, 1)
 
-// Boolean input
-useFilter = input(true, "Use Filter")
+Boolean toggle:
+    useFilter = input(true, "Use Filter")
 
-// String input
-label = input("Custom", "Label Text")
+String input:
+    label = input("Custom", "Label Text")
 
-When an indicator is selected from the menu, inputs appear
-as interactive controls below the editor.`,
+Inputs appear as interactive sliders/toggles in the inputs panel when
+the indicator is selected. Users can adjust them without touching code.`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Plotting (2D)',
-      content: `// Plot a line on the chart or lower pane
-plot(value, title, color, linewidth, pane?)
-  pane: "main" (default) or "separate" (lower pane)
+      title: '2D Plotting — Lines & Overlays',
+      content: `plot(value, title, color, linewidth, style?, pane?)
+  Renders a series on the chart. Each bar gets one plot point.
+  - value:      number to plot (close, rsi(close,14), custom formula)
+  - title:      string — displayed in legend and value label
+  - color:      hex/rgba string — MAY CHANGE EVERY BAR (see conditional color)
+  - linewidth:  number — 1=thin, 2=medium, 3=thick, 4+=bold
+  - style:      render style (see below) — defaults to "line"
+  - pane:       "main" (default, overlays price chart) or "separate" (lower pane)
+  The 5th arg may be a style OR the pane; "separate" is always recognized as pane.
 
-// Plot a shape marker on the chart
-plotshape(bar_index, price, title, style, color, pane?)
+PLOT RENDER STYLES (use the quoted string):
+  "line"       — smooth glowing polyline (default)
+  "stepline"   — right-angled steps (state/threshold series)
+  "area"       — line with a translucent fill down to the zero baseline
+  "histogram"  — vertical bars from zero baseline (MACD hist, momentum)
+  "columns"    — alias of histogram (volume columns)
+  "circles"    — a dot at each bar
+  "cross"      — a plus mark at each bar
 
-// Horizontal reference line
-hline(price, color, pane?)
+CONDITIONAL / PER-BAR COLOR (the heart of expressive indicators):
+  Because plot() runs every bar, pass a color expression and the line is
+  painted segment-by-segment in that bar's color:
+    c = close > open ? "#22cc88" : "#ff4477"
+    plot(close, "Price", c, 2)               // green up-bars, red down-bars
+    plot(rsi(close,14), "RSI",
+         rsi(close,14) > 70 ? "#ff4477" : rsi(close,14) < 30 ? "#22cc88" : "#888", 2, "separate")
 
-// Fill between two plot values
+COLOR HELPERS:
+  color.new(baseColor, transp)   — transp 0 (opaque) .. 100 (fully transparent)
+  color.rgb(r, g, b, transp?)    — channels 0..255, optional transp 0..100
+    glassFill = color.new("#22aaff", 80)     // 20% opacity blue
+    plot(vwap(close,volume), "VWAP", color.rgb(180,140,255,20), 2)
+
+hline(value, color, pane?)
+  Draws a dashed horizontal reference line at the given value.
+  - value: number — price level or indicator threshold
+  - color: hex string
+  - pane: "main" or "separate"
+
 fill(top, bottom, color)
+  Fills the area between two plot values with a translucent color.
+  - top:    number — upper boundary value per bar
+  - bottom: number — lower boundary value per bar
+  - color:  hex string — typically use rgba() for transparency
 
-// Background color for a bar
 bgcolor(color)
+  Colors the ENTIRE background column behind the current bar.
+  - color: hex or rgba string — use low alpha for subtle shading
 
-// Label on the chart
-label.new(x, y, text, color)
-
-Shape styles: triangleup, triangledown, circle, cross, xcross,
-              square, diamond, arrowup, arrowdown
-
-Examples:
-    plot(close, "Close", "#ffffff", 1)
-    plot(rsiVal, "RSI", "#b48cff", 2, "separate")
-    plotshape(bar_index, low, "BUY", "triangleup", "#22cc88")
-    hline(70, "#ff4477")
-    hline(30, "#22cc88", "separate")
-    bgcolor("rgba(255,0,0,0.1)")`,
+EXAMPLES:
+    plot(close, "Price", "#ffffff", 2)
+    plot(sma(close, 50), "SMA 50", "#b48cff", 2)
+    plot(rsi(close, 14), "RSI", "#22cc88", 2, "separate")
+    hline(70, "#ff4477", "separate")           // RSI overbought line
+    hline(30, "#22cc88", "separate")           // RSI oversold line
+    fill(upper, lower, "rgba(180,140,255,0.08)")  // band fill
+    bgcolor("rgba(255,68,119,0.06)")           // subtle red tint`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: '3D Plotting (plot3d)',
-      content: `// Render indicator data as a 3D visualization
-plot3d(series, name, style, color, pane?)
+      title: 'Combining, Layering & Manipulating — Cookbook',
+      content: `OakScript rewards composition. Stack plots, drive colors from data,
+and blend translucent layers to build expressive, "works-of-art" indicators —
+the same way you would in PineScript. Recipes:
 
-  series — any indicator array (rsi(), volume, macd.macd, etc.)
-  name   — title displayed in the 3D scene
-  style  — visualization type
-  color  — hex color string
-  pane   — "main" (chart overlay) or "separate" (lower pane)
+── 1. Heatmap line (per-bar color from value) ──
+  r = rsi(close, 14)
+  c = r > 70 ? "#ff4477" : r < 30 ? "#22cc88" : color.new("#b48cff", 30)
+  plot(r, "RSI Heat", c, 2, "separate")
+  hline(70, color.new("#ff4477", 40), "separate")
+  hline(30, color.new("#22cc88", 40), "separate")
 
-3D Visualization Styles:
-  "surface"   — Colored mesh surface flowing through time. Best for
-                oscillators (RSI, Stochastics, CCI)
-  "ribbon"    — Glowing tube trace with transparency aura. Best for
-                MACD lines, moving averages, trend indicators
-  "bars3d"    — 3D columns sized by value. Best for volume,
-                histogram data, delta
-  "scatter"   — HSL-color-coded spheres. Best for spotting
-                overbought/oversold clusters, divergence
-  "line3d"    — Same as ribbon but thinner (alias)
+── 2. Gradient cloud (area + translucent fill between bands) ──
+  basis = sma(close, 20)
+  dev   = 2 * stdev(close, 20)
+  upper = basis + dev
+  lower = basis - dev
+  plot(basis, "Basis", color.new("#b48cff", 10), 2)
+  plot(upper, "Upper", color.new("#22aaff", 50), 1, "area")
+  fill(upper, lower, color.new("#22aaff", 88))     // soft volatility cloud
 
-Panes:
-  "separate"  — Renders in the 3D lower pane below the chart.
-                Multiple plot3d("separate") calls stack side-by-side.
-                Replaces the secondary 2D pane automatically.
-  "main"      — Renders as a 3D overlay on the main chart area.
-                The surface/ribbon floats above the price action.
+── 3. Momentum histogram + signal line (layered MACD) ──
+  m = macd(close, 12, 26, 9)
+  hcol = m.hist > 0 ? "#22cc88" : "#ff4477"
+  plot(m.hist,   "Hist",   hcol,      1, "histogram", "separate")
+  plot(m.macd,   "MACD",   "#22aaff", 2, "separate")
+  plot(m.signal, "Signal", "#ff8800", 2, "separate")
 
-Examples:
-    // RSI as a 3D surface in the lower pane
-    rsiVal = rsi(close, 14)
-    plot3d(rsiVal, "RSI", "surface", "#b48cff", "separate")
+── 4. Trend ribbon (stacked EMAs colored by slope) ──
+  e1 = ema(close, 8)
+  e2 = ema(close, 21)
+  rc = e1 > e2 ? color.new("#22cc88", 20) : color.new("#ff4477", 20)
+  plot(e1, "Fast", rc, 2)
+  plot(e2, "Slow", rc, 2)
+  fill(e1, e2, e1 > e2 ? color.new("#22cc88", 85) : color.new("#ff4477", 85))
 
-    // Volume as 3D bars — spikes pop out dramatically
-    plot3d(volume, "Volume", "bars3d", "#ffd43b", "separate")
+── 5. State background + signal markers (full dashboard) ──
+  bull = close > ema(close, 50)
+  bgcolor(bull ? color.new("#22cc88", 94) : color.new("#ff4477", 94))
+  if crossover(ema(close,9), ema(close,21))
+      plotarrow(bar_index, low, "Buy", "up", "#22cc88")
+  if crossunder(ema(close,9), ema(close,21))
+      plotarrow(bar_index, high, "Sell", "down", "#ff4477")
+  plotchar(bar_index, high, bull ? "▲" : "▼", bull ? "#22cc88" : "#ff4477")
 
-    // MACD with multiple layers
+── 6. 2D + 3D fusion ──  (see the 3D Plotting section)
+  Combine any of the above with plot3d(series, name, style, color, "separate")
+  to project the indicator into an orbitable 3D scene beneath the chart.
+
+LAYERING PRINCIPLES:
+  • Order matters — later plot() calls draw on top.
+  • Use color.new(c, 80..95) for fills/backgrounds so layers stay readable.
+  • Drive color/linewidth/value from ternaries on indicators for "living" plots.
+  • Keep heavy fills subtle; let one bright line lead the eye.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: '2D Plotting — Shapes & Labels',
+      content: `plotshape(bar_index, price, title, style, color, pane?)
+  Places a shape marker at a specific bar + price.
+  - bar_index: number — the bar index to place the marker on
+  - price:     number — y-position (price level)
+  - title:     string — label shown next to the shape
+  - style:     string — shape type (see below)
+  - color:     hex string
+  - pane:      "main" or "separate"
+
+Shape styles (use the STRING value, not unquoted):
+  "triangleup"    — ▲ green buy signal (placed below bar, adaptive gap)
+  "triangledown"  — ▼ red sell signal (placed above bar, adaptive gap)
+  "circle"        — ● dot marker
+  "cross"         — ✕ cross marker
+  "xcross"        — diagonal cross
+  "square"        — ■ square marker
+  "diamond"       — ◆ diamond marker
+  "arrowup"       — ↑ upward arrow (placed below bar, adaptive gap)
+  "arrowdown"     — ↓ downward arrow (placed above bar, adaptive gap)
+  "label"         — draws the title text itself as the marker
+  All nine styles render as distinct glyphs (no fallback dots).
+
+plotarrow(bar_index, price, title, direction, color?, pane?)
+  Convenience wrapper that draws a directional arrow.
+  - direction: "up" (default, green) or "down" (red)
+  - Equivalent to plotshape(..., "arrowup"/"arrowdown", ...)
+  EXAMPLE:  plotarrow(bar_index, low, "Long", "up", "#22cc88")
+
+plotchar(bar_index, price, char, color?, pane?)
+  Draws a single character / emoji marker at the bar+price.
+  - char: any string — "B", "S", "★", "🚀", etc.
+  EXAMPLE:  plotchar(bar_index, high, "S", "#ff4477")
+
+label.new(x, y, text, color)
+  Places a text label at a specific position.
+  - x:     number — bar index or pixel position
+  - y:     number — price level or pixel position
+  - text:  string — label content
+  - color: hex string
+
+EXAMPLES:
+    plotshape(bar_index, low, "Buy", "triangleup", "#22cc88")
+    plotshape(bar_index, high, "Sell", "triangledown", "#ff4477")
+    plotshape(bar_index, close, "Cross", "cross", "#ff8800", "separate")
+    label.new(bar_index, high, "Resistance", "#ff4477")
+    label.new(bar_index, low, "Support", "#22cc88")
+
+TIPS:
+- Shapes auto-position relative to the bar: buy signals below, sell signals above
+- The gap adapts to chart zoom level (barSpacing * 1.5)
+- Use title="" to suppress the text label on a shape
+- Shapes work in both "main" and "separate" panes`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: '3D Plotting — plot3d() Complete Reference',
+      content: `plot3d(series, name, style, color, pane?)
+  Renders indicator data as a 3D visualization using Three.js (WebGL).
+  - series: any number array — rsi(), macd.macd, volume, custom formula
+  - name:   string — title displayed in the 3D scene
+  - style:  string — must be one of the 14 styles below (QUOTED)
+  - color:  hex string
+  - pane:   "main" (overlays price chart) or "separate" (lower pane)
+
+═══════════════════════════════════════════════════════════════════
+14 VISUALIZATION STYLES — Complete Reference
+═══════════════════════════════════════════════════════════════════
+
+"surface" — Volumetric Price-Weighted Mesh
+  A colored mesh surface flowing through time. Each point's height
+  represents its proximity to the current bar's close price.
+  - Colors: green-yellow gradient (HSL 0.35 → 0.0)
+  - Best for: oscillators (RSI, CCI, Stochastics), price action surfaces
+  - Requires: 40+ bars for good visual density
+  - Pane: works on both "main" and "separate"
+  - Main chart: floats above the price action, aligned to candle positions
+  - Separate: rendered with HSL color gradient (green=low → red=high)
+
+"ribbon" — Glowing Tube Trace with Depth Aura
+  A smooth Catmull-Rom spline tube wrapped in a transparent glow band.
+  - Upper band: green (#22cc88) — tracks price above center
+  - Lower band: red (#ff4477) — tracks price below center
+  - Center line: purple (#b48cff) emissive core
+  - Best for: MACD lines, moving averages, trend indicators, centerlines
+  - Requires: 3+ bars (more = smoother spline)
+  - Pane: works on both "main" and "separate"
+
+"bars3d" — 3D Column/Bar Chart
+  Extruded rectangular columns sized by the series value.
+  - Each column is a BoxGeometry scaled by value magnitude
+  - Volume: wider columns for higher relative volume
+  - Color: bull=green (#22cc88), bear=red (#ff4477) with emissive glow
+  - Best for: volume profiles, histogram data, delta, ADX histograms
+  - Requires: 5+ bars
+  - Pane: both "main" and "separate"
+
+"scatter" — HSL Color-Coded Point Cloud
+  Spheres positioned at each data point, colored by a full HSL gradient.
+  - Size: proportional to volume (larger spheres = higher volume bars)
+  - Color: HSL spectrum (blue/green=low, yellow=mid, red=high)
+  - Jitter: slight random offset for organic cloud appearance
+  - Best for: spotting clusters, divergence, overbought/oversold zones
+  - Requires: 5+ bars (up to 120 points rendered)
+  - Pane: both "main" and "separate"
+
+"line3d" — Thin Ribbon Alias
+  Same geometry as "ribbon" but rendered at half thickness.
+  - Best for: secondary indicators that shouldn't dominate the scene
+  - Identical to ribbon in behavior, just thinner
+
+"wireframe" — X-Ray Surface
+  The surface mesh rendered in wireframe mode with reduced opacity.
+  - Shows the underlying triangle structure
+  - Best for: technical analysis overlay, debugging geometry
+  - Combines well with "surface" for a wireframe-over-solid effect
+
+"mesh" — Solid Surface Render
+  Same geometry as "surface" but rendered as a solid mesh (opaque).
+  - Best for: opaque overlays, contrast against transparent layers
+  - Combines well with "wireframe" for a dual-layer effect
+
+"helix" — Double-Helix DNA Wrapping
+  Two interwoven Catmull-Rom tube strands (green/red) spiraling around
+  the series timeline, connected by luminous cross-rungs and a purple
+  glow core.
+  - Strand 1 (green #22cc88): forward phase
+  - Strand 2 (red #ff4477): reverse phase (π offset)
+  - Rungs: purple (#b48cff) lines connecting strands every Nth bar
+  - Core: white emissive tube running through the center
+  - Best for: sine waves, cyclic indicators, Elliott wave overlays
+  - Requires: 3+ bars; 20+ recommended for visible helix structure
+  - Pane: both "main" and "separate"
+
+"vortex" — Spiral Tornado/Tunnel
+  6 spiral arms converging on the series axis, each a Catmull-Rom tube
+  with radius tapering from maxR→0 along the timeline. Spirals are
+  phase-shifted and color-graded across the HSL ring.
+  - 6 arms phase-shifted by 60°
+  - Radius decays by 85% from start to end
+  - 4 full twists over the visible span
+  - Core: white emissive glow tube
+  - Best for: momentum convergence, volatility cones, force fields
+  - Requires: 10+ bars
+  - Pane: both "main" and "separate"
+
+"manifold" — Wireframe Lorentzian Surface Mesh
+  Longitudinal + latitudinal curves forming a flowing 3D ribbon.
+  8 longitudinal splines spread across the series width; cross-ribs
+  connect them every Nth bar. The spread widens with volume.
+  - 8 longitudinal splines with HSL color progression (purple→blue)
+  - Latitudinal cross-ribs at lower opacity
+  - Ghost floor grid at y=-0.5
+  - Best for: volume-weighted surfaces, multi-dimensional overlays
+  - Requires: 5+ bars
+  - Pane: both "main" and "separate"
+
+"nebula" — Glowing Volumetric Particle Cloud
+  Dense scatter cloud with 6 glowing spheres per bar, randomly jittered
+  in x/y/z. Color shifts from green (bull) to red (bear) based on
+  bar direction. Size and spread scale with volume.
+  - 6 particles per bar with random jitter (±0.2–0.8 spread)
+  - Bullish bars: green hue cluster; Bearish: red hue cluster
+  - Each particle has random size (0.02–0.08), opacity (0.3–0.9)
+  - Emissive glow on every particle
+  - Best for: dense volume clouds, order-flow visualization, atmosphere
+  - Requires: 2+ bars; 30+ for full nebula effect
+  - Pane: both "main" and "separate"
+
+"constellation" — Star Points + Constellation Lines
+  Stars positioned at each data point with interconnecting lines drawn
+  between nearby points (distance < 1.2 units). Stars have bull/bear
+  emissive colors and size scales by volume.
+  - Stars: glowing spheres with emissive intensity ∝ volume
+  - Lines: blue (#4488ff) at 15% opacity, connecting neighbors within threshold
+  - Color: bull=green (#22cc88) emissive, bear=red (#ff4477) emissive
+  - Best for: sparse data, signal dots, pattern recognition overlays
+  - Requires: 2+ bars; 10+ for visible constellation pattern
+  - Pane: both "main" and "separate"
+
+"torus" — 3D Ring Array
+  A ring (TorusGeometry) at each bar position, scaled by volume.
+  Each ring rotates slightly along the z-axis, creating a flowing
+  tunnel effect. A purple glow tube connects through the center.
+  - Ring radius: 0.2 + volScale × 0.5
+  - Tube radius: 0.02 + volScale × 0.03
+  - Color follows bull/bear; emissive glow with dynamic opacity
+  - Center: purple glow tube at 30% opacity
+  - Best for: cyclic data, clock/radar displays, volume rings
+  - Requires: 3+ bars
+  - Pane: both "main" and "separate"
+
+"trail" — Streaming Ribbon with Volume-Weighted Width
+  A sinuous 3D ribbon whose width varies with volume. Built as
+  individual quad segments between upper/lower edge points.
+  Upper and lower edges are offset by ±(0.05 + volFrac × 0.3).
+  - Each segment: flat Mesh with DoubleSide material
+  - Color: bull=green, bear=red; opacity ∝ volume
+  - Center: white guide line at 30% opacity
+  - Best for: streaming data, real-time feeds, volume trails
+  - Requires: 3+ bars
+  - Pane: both "main" and "separate"
+
+═══════════════════════════════════════════════════════════════════
+PANE BEHAVIOR — Critical Details
+═══════════════════════════════════════════════════════════════════
+
+"separate" pane:
+  - Renders in the dedicated 3D lower pane BELOW the main chart
+  - Multiple plot3d("separate") calls STACK SIDE-BY-SIDE in the same scene
+  - Automatically REPLACES the 2D secondary pane (3D takes priority)
+  - Includes orbit camera controls (drag to rotate, scroll to zoom)
+  - The scene has ambient + directional lighting and a grid floor
+  - Resizable by dragging the chart splitter
+  - 2D and 3D "separate" panes CANNOT coexist — 3D wins
+
+"main" pane:
+  - Renders as a 3D overlay ABOVE the price chart area
+  - Multiple plot3d("main") calls layer in a single 3D scene
+  - Uses a shared Three.js scene with perspective camera
+  - Aligned to the chart's bar positions using barX() mapping
+  - The scene is cleared when no 3D indicators are active
+  - Grid helper + ambient/directional lighting included
+
+═══════════════════════════════════════════════════════════════════
+PERFORMANCE CONSIDERATIONS
+═══════════════════════════════════════════════════════════════════
+
+- Surface/wireframe/mesh generate the most geometry (segments × price_steps triangles)
+  — Works best with 100+ bars but uses more GPU memory
+- Ribbon/line3d use TubeGeometry — smooth but heavier on long series
+- Bars3d uses BoxGeometry per bar — lightweight even at high counts
+- Scatter uses SphereGeometry per point — medium weight
+- Helix/vortex/torus/trail use TubeGeometry + BoxGeometry — medium weight
+- Manifold uses Line geometry — lightweight
+- Nebula uses many small SphereGeometry — medium weight (6 particles × bars)
+- Constellation uses SphereGeometry + LineSegments — lightweight
+- Lower pane auto-caps segments: surface=80×15 grid, bars3d=80 columns, scatter=120 points
+- Main chart 3D renders every frame; separate pane uses requestAnimationFrame loop
+- Use fewer plot3d calls for better performance on low-end hardware`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Combining 2D & 3D — Advanced Visual Techniques',
+      content: `The real power of OakScript comes from LAYERING 2D and 3D plots together.
+Here are battle-tested patterns for incredible visuals.
+
+═══════════════════════════════════════════════════════════════════
+PATTERN 1: 2D Lines + 3D Surface (Trend Context)
+═══════════════════════════════════════════════════════════════════
+    // 2D: price and MA lines on the main chart
+    plot(close, "Price", "#ffffff", 1)
+    plot(sma(close, 20), "SMA 20", "#b48cff", 2)
+
+    // 3D: RSI surface floating below as depth context
+    r = rsi(close, 14)
+    plot3d(r, "RSI Surface", "surface", "#b48cff", "separate")
+    hline(70, "#ff4477", "separate")
+    hline(30, "#22cc88", "separate")
+  → The 2D chart shows price action with clean trend lines.
+    The 3D lower pane shows the RSI landscape, making divergence
+    and overbought/oversold zones instantly visible in 3D.
+
+═══════════════════════════════════════════════════════════════════
+PATTERN 2: Multi-Layer 3D Dashboard (Lower Pane)
+═══════════════════════════════════════════════════════════════════
+    // Layer 1: RSI as a surface (background context)
+    r = rsi(close, 14)
+    plot3d(r, "RSI", "surface", "#b48cff", "separate")
+
+    // Layer 2: MACD as ribbon (floating above surface)
     m = macd(close, 12, 26, 9)
     plot3d(m.macd, "MACD", "ribbon", "#22aaff", "separate")
     plot3d(m.signal, "Signal", "ribbon", "#ff8800", "separate")
 
-    // 3D surface floating above price on main chart
-    plot3d(close, "Price Surface", "surface", "#22cc88", "main")
+    // Layer 3: Volume as bars (ground-level context)
+    plot3d(volume, "Volume", "bars3d", "#ffd43b", "separate")
 
-    // RSI as scatter plot — overbought/oversold visible by color
-    plot3d(rsi(close, 14), "RSI Scatter", "scatter", "#ff6b6b", "separate")
+    // 2D signals on the main chart
+    if crossover(m.macd, m.signal)
+        plotshape(bar_index, low, "MACD Bull", "triangleup", "#22aaff")
+    if crossunder(m.macd, m.signal)
+        plotshape(bar_index, high, "MACD Bear", "triangledown", "#ff8800")
+  → The lower pane becomes a full 3D dashboard with the RSI landscape,
+    MACD ribbons crossing each other, and volume bars as terrain.
+    All layers orbit together with mouse drag.
 
-Limitations:
-  - plot3d emits once per full execution (not per-bar). Arrays
-    are reconstructed from the series history.
-  - Only one 3D scene exists per pane. Multiple plot3d calls
-    in the same pane stack as layers within the same scene.
-  - The lower pane switches between 2D (plot with "separate")
-    and 3D (plot3d with "separate") automatically. They cannot
-    coexist — 3D takes priority.
-  - 3D rendering uses Three.js (WebGL). Performance depends on
-    series length — longer series = more geometry. Use
-    performance mode to reduce quality if needed.
-  - Surface/ribbon styles work best with 100+ bars of data.
-    Less than 20 bars may produce sparse geometry.`,
+═══════════════════════════════════════════════════════════════════
+PATTERN 3: Floating 3D Over Main Chart
+═══════════════════════════════════════════════════════════════════
+    // 2D: candlestick price action (auto-rendered by the chart)
+    // 2D: moving average lines
+    plot(sma(close, 20), "SMA 20", "#b48cff", 2)
+    plot(sma(close, 50), "SMA 50", "#ff8800", 2)
+
+    // 3D: price surface floating ABOVE the candles
+    plot3d(close, "Price Field", "surface", "#22cc88", "main")
+
+    // 3D: volume scatter showing activity intensity
+    plot3d(volume, "Vol Clusters", "scatter", "#ff6b6b", "main")
+  → The price action is grounded in 2D candles with MA lines,
+    while a 3D surface shows the broader price landscape and
+    volume scatter reveals hidden activity clusters floating above.
+
+═══════════════════════════════════════════════════════════════════
+PATTERN 4: Signal-Driven Visuals
+═══════════════════════════════════════════════════════════════════
+    r = rsi(close, 14)
+
+    // Color background based on overbought/oversold
+    if r >= 70
+        bgcolor("rgba(255,68,119,0.08)")
+    if r <= 30
+        bgcolor("rgba(34,204,136,0.08)")
+
+    // Signal shapes at cross points
+    if crossover(r, 30)
+        plotshape(bar_index, low, "RSI Buy", "triangleup", "#22cc88")
+    if crossunder(r, 70)
+        plotshape(bar_index, high, "RSI Sell", "triangledown", "#ff4477")
+
+    // 3D: RSI landscape showing the full oscillator wave
+    plot3d(r, "RSI Wave", "surface", "#b48cff", "separate")
+    hline(70, "#ff4477", "separate")
+    hline(30, "#22cc88", "separate")
+  → 2D bgcolor tints the chart column-by-column for overbought/oversold.
+    Shapes mark exact entry/exit points.
+    3D surface provides the macro view of oscillator momentum.
+
+═══════════════════════════════════════════════════════════════════
+PATTERN 5: Bollinger Bands with 3D Volume Terrain
+═══════════════════════════════════════════════════════════════════
+    len = input(20, "Length")
+    mult = input(2.0, "Multiplier", 0.5, 4.0, 0.5)
+
+    mid = sma(close, len)
+    upper = mid + stdev(close, len) * mult
+    lower = mid - stdev(close, len) * mult
+
+    // 2D: band lines and fill
+    plot(mid, "BB Mid", "#b48cff", 2)
+    plot(upper, "BB Upper", "#ff4477", 1)
+    plot(lower, "BB Lower", "#22cc88", 1)
+    fill(upper, lower, "rgba(180,140,255,0.06)")
+
+    // 2D: squeeze/expansion signals
+    bbWidth = upper - lower
+    if bbWidth < lowest(bbWidth, 20)[0]
+        bgcolor("rgba(255,184,0,0.1)")  // squeeze alert
+
+    // 3D: volume as terrain bars
+    plot3d(volume, "Volume", "bars3d", "#ffd43b", "separate")
+  → Classic Bollinger Bands in 2D with band fill overlay.
+    3D volume bars show where real money entered during squeezes.
+
+═══════════════════════════════════════════════════════════════════
+PATTERN 6: Full-Metal Dashboard (Maximum Visual Impact)
+═══════════════════════════════════════════════════════════════════
+    // ═══ 2D Chart Layer ═══
+    plot(sma(close, 20), "SMA 20", "#b48cff", 2)
+    plot(sma(close, 50), "SMA 50", "#ff8800", 2)
+
+    r = rsi(close, 14)
+    m = macd(close, 12, 26, 9)
+
+    if crossover(m.macd, m.signal)
+        plotshape(bar_index, low, "MACD Cross", "triangleup", "#22cc88")
+    if crossunder(m.macd, m.signal)
+        plotshape(bar_index, high, "MACD Cross", "triangledown", "#ff4477")
+
+    if r >= 70
+        bgcolor("rgba(255,68,119,0.06)")
+    if r <= 30
+        bgcolor("rgba(34,204,136,0.06)")
+
+    // ═══ 3D Lower Pane (Dashboard) ═══
+    plot3d(r, "RSI Landscape", "surface", "#b48cff", "separate")
+    plot3d(m.macd, "MACD", "ribbon", "#22aaff", "separate")
+    plot3d(m.signal, "Signal", "ribbon", "#ff8800", "separate")
+    plot3d(volume, "Volume Terrain", "bars3d", "#ffd43b", "separate")
+
+    hline(70, "#ff4477", "separate")
+    hline(30, "#22cc88", "separate")
+    hline(0, "#ffffff", "separate")
+  → The ultimate setup: 2D gives precise price levels, signals, and
+    MA crossovers. The 3D lower pane shows the full oscillator landscape
+    with MACD ribbons threading through RSI terrain and volume columns
+    rising from the floor. Everything is interactive with orbit control.
+
+═══════════════════════════════════════════════════════════════════
+RULES FOR COMBINING 2D & 3D
+═══════════════════════════════════════════════════════════════════
+
+1. "main" pane: 2D plots + 3D overlays coexist — 3D floats above price
+2. "separate" pane: 3D takes priority over 2D. If you have ANY
+   plot3d("separate") call, the 2D secondary pane is hidden.
+3. Multiple plot3d calls in the same pane STACK as layers in one scene
+4. Use hline() in the same pane as plot3d for reference thresholds
+5. Shapes (plotshape) always work in both panes, 2D and 3D
+6. The splitter bar between main chart and lower pane is draggable
+7. For pure 2D oscillators: use plot(rsi, "RSI", ..., "separate")
+8. For 3D dashboards: use plot3d(rsi, "RSI", "surface", ..., "separate")`,
     },
-    {
-      title: 'Alerts & Webhooks',
-      content: `// Fire an alert
-alert("Price crossed above SMA 50")
-
-// Conditional alert
-alertcondition(condition, "Title", "Message")
-// Only fires when condition is true
-
-Alerts are sent as browser notifications and POSTed
-to the configured webhook URL (JSON payload).`,
-    },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Standard Library — Moving Averages',
-      content: `sma(source, length)
-    Simple Moving Average
-    Returns array of SMA values
+      content: `sma(source, length)         — Simple Moving Average
+ema(source, length)         — Exponential Moving Average (multiplier = 2/(len+1))
+macd(source, fast, slow, signal) — MACD indicator
+  Returns an object with THREE properties:
+    .macd   — MACD line array (fast EMA - slow EMA)
+    .signal — Signal line array (EMA of MACD line)
+    .hist   — Histogram array (macd - signal)
+  Usage:
+    m = macd(close, 12, 26, 9)
+    plot(m.macd, "MACD", "#22aaff", 2)
+    plot(m.signal, "Signal", "#ff8800", 1)
+    plot(m.hist, "Histogram", "#b48cff", 1)
 
-ema(source, length)
-    Exponential Moving Average
-    Uses multiplier = 2 / (length + 1)
-
-macd(source, fast, slow, signal)
-    MACD indicator
-    Returns object with .macd, .signal, .hist arrays
-    Access: macdLine = macd(close, 12, 26, 9)
-    (Returns the macd line by default)`,
+linreg(source, length, offset) — Linear regression (SMA-based approximation)
+  source: close/open/high/low/custom array
+  length: number of bars
+  offset: future offset (currently ignored, SMA fallback)`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Standard Library — Oscillators',
       content: `rsi(source, length)
-    Relative Strength Index
+  Relative Strength Index (0-100).
+  Uses Wilder's smoothing: average gain/loss over ` + "`length`" + ` bars.
 
 cci(high, low, close, length)
-    Commodity Channel Index
-    Formula: (TP - SMA(TP, n)) / (0.015 × StdDev(TP, n))
-    where TP = (H + L + C) / 3
-
-adx(high, low, close, length)
-    Average Directional Index
-    Measures trend strength (not direction)
+  Commodity Channel Index.
+  Formula: (TP - SMA(TP)) / (0.015 × StdDev(TP))
+  where TP = (H + L + C) / 3
 
 roc(source, length)
-    Rate of Change (%)
-    ROC = ((price - price[n]) / price[n]) × 100
+  Rate of Change (%).
+  ROC = ((price - price[n]) / price[n]) × 100
 
 stdev(source, length)
-    Standard Deviation`,
+  Standard Deviation.`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Standard Library — Volume & Volatility',
       content: `vwap(close, volume)
-    Volume Weighted Average Price
-    Cumulative (V × P) / Cumulative V
+  Volume Weighted Average Price.
+  Cumulative: Σ(V×P) / ΣV, computed bar by bar.
 
 atr(high, low, close, length)
-    Average True Range (EMA of True Range)
-    True Range = max(H-L, |H-C[1]|, |L-C[1]|)
+  Average True Range (EMA of True Range).
+  True Range = max(H-L, |H-C[1]|, |L-C[1]|)
 
 trueRange(high, low, close)
-    True Range array (before smoothing)`,
+  Raw True Range array (before smoothing).
+
+adx(high, low, close, length)
+  Average Directional Index.
+  Measures trend strength (0-100), NOT direction.
+  Calculated via +DI, -DI, and DX smoothing.`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Standard Library — Signal Detection',
       content: `crossover(a, b)
-    Returns true when series a crosses above series b
-    (previous a <= previous b AND current a > current b)
+  Returns true when series a crosses ABOVE series b.
+  Condition: prev_a <= prev_b AND current_a > current_b.
 
 crossunder(a, b)
-    Returns true when series a crosses below series b
-    (previous a >= previous b AND current a < current b)
+  Returns true when series a crosses BELOW series b.
+  Condition: prev_a >= prev_b AND current_a < current_b.
 
 barssince(condition)
-    Returns number of bars since condition was true
-    Returns -1 if never true
+  Returns number of bars since the condition was last true.
+  Returns -1 if never true.
 
 highest(source, length)
-    Highest value over last ` + "`length`" + ` bars
+  Highest value over the last ` + "`length`" + ` bars.
 
 lowest(source, length)
-    Lowest value over last ` + "`length`" + ` bars
+  Lowest value over the last ` + "`length`" + ` bars.
 
 cum(source)
-    Cumulative sum
+  Cumulative sum from bar 0 to current bar.
 
 change(source)
-    Difference from previous bar: source - source[1]
-
-linreg(source, length, offset)
-    Linear regression (currently SMA-based approximation)
+  Difference from previous bar: source - source[1].
 
 correlation(a, b, length)
-    Pearson correlation coefficient`,
+  Pearson correlation coefficient between two series over a window.`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Math Utilities',
-      content: `abs(x)       — absolute value
-min(a, b)    — minimum
-max(a, b)    — maximum
-floor(x)     — round down
-ceil(x)      — round up
-round(x)     — round to nearest integer
-sqrt(x)      — square root
-log(x)       — natural logarithm
-exp(x)       — e^x
-sin(x)       — sine (radians)
-cos(x)       — cosine
-tan(x)       — tangent
-tostring(x)  — convert to string
-tonumber(x)  — convert to number`,
-    },
-    {
-      title: 'String Functions',
-      content: `str.format("Price: {}", close)
-    Replaces {} with values
+      title: 'Math & String Utilities',
+      content: `Math functions:
+  abs(x)    min(a,b)  max(a,b)  floor(x)  ceil(x)  round(x)
+  sqrt(x)   log(x)    exp(x)    sin(x)    cos(x)    tan(x)
 
-str concatenation:
-    "Value: " + tostring(close)
+Type conversion:
+  tostring(x)   — convert number/boolean to string
+  tonumber(x)   — convert string to number
 
-Comparison:
-    "hello" == "hello"   → true`,
+String formatting:
+  str.format("Price: {}", close)  — replaces {} with value
+  "Value: " + tostring(close)     — concatenation`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Execution Model',
-      content: `1. OakScript runs your code once per bar, from bar 0 to the last bar
-2. Before execution, built-in variables are set: close, open, high, low, volume, time, bar_index
-3. var variables persist their values from the previous bar
-4. varip variables persist across full script recalculations (e.g., when changing inputs)
-5. Regular variables are re-computed each bar from scratch
-6. Plot, plotshape, hline, bgcolor calls are collected and rendered on the chart
-7. Errors on individual bars are captured and displayed without stopping execution`,
+      title: 'Execution Model (Bar-by-Bar)',
+      content: `OakScript executes your script once per bar, from bar 0 to the last bar:
+
+1. Before each bar execution, built-in variables are set:
+   close, open, high, low, volume, time = current bar's values
+   bar_index = current position (0-based)
+
+2. var variables carry their value from the PREVIOUS bar
+   — They are NOT reset between bars
+   — They ARE reset when the script is reloaded (input changes)
+
+3. varip variables carry their value across bars AND reloads
+   — Rarely needed; use for counters that must survive input edits
+
+4. Regular variables (no var/varip) are recomputed from scratch each bar
+
+5. plot/plotshape/hline/fill/bgcolor calls are COLLECTED per bar
+   — They are NOT drawn immediately; all plots are rendered after execution
+
+6. plot3d calls work differently:
+   — They are collected once per FULL execution (not per bar)
+   — The series array is reconstructed from all bars' values
+   — plot3d emits AFTER the full bar loop completes
+
+7. Errors on individual bars are captured and displayed WITHOUT
+   stopping execution of subsequent bars`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Example: RSI Divergence',
-      content: `// RSI Divergence Detector
-rsiLen = input(14, "RSI Length")
+      title: 'Alerts & Webhooks',
+      content: `alert(message)
+  Fires a browser notification with the given message.
+
+alertcondition(condition, title, message)
+  Only fires when the condition is true on the current bar.
+
+Alerts are sent as browser notifications and POSTed as JSON
+to any configured webhook URL.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Common Pitfalls & Solutions',
+      content: `1. "plot3d emits no geometry"
+   → Check that your series has enough values (≥3 bars).
+   → NaN values in the series are filtered out.
+   → Ensure color is a hex string: "#22cc88" not "green".
+
+2. "Signals appear at wrong position"
+   → plotshape(bar_index, ...) places at the CURRENT bar.
+   → Triangleup shapes appear BELOW the bar (adaptive gap).
+   → Triangledown shapes appear ABOVE the bar (adaptive gap).
+
+3. "2D secondary pane disappeared"
+   → Any plot3d("separate") call hides the 2D secondary pane.
+   → Remove all plot3d("separate") calls to restore 2D lower pane.
+
+4. "MACD returns a single value, not .macd/.signal/.hist"
+   → You MUST use m.macd, m.signal, m.hist to access the components.
+   → m = macd(close, 12, 26, 9); plot(m.macd, "MACD", "#22aaff", 2)
+
+5. "Condition never triggers"
+   → Use == for comparison, NOT = (which is assignment).
+   → crossover/crossunder return boolean arrays — access with [0] for current.
+
+6. "Script runs but nothing shows"
+   → Ensure at least one plot/plotshape/plot3d call exists outside conditionals.
+   → Check that conditions actually evaluate true.
+
+7. "3D performance is slow"
+   → Reduce series length or use simpler styles (bars3d, scatter).
+   → Avoid multiple surface/wireframe calls on the same pane.
+   → Set performance mode to "medium" or "low" in settings.
+
+8. "A loop runs forever / the page freezes"
+   → Almost always an indentation mistake: a brace-less if/while/for block
+     requires every statement in it to sit at the EXACT SAME column. If one
+     line is indented differently, it falls OUTSIDE the block — for a while
+     loop, this can strand the counter update (e.g. i := i + 1) outside the
+     loop body, so the condition never changes and it never terminates.
+   → Fix: switch that block to { } braces, which have no indentation
+     requirement, or carefully re-align every statement in the block.
+
+9. "Should I use { } or indentation?"
+   → Both work. Prefer { } braces for any block with more than one
+     statement, or with nested if/while/for — they can't misparse.
+   → Indentation style is fine for short, single-line bodies.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Example: RSI Divergence Detector',
+      content: `rsiLen = input(14, "RSI Length")
 ob = input(70, "Overbought")
 os = input(30, "Oversold")
 
-rsiVal = rsi(close, rsiLen)
+r = rsi(close, rsiLen)
 
-// Track swing highs/lows
+// Track swing highs/lows with persistent state
 var prevHigh = 0.0
 var prevRsiHigh = 0.0
 var prevLow = 999999.0
 var prevRsiLow = 0.0
 
-if crossunder(rsiVal, ob)
+if crossunder(r, ob)
     prevHigh := high
-    prevRsiHigh := rsiVal
+    prevRsiHigh := r
 
-if crossover(rsiVal, os)
+if crossover(r, os)
     prevLow := low
-    prevRsiLow := rsiVal
+    prevRsiLow := r
 
 // Bearish divergence: price higher, RSI lower
-if prevHigh > 0 and high > prevHigh and rsiVal < prevRsiHigh
-    plotshape(bar_index, high, "BEAR DIV", "triangledown", "#ff4477")
+if prevHigh > 0 and high > prevHigh and r < prevRsiHigh
+    plotshape(bar_index, high, "Bear Div", "triangledown", "#ff4477")
 
 // Bullish divergence: price lower, RSI higher
-if prevLow < 999999 and low < prevLow and rsiVal > prevRsiLow
-    plotshape(bar_index, low, "BULL DIV", "triangleup", "#22cc88")
+if prevLow < 999999 and low < prevLow and r > prevRsiLow
+    plotshape(bar_index, low, "Bull Div", "triangleup", "#22cc88")
 
-plot(rsiVal, "RSI", "#b48cff", 2)
-hline(ob, "#ff4477")
-hline(os, "#22cc88")`,
+// 2D RSI line + reference levels
+plot(r, "RSI", "#b48cff", 2, "separate")
+hline(ob, "#ff4477", "separate")
+hline(os, "#22cc88", "separate")
+
+// 3D RSI landscape (lower pane dashboard)
+plot3d(r, "RSI Wave", "surface", "#b48cff", "separate")`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Example: Bollinger Bands',
-      content: `// Bollinger Bands
-len = input(20, "Length")
-mult = input(2.0, "StdDev Multiplier", 0.5, 4.0, 0.5)
+      title: 'Example: MACD Dashboard',
+      content: `fast = input(12, "Fast")
+slow = input(26, "Slow")
+sig = input(9, "Signal")
 
-mid = sma(close, len)
-std = stdev(close, len)
-upper = mid + std * mult
-lower = mid - std * mult
+m = macd(close, fast, slow, sig)
 
-plot(mid, "Middle", "#b48cff", 2)
-plot(upper, "Upper", "#ff4477", 1)
-plot(lower, "Lower", "#22cc88", 1)
+// 2D signal markers
+if crossover(m.macd, m.signal)
+    plotshape(bar_index, low, "Bull Cross", "triangleup", "#22aaff")
 
-// Price touching upper band
-if crossover(close, upper)
-    plotshape(bar_index, high, "OVER", "triangledown", "#ff4477")
+if crossunder(m.macd, m.signal)
+    plotshape(bar_index, high, "Bear Cross", "triangledown", "#ff8800")
 
-if crossunder(close, lower)
-    plotshape(bar_index, low, "UNDER", "triangleup", "#22cc88")`,
+// Histogram color coding
+if m.hist > 0
+    bgcolor("rgba(34,136,255,0.04)")
+
+// 3D ribbon dashboard
+plot3d(m.macd, "MACD Line", "ribbon", "#22aaff", "separate")
+plot3d(m.signal, "Signal Line", "ribbon", "#ff8800", "separate")
+plot3d(m.hist, "Histogram", "bars3d", "#b48cff", "separate")
+
+hline(0, "#ffffff", "separate")`,
     },
+    // ═══════════════════════════════════════════════════════════════════
     {
-      title: 'Keyboard Shortcuts',
-      content: `E           — Toggle OakScript editor
-Ctrl+Enter  — Run script
-Ctrl+S      — Save script (in editor)
-Esc         — Close editor`,
+      title: 'Super Visual Engine — Particles, Bloom & Atmosphere',
+      content: `DAFE Charts now features a GPU-accelerated visual engine with
+WebGPU compute shaders for particle physics, Three.js post-processing
+for bloom/glow effects, and volumetric atmosphere rendering.
+
+═══════════════════════════════════════════════════════════════════
+GPU PARTICLE SYSTEM
+═══════════════════════════════════════════════════════════════════
+
+The particle system renders 500-8000+ physics-driven particles
+with gravity, drag, turbulence, and vortex forces. Particles flow
+around the chart like cosmic dust, responding to price action.
+
+Color modes (set via Settings → Background):
+  "cosmic"    — Purple/blue/white nebula palette (default)
+  "thermal"   — Red/orange/yellow heat-map coloring
+  "electric"  — Blue/cyan/white electric arc coloring
+  "velocity"  — Color shifts based on particle speed
+
+Performance scaling:
+  Ultra:  8192 particles (GPU compute required)
+  High:   4096 particles
+  Medium: 2048 particles
+  Low:     512 particles (CPU fallback)
+
+The system auto-detects WebGPU support and falls back to CPU
+rendering if unavailable. GPU path uses compute shaders for
+10-50x performance over CPU particles.
+
+═══════════════════════════════════════════════════════════════════
+BLOOM POST-PROCESSING
+═══════════════════════════════════════════════════════════════════
+
+The 3D chart renderer (Three.js WebGL) now includes Unreal Engine-
+style bloom post-processing. This adds a natural glow to bright
+areas of the chart:
+- Candle bodies emit color-specific glow (green for bull, red for bear)
+- 3D volume extrusions produce atmospheric radiance
+- Indicator ribbons and surfaces glow with their assigned colors
+- Bloom strength auto-adapts to performance mode
+
+═══════════════════════════════════════════════════════════════════
+VOLUMETRIC FOG
+═══════════════════════════════════════════════════════════════════
+
+FogExp2 depth fog in the 3D chart creates atmospheric depth:
+- Bars further back in time fade into darkness
+- Volume profile extrusions emerge from the fog
+- Grid lines fade with distance for visual depth
+
+═══════════════════════════════════════════════════════════════════
+COMPOSITING LAYERS
+═══════════════════════════════════════════════════════════════════
+
+The visual engine composites in this order (back to front):
+1. Deep-space / atmospheric background
+2. Perspective floor grid
+3. 3D candle extrusions (isometric)
+4. 3D volume profile (depth-extruded)
+5. OakScript 3D overlays (plot3d main pane)
+6. GPU particle system (cosmic dust layer)
+7. Price axis + grid labels
+8. 2D OakScript plots (lines, shapes, fills)
+9. Crosshair + tooltips
+10. Status bar overlay
+
+This ensures 2D elements render above 3D, and particles flow
+behind UI elements for a cinematic look.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Agent Integration (AI-Powered Editor)',
+      content: `The Agent is an expert OakScript coder that can:
+- 💡 Brainstorm — suggest indicator ideas based on your chart
+- ✍️ Generate — create indicators from natural language descriptions
+- ✏️ Edit — modify existing indicator code
+- 🔧 Fix — diagnose and auto-correct syntax/runtime errors
+- 📊 Analyze — review indicator metrics and suggest improvements
+
+How it works:
+1. Your message + chart state + current source code → sent to LLM
+2. LLM returns corrected/improved code in triple-backtick oakscript fences
+3. Code appears in editor with buttons: View Code | Test Run | Accept | Decline
+4. Test Run shows the visualization immediately without saving
+5. Accept applies and runs the code permanently
+
+Auto-Accept toggle: When ON, agent code is applied automatically.
+When OFF, you review and choose to accept/decline.
+
+Keyboard: Ctrl+Alt+G = Generate | Ctrl+Alt+F = Fix | Ctrl+Alt+B = Brainstorm | Ctrl+Alt+M = Metrics`,
     },
   ];
 }

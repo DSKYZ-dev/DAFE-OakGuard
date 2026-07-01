@@ -21,9 +21,10 @@ export interface OakPlot3D {
   type: 'plot3d';
   name: string;
   series: number[];
-  style: 'surface' | 'ribbon' | 'bars3d' | 'scatter' | 'line3d' | 'wireframe' | 'mesh';
+  style: 'surface' | 'ribbon' | 'bars3d' | 'scatter' | 'line3d' | 'wireframe' | 'mesh'
+    | 'helix' | 'vortex' | 'manifold' | 'nebula' | 'constellation' | 'torus' | 'trail';
   color: string;
-  pane: 'main' | 'separate';
+  pane: 'main' | 'separate' | '3d';
 }
 
 export interface OakPlot {
@@ -287,11 +288,17 @@ export const StdLib = {
       minusDM.push(down[i] > up[i] && down[i] > 0 ? down[i] : 0);
     }
     const trSma = smaImpl(tr, length);
+    // These must be computed ONCE outside the loop — calling smaImpl() per
+    // index recomputed the entire SMA array from scratch on every iteration,
+    // turning adx() into O(n^2) (measured ~6s for a 500-bar Lorentzian
+    // Classification run, almost entirely inside this one function).
+    const plusDMSma = smaImpl(plusDM, length);
+    const minusDMSma = smaImpl(minusDM, length);
     const plusDI: number[] = [];
     const minusDI: number[] = [];
     for (let i = 0; i < close.length; i++) {
-      const p = trSma[i] !== 0 ? 100 * smaImpl(plusDM, length)[i] / trSma[i] : 0;
-      const m = trSma[i] !== 0 ? 100 * smaImpl(minusDM, length)[i] / trSma[i] : 0;
+      const p = trSma[i] !== 0 ? 100 * plusDMSma[i] / trSma[i] : 0;
+      const m = trSma[i] !== 0 ? 100 * minusDMSma[i] / trSma[i] : 0;
       plusDI.push(p);
       minusDI.push(m);
     }
@@ -301,5 +308,10 @@ export const StdLib = {
       dx.push(sum !== 0 ? Math.abs(plusDI[i] - minusDI[i]) / sum * 100 : 0);
     }
     return smaImpl(dx, length);
+  },
+
+  log(source: number[], base?: number): number[] {
+    const b = base ?? Math.E;
+    return source.map((v) => Math.log(Math.max(v, 0.001)) / Math.log(b));
   },
 };

@@ -60,10 +60,21 @@
       display: flex; align-items: center; gap: 6px;
       background: rgba(12, 12, 28, 0.85);
       border: 1px solid rgba(180, 140, 255, 0.12);
-      border-radius: 10px; padding: 6px 12px;
+      border-radius: 10px; padding: 6px 20px;
       backdrop-filter: blur(12px);
       flex-wrap: wrap; justify-content: center;
+      max-width: 92vw;
     }
+    #toolbar-resize-handle {
+      position: absolute; top: 0; right: 2px; bottom: 0;
+      width: 10px; cursor: ew-resize;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #toolbar-resize-handle::after {
+      content: ''; width: 3px; height: 60%;
+      background: rgba(180, 140, 255, 0.25); border-radius: 2px;
+    }
+    #toolbar-resize-handle:hover::after { background: rgba(180, 140, 255, 0.6); }
     #toolbar button {
       padding: 5px 10px; border: 1px solid rgba(180, 140, 255, 0.15);
       border-radius: 6px; background: transparent;
@@ -241,6 +252,35 @@
     .advisor-msg:hover .msg-copy-btn { display: flex; }
     .msg-copy-btn:hover { color: rgba(255,255,255,0.6); }
 
+    .thinking-details {
+      margin: 4px 0 6px;
+      background: rgba(10,10,25,0.4);
+      border: 1px solid rgba(180,140,255,0.08);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+    .thinking-details summary {
+      cursor: pointer;
+      font-size: 11px;
+      color: rgba(180,140,255,0.5);
+      user-select: none;
+    }
+    .thinking-details summary:hover {
+      color: rgba(180,140,255,0.8);
+    }
+    .thinking-content {
+      margin-top: 6px;
+      padding: 6px 8px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: rgba(255,255,255,0.5);
+      background: rgba(0,0,0,0.2);
+      border-radius: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
     .advisor-input-row {
       padding: 10px 12px 12px;
       border-top: 1px solid rgba(180,140,255,0.08);
@@ -292,7 +332,9 @@
     /* ─── Trading Panel ─────────────────────────────────────── */
     #trading-panel {
       position: fixed; top: 80px; left: 24px;
-      z-index: 9997; width: 220px;
+      z-index: 9997; width: 240px; min-width: 220px; min-height: 120px;
+      max-width: 480px; max-height: 85vh;
+      resize: both; overflow: auto;
       border: 1px solid rgba(0,204,255,0.2);
       border-radius: 12px;
       background: linear-gradient(180deg, rgba(10,10,20,0.95), rgba(13,13,26,0.95));
@@ -396,6 +438,38 @@
       font-size: 9px; color: rgba(255,255,255,0.3);
       min-width: 50px;
     }
+
+    .trade-row {
+      display: flex; align-items: center; gap: 6px;
+      margin-bottom: 8px; font-size: 10px; color: rgba(255,255,255,0.45);
+    }
+    .trade-row label { min-width: 54px; font-weight: 600; }
+    .trade-row select, .trade-row input {
+      flex: 1; padding: 5px 6px; border-radius: 6px;
+      border: 1px solid rgba(0,204,255,0.2);
+      background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);
+      font-size: 11px; outline: none;
+    }
+    .trade-row.hidden { display: none; }
+    #tradeCurrencyAuto { font-size: 9px; color: rgba(0,204,255,0.6); min-width: 34px; text-align: right; }
+
+    .trade-section-title {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.3); margin: 10px 0 6px;
+      text-transform: uppercase;
+    }
+    .trade-list { max-height: 120px; overflow-y: auto; }
+    .trade-list-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 6px; border-radius: 5px; margin-bottom: 3px;
+      background: rgba(0,0,0,0.2); font-size: 10px; color: rgba(255,255,255,0.6);
+    }
+    .trade-list-row .cancel-order { background: none; border: none; color: rgba(255,68,119,0.7); cursor: pointer; font-size: 11px; }
+    .trade-list-empty { font-size: 10px; color: rgba(255,255,255,0.2); text-align: center; padding: 6px; }
+    .trade-account-line { display: flex; justify-content: space-between; font-size: 10px; color: rgba(255,255,255,0.5); padding: 2px 0; }
+    .trade-account-line .val.pos { color: #22cc88; }
+    .trade-account-line .val.neg { color: #ff4477; }
+    .trade-fill-note { font-size: 9px; color: rgba(255,255,255,0.25); margin-top: 6px; line-height: 1.4; }
 
     .vpi-settings {
       display: flex; align-items: center; gap: 6px;
@@ -608,6 +682,12 @@
       <button id="vp-settings-close" title="Close">✕</button>
     </div>
     <div id="vp-settings-body">
+      <label>Bar View
+        <select id="vp-bar-view">
+          <option value="2D">2D</option>
+          <option value="3D">3D (Isometric)</option>
+        </select>
+      </label>
       <label>Mode
         <select id="vp-mode">
           <option value="2D-Side">2D Side</option>
@@ -684,14 +764,36 @@
       </div>
       <div class="settings-section">
         <div class="settings-section-title">LLM Configuration</div>
-        <label>Provider
+        <label>Trade Advisor Provider
           <select id="set-llm-provider">
-            <option value="local">Local (llama.cpp)</option>
-            <option value="ollama">Ollama</option>
+            <option value="local">Local (this GPU / llama.cpp)</option>
+            <option value="ollama">Ollama (local or cloud)</option>
           </select>
         </label>
         <label>Ollama URL <input type="text" id="set-ollama-url" placeholder="http://localhost:11434"></label>
-        <label>Trade Advisor Model <input type="text" id="set-advisor-model" placeholder="qwythos-9b"></label>
+        <label id="advisor-model-local-row">Trade Advisor Model
+          <select id="set-advisor-model"><option value="auto">Auto-detect</option></select>
+        </label>
+        <label id="advisor-model-cloud-row" style="display:none">Ollama Advisor Model
+          <select id="set-advisor-model-cloud"><option value="">(loading Ollama models…)</option></select>
+        </label>
+        <label>OakScript Coder Provider
+          <select id="set-coder-provider">
+            <option value="local">Local (this GPU)</option>
+            <option value="ollama">Ollama (local or cloud)</option>
+          </select>
+        </label>
+        <label id="coder-model-local-row">OakScript Coder Model
+          <select id="set-coder-model"><option value="auto">Auto-detect</option></select>
+        </label>
+        <label id="coder-model-cloud-row" style="display:none">Ollama Coder Model
+          <select id="set-coder-model-cloud"><option value="">(loading Ollama models…)</option></select>
+        </label>
+        <div id="set-coder-info" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:2px;line-height:1.4;">
+          Ollama can run large cloud coder models off-device (e.g. qwen3-coder:480b-cloud) — far better at OakScript than what fits in 8GB. Install Ollama, run <b>ollama signin</b>, then pick a model above. The agent is auto-fed the OakScript documentation.
+        </div>
+        <button id="set-switch-model" style="width:100%;margin-top:6px;padding:6px;border:1px solid rgba(180,140,255,0.3);border-radius:5px;background:rgba(180,140,255,0.08);color:#b48cff;cursor:pointer;font-size:11px;font-weight:600;">🔄 Switch Model Now (hot reload)</button>
+        <div id="set-switch-status" style="color:rgba(255,184,0,0.7);font-size:9px;margin-top:2px;display:none;"></div>
         <label>Advisor Voice
           <select id="set-voice">
             <option value="auto">Auto (best available)</option>
@@ -701,15 +803,54 @@
             <option value="soft">Soft</option>
           </select>
         </label>
+        <div id="set-hardware-info" style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;"></div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Data</div>
         <label>Source
           <select id="set-data-source">
+            <option value="hybrid">⚡ Hybrid (Massive + Yahoo + Synthetic)</option>
             <option value="massive">Massive (primary)</option>
             <option value="yahoo">Yahoo Finance (fallback)</option>
           </select>
         </label>
+        <div id="set-hybrid-info" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:3px;line-height:1.4;">
+          Hybrid blends paid Massive anchors (sparse) with free Yahoo corrections
+          and a correction-anchored synthetic engine for near-live accuracy at low cost.
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Paper Trading</div>
+        <label>Starting Cash
+          <input type="number" id="set-trade-cash" value="100000" min="0" step="1000">
+        </label>
+        <label>Commission Mode
+          <select id="set-trade-comm-mode">
+            <option value="per-trade">Flat $ per trade</option>
+            <option value="per-share">$ per share</option>
+            <option value="per-contract">$ per contract</option>
+          </select>
+        </label>
+        <label>Commission Value ($)
+          <input type="number" id="set-trade-comm-value" value="1.00" min="0" step="0.01">
+        </label>
+        <label>Slippage Mode
+          <select id="set-trade-slip-mode">
+            <option value="fixed-ticks">Fixed ticks</option>
+            <option value="percent">% of price</option>
+          </select>
+        </label>
+        <label>Slippage Value
+          <input type="number" id="set-trade-slip-value" value="1" min="0" step="0.1">
+        </label>
+        <label>Tick Size ($, for fixed-ticks)
+          <input type="number" id="set-trade-tick-size" value="0.01" min="0.0001" step="0.0001">
+        </label>
+        <div id="set-trade-formula-preview" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:3px;line-height:1.4;"></div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Indicators</div>
+        <button id="set-open-editor" style="width:100%;padding:6px 12px;border:1px solid rgba(180,140,255,0.2);border-radius:5px;background:rgba(180,140,255,0.08);color:#b48cff;cursor:pointer;font-size:11px;">Open OakScript Editor</button>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Display</div>
@@ -726,8 +867,8 @@
         <div class="hotkey-grid">
           <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input"></label>
           <label>Volume Profile <input type="text" id="hk-vp" value="Numpad1" class="hotkey-input"></label>
-          <label>Frame All <input type="text" id="hk-frame" value="Numpad2" class="hotkey-input"></label>
-          <label>OakScript <input type="text" id="hk-oak" value="Numpad3" class="hotkey-input"></label>
+          <label>Indicator Editor <input type="text" id="hk-oak" value="Numpad2" class="hotkey-input"></label>
+          <label>Frame All <input type="text" id="hk-frame" value="Numpad3" class="hotkey-input"></label>
           <label>Trend Line <input type="text" id="hk-trend" value="Numpad4" class="hotkey-input"></label>
           <label>Horizontal <input type="text" id="hk-hline" value="Numpad5" class="hotkey-input"></label>
           <label>Ray <input type="text" id="hk-ray" value="Numpad6" class="hotkey-input"></label>
@@ -751,6 +892,7 @@
     <div id="news-header">
       <span>📰 News &amp; Events</span>
       <button id="news-toggle" title="Collapse">−</button>
+      <button id="news-close" title="Close">✕</button>
     </div>
     <div id="news-body">
       <div id="news-list" style="font-size:11px;color:rgba(255,255,255,0.5);padding:8px;text-align:center">Loading news...</div>
@@ -780,7 +922,7 @@
         <span id="advisorAgentIcon" style="color:#b48cff">◆</span>
         <span id="advisorAgentLabel">Trade Advisor</span>
       </div>
-      <span style="font-size:10px;color:rgba(255,255,255,0.2);">Trade Advisor</span>
+      <button id="advisor-close" title="Close">✕</button>
     </div>
     <div class="advisor-chart-context" id="advisorChartContext">
       <span><span class="label">Symbol:</span><span class="val" id="advisorSymbol">-</span></span>
@@ -806,8 +948,9 @@
   <!-- Trading Panel -->
   <div id="trading-panel">
     <div class="trading-panel-header" id="tradingPanelHeader">
-      <span class="trading-panel-title">One-Click Trading</span>
+      <span class="trading-panel-title">Trading</span>
       <button class="trading-panel-collapse" id="tradingPanelCollapse">−</button>
+      <button class="trading-panel-collapse" id="tradingPanelClose" title="Close">✕</button>
     </div>
     <div class="trading-panel-body" id="tradingPanelBody">
       <div class="trading-spread">
@@ -829,11 +972,68 @@
         <input type="number" id="tradeQuantity" class="qty-input" value="1" min="1" step="1">
         <span class="qty-unit" id="tradeQtyUnit">shares</span>
       </div>
+
+      <div class="trade-section-title">Order</div>
+      <div class="trade-row">
+        <label for="tradeOrderType">Type</label>
+        <select id="tradeOrderType">
+          <option value="market">Market</option>
+          <option value="limit">Limit</option>
+          <option value="stop">Stop</option>
+          <option value="stop-limit">Stop-Limit</option>
+          <option value="trailing-stop">Trailing Stop</option>
+        </select>
+      </div>
+      <div class="trade-row hidden" id="tradeLimitRow">
+        <label for="tradeLimitPrice">Limit</label>
+        <input type="number" id="tradeLimitPrice" step="0.01" placeholder="Limit price">
+      </div>
+      <div class="trade-row hidden" id="tradeStopRow">
+        <label for="tradeStopPrice">Stop</label>
+        <input type="number" id="tradeStopPrice" step="0.01" placeholder="Stop price">
+      </div>
+      <div class="trade-row hidden" id="tradeTrailRow">
+        <label for="tradeTrailAmount">Trail</label>
+        <input type="number" id="tradeTrailAmount" step="0.01" placeholder="Amount" style="flex:2">
+        <select id="tradeTrailUnit" style="flex:1">
+          <option value="abs">$</option>
+          <option value="pct">%</option>
+        </select>
+      </div>
+      <div class="trade-row">
+        <label for="tradeCurrency">Currency</label>
+        <select id="tradeCurrency">
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+          <option value="GBP">GBP</option>
+          <option value="JPY">JPY</option>
+          <option value="CHF">CHF</option>
+          <option value="CAD">CAD</option>
+          <option value="AUD">AUD</option>
+          <option value="NZD">NZD</option>
+        </select>
+        <span id="tradeCurrencyAuto" title="Auto-detected from symbol">auto</span>
+      </div>
+
+      <div class="trade-section-title">Account</div>
+      <div class="trade-account-line"><span>Cash</span><span class="val" id="tradeCash">--</span></div>
+      <div class="trade-account-line"><span>Equity</span><span class="val" id="tradeEquity">--</span></div>
+      <div class="trade-account-line"><span>Realized P&amp;L</span><span class="val" id="tradeRealizedPnL">--</span></div>
+      <div class="trade-account-line"><span>Unrealized P&amp;L</span><span class="val" id="tradeUnrealizedPnL">--</span></div>
+
+      <div class="trade-section-title">Positions</div>
+      <div class="trade-list" id="tradePositionsList"><div class="trade-list-empty">No open positions</div></div>
+
+      <div class="trade-section-title">Open Orders</div>
+      <div class="trade-list" id="tradeOrdersList"><div class="trade-list-empty">No open orders</div></div>
+
+      <div class="trade-fill-note" id="tradeFillNote"></div>
     </div>
   </div>
 
   <!-- Bottom Toolbar -->
   <div id="toolbar">
+    <div id="toolbar-resize-handle" title="Drag to resize toolbar width"></div>
     <span class="label" style="color:#00ff88;font-weight:700;letter-spacing:0.5px">DAFE</span>
     <div class="sep"></div>
     <div class="sep"></div>
@@ -868,6 +1068,10 @@
 
     <!-- Timeframe Select -->
     <select id="tf-select">
+      <option value="1s" data-sub-minute="true">1s</option>
+      <option value="5s" data-sub-minute="true">5s</option>
+      <option value="10s" data-sub-minute="true">10s</option>
+      <option value="30s" data-sub-minute="true">30s</option>
       <option value="1m">1m</option>
       <option value="5m">5m</option>
       <option value="15m">15m</option>
@@ -880,16 +1084,22 @@
 
     <div class="sep"></div>
 
-    <button id="mode-toggle">2D <span class="key-hint">Np0</span></button>
-    <button id="btn-frame">Frame <span class="key-hint">Np2</span></button>
-    <button id="oakscript-toggle">Oak <span class="key-hint">Np3</span></button>
+    <button id="mode-toggle" style="display:none">2D <span class="key-hint">Np0</span></button>
+    <select id="indicator-select" title="Load Indicator" style="width:110px;padding:2px 4px;font-size:10px;background:rgba(12,12,28,0.9);color:rgba(255,255,255,0.7);border:1px solid rgba(180,140,255,0.15);border-radius:4px;cursor:pointer;">
+      <option value="" disabled selected>📊 Indicators</option>
+    </select>
     <button id="vp-toggle">VP <span class="key-hint">Np1</span></button>
+    <div id="widgets-combo" style="position:relative;display:inline-block">
+      <button id="widgets-toggle" title="Show or hide widgets">▤ Widgets</button>
+      <div id="widgets-menu" style="display:none;position:absolute;right:0;bottom:100%;margin-bottom:2px;background:rgba(10,10,25,0.96);border:1px solid rgba(180,140,255,0.2);border-radius:6px;z-index:9999;font-size:11px;min-width:170px;padding:4px 0;"></div>
+    </div>
     <button id="live-tick-toggle" title="Live tick simulation">◆ Live</button>
     <button id="settings-toggle" title="Settings">⚙</button>
     <button id="toolbar-collapse" title="Collapse toolbar">▲</button>
     <select id="perf-select" title="Performance mode">
-      <option value="high" selected>High</option>
+      <option value="auto" selected>Auto</option>
       <option value="ultra">Ultra</option>
+      <option value="high">High</option>
       <option value="medium">Medium</option>
       <option value="low">Low</option>
     </select>

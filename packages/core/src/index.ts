@@ -57,6 +57,12 @@ export { SharedBufferManager } from './data/SharedBuffer';
 export { ArrowTable } from './data/ArrowTable';
 export { WebSocketProvider } from './data/providers/WebSocketProvider';
 
+// Strategies
+export { DVSEngine, type DVSState } from './strategies/dvs-engine';
+export { MarketStructureEngine, type SwingPoint, type ProfileLevels, type StructureState, type ConfluenceZone, type IntrabarState, type MarketContext } from './strategies/market-structure';
+export { RCMEngine, type RCMPreset, type RCMConfig, type RCMState, type RCMPermissions, type RCMModulation } from './strategies/rcm-engine';
+export { AdaptiveGenesisEngine, DEFAULT_AGE_CONFIG, type AGEConfig, type Strategy, type SignalResult } from './strategies/adaptive-genesis-engine';
+
 // Interaction
 export { MouseController } from './interaction/MouseController';
 export { KeyboardController } from './interaction/KeyboardController';

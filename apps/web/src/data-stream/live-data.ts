@@ -12,6 +12,7 @@ export interface ProviderStatus {
   available: boolean;
   needsApiKey: boolean;
   hasApiKey: boolean;
+  subMinuteTimeframes?: string[];
 }
 
 export class LiveDataStream {
