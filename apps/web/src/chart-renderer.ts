@@ -727,6 +727,81 @@ export function drawOHLCTooltip(ctx: CanvasRenderingContext2D, bars: BaseBar[], 
   ctx.fillText(`Vol: ${bar.volume.toLocaleString()}`, tx + 8, ty + 88);
 }
 
+// ─── TRADE MARKERS (buy/sell fills) ─────────────────────────────────
+export interface TradeMarker {
+  timestamp: number;
+  price: number;
+  side: 'buy' | 'sell';
+  qty: number;
+}
+
+export function drawTradeMarkers(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, markers: TradeMarker[], is3D = false): void {
+  if (markers.length === 0) return;
+  const { width, height } = ctx.canvas;
+  const { start, end } = getVisibleRange(view, width, bars.length);
+  if (start >= bars.length) return;
+  const visible = bars.slice(start, Math.min(end + 1, bars.length));
+  const vLen = visible.length;
+  if (vLen === 0) return;
+
+  const all = visible.flatMap(b => [b.high, b.low]);
+  const minP = Math.min(...all);
+  const maxP = Math.max(...all);
+  const pRange = (maxP - minP) || 1;
+  const size = Math.max(4, Math.min(9, view.barSpacing * 0.45));
+  const right = chartRight(width);
+  // In 3D/iso mode, barX() gives the extruded box's left edge (its front face
+  // spans barX..barX+bw), not its center like the flat 2D candle — nudge the
+  // marker right by half that width so it centers on the front face instead
+  // of landing at the box's left edge / visual center of the whole extrusion.
+  const isoFrontOffset = is3D ? Math.max(1.2, view.barSpacing * 0.72) / 2 : 0;
+
+  for (const m of markers) {
+    // Find the visible bar whose window contains this fill's timestamp.
+    let idx = -1;
+    for (let i = 0; i < vLen; i++) {
+      if (visible[i].timestamp >= m.timestamp) { idx = i; break; }
+    }
+    if (idx === -1) idx = vLen - 1;
+    const x = barX(idx, vLen, width, view.barSpacing, view.scrollX) + isoFrontOffset;
+    if (x < -view.barSpacing || x > right + view.barSpacing) continue;
+    const bar = visible[idx];
+    const isBuy = m.side === 'buy';
+    const y = isBuy
+      ? priceToY(bar.low, minP, pRange, height, view) + size + 6
+      : priceToY(bar.high, minP, pRange, height, view) - size - 6;
+    const col = isBuy ? '#22cc88' : '#ff4477';
+
+    ctx.save();
+    ctx.shadowBlur = 6;
+    ctx.shadowColor = col;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    if (isBuy) {
+      // Apex up — points toward price, sitting below the bar.
+      ctx.moveTo(x, y - size); ctx.lineTo(x - size, y + size); ctx.lineTo(x + size, y + size);
+    } else {
+      // Apex down — points toward price, sitting above the bar.
+      ctx.moveTo(x, y + size); ctx.lineTo(x - size, y - size); ctx.lineTo(x + size, y - size);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    if (view.barSpacing > 4) {
+      ctx.font = '9px monospace';
+      ctx.fillStyle = col;
+      ctx.textAlign = 'center';
+      ctx.fillText(`${isBuy ? 'B' : 'S'} ${m.qty}`, x, isBuy ? y + size + 10 : y - size - 4);
+      ctx.textAlign = 'left';
+    }
+    ctx.restore();
+  }
+}
+
 // ─── CROSSHAIR ─────────────────────────────────────────────────────
 export function drawCrosshair(ctx: CanvasRenderingContext2D, mx: number, my: number): void {
   const { width, height } = ctx.canvas;

@@ -64,6 +64,16 @@ export class PaperBroker implements IBroker {
   }
   getConfig(): PaperBrokerConfig { return this.config; }
 
+  /** Wipe orders/positions/P&L back to a fresh account — does not touch
+   * lastPrice (still needed to price the next market order) or any chart
+   * history the caller may be keeping (e.g. execution markers) separately. */
+  reset(): void {
+    this.orders.clear();
+    this.positions.clear();
+    this.cash = this.config.startingCash;
+    this.realizedPnL = 0;
+  }
+
   onFill(cb: (fill: Fill) => void): void { this.fillCbs.push(cb); }
   onOrderUpdate(cb: (order: Order) => void): void { this.orderCbs.push(cb); }
 

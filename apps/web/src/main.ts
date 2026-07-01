@@ -11,12 +11,12 @@ import {
   drawBackground, drawGrid, drawBars, drawTimeAxis,
   drawVolumeProfile, drawCrosshair, drawStatusBar,
   drawOHLCTooltip, drawOakScriptPlots,
-  drawSecondaryChart,
+  drawSecondaryChart, drawTradeMarkers,
   updateParticles, drawParticles,
   getVisibleRange, visibleBarCount,
   DEFAULT_BAR_SPACING, MIN_BAR_SPACING, MAX_BAR_SPACING, chartRight,
   setPerfMode,
-  type ViewState,
+  type ViewState, type TradeMarker,
 } from './chart-renderer';
 import {
   createEditor, toggleEditor, isEditorVisible,
@@ -1221,22 +1221,40 @@ function saveTradeSettings(cfg: { cash: number; commission: CommissionConfig; sl
 
 const initialTradeSettings = loadTradeSettings();
 let tradeCurrencyOverride: string | null = null;
+let hideTradeMarkers = (() => { try { return localStorage.getItem('dafe_hide_trade_markers') === '1'; } catch { return false; } })();
 const broker = new PaperBroker({
   currency: detectCurrency(currentSymbol),
   startingCash: initialTradeSettings.cash,
   commission: initialTradeSettings.commission,
   slippage: initialTradeSettings.slippage,
 });
+// Chart markers for executed fills, kept per-symbol so switching symbols
+// shows the right trade history instead of another symbol's markers.
+const tradeMarkersBySymbol = new Map<string, TradeMarker[]>();
 broker.onFill((fill) => {
   const note = document.getElementById('tradeFillNote');
   if (note) {
     note.innerHTML = `Last fill: ${fill.side.toUpperCase()} ${fill.qty} @ ${fill.price.toFixed(4)}<br>Commission: $${fill.commission.toFixed(2)} · Slippage: $${fill.slippage.toFixed(4)}`;
   }
   appendAdvisorMessage('system', `${fill.side.toUpperCase()} ${fill.qty} ${getQtyUnit(fill.symbol)} of ${fill.symbol} filled @ ${fill.price.toFixed(4)} (commission $${fill.commission.toFixed(2)}, slippage $${fill.slippage.toFixed(4)})`);
+  const markers = tradeMarkersBySymbol.get(fill.symbol) || [];
+  markers.push({ timestamp: fill.timestamp, price: fill.price, side: fill.side, qty: fill.qty });
+  tradeMarkersBySymbol.set(fill.symbol, markers);
   renderTradeAccount();
   renderTradePositions();
 });
 broker.onOrderUpdate(() => renderTradeOrders());
+
+/** Flatten a position with a market order for the opposite side. */
+function closePosition(symbol: string): void {
+  const pos = broker.getPositions().find(p => p.symbol === symbol);
+  if (!pos || pos.qty === 0) return;
+  broker.placeOrder({ symbol, side: pos.qty > 0 ? 'sell' : 'buy', type: 'market', qty: Math.abs(pos.qty) });
+  renderTradePositions();
+}
+function closeAllPositions(): void {
+  for (const pos of broker.getPositions()) closePosition(pos.symbol);
+}
 
 function renderTradeAccount(): void {
   const acct = broker.getAccount();
@@ -1264,8 +1282,14 @@ function renderTradePositions(): void {
   list.innerHTML = positions.map(p => {
     const px = transformed[transformed.length - 1]?.close ?? p.avgPrice;
     const unreal = (px - p.avgPrice) * p.qty;
-    return `<div class="trade-list-row"><span>${escapeHtml(p.symbol)} ${p.qty > 0 ? 'LONG' : 'SHORT'} ${Math.abs(p.qty)} @ ${p.avgPrice.toFixed(2)}</span><span class="${unreal >= 0 ? 'pos' : 'neg'}" style="color:${unreal >= 0 ? '#22cc88' : '#ff4477'}">${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}</span></div>`;
+    return `<div class="trade-list-row"><span class="pos-info">${escapeHtml(p.symbol)} ${p.qty > 0 ? 'LONG' : 'SHORT'} ${Math.abs(p.qty)} @ ${p.avgPrice.toFixed(2)}<button class="close-position" data-close-symbol="${escapeHtml(p.symbol)}">Close</button></span><span class="${unreal >= 0 ? 'pos' : 'neg'}" style="color:${unreal >= 0 ? '#22cc88' : '#ff4477'}">${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}</span></div>`;
   }).join('');
+  list.querySelectorAll('.close-position').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const sym = (btn as HTMLElement).dataset.closeSymbol;
+      if (sym) closePosition(sym);
+    });
+  });
 }
 
 function renderTradeOrders(): void {
@@ -2101,12 +2125,29 @@ CRITICAL RULES:
     if (sel('set-trade-slip-mode')) sel('set-trade-slip-mode').value = cfg.slippage.mode;
     if (s('set-trade-slip-value')) s('set-trade-slip-value').value = String(cfg.slippage.value);
     if (s('set-trade-tick-size')) s('set-trade-tick-size').value = String(cfg.slippage.tickSize);
+    const hideEl = document.getElementById('set-trade-hide-markers') as HTMLInputElement;
+    if (hideEl) hideEl.checked = hideTradeMarkers;
     updateTradeFormulaPreview();
   }
   populateTradeSettingsUI();
   ['set-trade-cash', 'set-trade-comm-mode', 'set-trade-comm-value', 'set-trade-slip-mode', 'set-trade-slip-value', 'set-trade-tick-size'].forEach((id) => {
     document.getElementById(id)?.addEventListener('change', applyTradeSettingsFromForm);
     document.getElementById(id)?.addEventListener('input', updateTradeFormulaPreview);
+  });
+  document.getElementById('set-trade-hide-markers')?.addEventListener('change', (e) => {
+    hideTradeMarkers = (e.target as HTMLInputElement).checked;
+    try { localStorage.setItem('dafe_hide_trade_markers', hideTradeMarkers ? '1' : '0'); } catch {}
+  });
+  document.getElementById('set-trade-clear')?.addEventListener('click', () => {
+    // Reset the account/positions/orders only — execution markers already
+    // drawn on the chart are kept so past trades stay visible for reference.
+    broker.reset();
+    renderTradeAccount();
+    renderTradePositions();
+    renderTradeOrders();
+    const note = document.getElementById('tradeFillNote');
+    if (note) note.innerHTML = '';
+    appendAdvisorMessage('system', 'Trade history cleared — account reset to a fresh starting balance.');
   });
 
   async function populateModelDropdowns() {
@@ -2638,6 +2679,7 @@ CRITICAL RULES:
   }
   document.getElementById('tradeSell')?.addEventListener('click', () => submitOrder('sell'));
   document.getElementById('tradeBuy')?.addEventListener('click', () => submitOrder('buy'));
+  document.getElementById('tradeCloseAll')?.addEventListener('click', () => closeAllPositions());
 
   updateUI();
   updateTradingPanel();
@@ -2862,6 +2904,8 @@ function frameBody(now: number) {
   }
 
   if (!is3DMode && !hasPane3d) draw.drawAll(ctx, transformed, view);
+
+  if (!hideTradeMarkers) drawTradeMarkers(ctx, transformed, view, tradeMarkersBySymbol.get(currentSymbol) || [], is3DMode);
 
   if (mouseX >= 0 && mouseY >= 0) {
     drawCrosshair(ctx, mouseX, mouseY);

@@ -465,6 +465,8 @@
       background: rgba(0,0,0,0.2); font-size: 10px; color: rgba(255,255,255,0.6);
     }
     .trade-list-row .cancel-order { background: none; border: none; color: rgba(255,68,119,0.7); cursor: pointer; font-size: 11px; }
+    .trade-list-row .close-position { background: none; border: 1px solid rgba(255,68,119,0.3); color: rgba(255,68,119,0.8); border-radius: 4px; cursor: pointer; font-size: 9px; padding: 1px 5px; margin-left: 6px; flex-shrink: 0; }
+    .trade-list-row .pos-info { display: flex; align-items: center; gap: 6px; }
     .trade-list-empty { font-size: 10px; color: rgba(255,255,255,0.2); text-align: center; padding: 6px; }
     .trade-account-line { display: flex; justify-content: space-between; font-size: 10px; color: rgba(255,255,255,0.5); padding: 2px 0; }
     .trade-account-line .val.pos { color: #22cc88; }
@@ -847,6 +849,12 @@
           <input type="number" id="set-trade-tick-size" value="0.01" min="0.0001" step="0.0001">
         </label>
         <div id="set-trade-formula-preview" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:3px;line-height:1.4;"></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+          <input type="checkbox" id="set-trade-hide-markers" style="width:auto;">
+          <span>Hide execution markers on chart</span>
+        </label>
+        <button id="set-trade-clear" style="width:100%;margin-top:8px;padding:6px 12px;border:1px solid rgba(255,68,119,0.25);border-radius:5px;background:rgba(255,68,119,0.08);color:#ff4477;cursor:pointer;font-size:11px;">Clear Trade History (start fresh)</button>
+        <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">Resets cash, positions, and open orders back to a fresh account. Chart execution markers are kept.</div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Indicators</div>
@@ -1021,7 +1029,10 @@
       <div class="trade-account-line"><span>Realized P&amp;L</span><span class="val" id="tradeRealizedPnL">--</span></div>
       <div class="trade-account-line"><span>Unrealized P&amp;L</span><span class="val" id="tradeUnrealizedPnL">--</span></div>
 
-      <div class="trade-section-title">Positions</div>
+      <div class="trade-section-title" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Positions</span>
+        <button id="tradeCloseAll" title="Close all open positions" style="background:none;border:1px solid rgba(255,68,119,0.3);color:rgba(255,68,119,0.8);border-radius:4px;font-size:9px;padding:2px 6px;cursor:pointer;text-transform:none;letter-spacing:normal;">Close All</button>
+      </div>
       <div class="trade-list" id="tradePositionsList"><div class="trade-list-empty">No open positions</div></div>
 
       <div class="trade-section-title">Open Orders</div>
