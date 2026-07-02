@@ -223,6 +223,161 @@ export const StdLib = {
     return smaImpl(source, length);
   },
 
+  // ── Corpus-driven additions (Pine parity: ta.wma/hma/rma/vwma/mom/median,
+  //    ta.pivothigh/pivotlow, ta.stoch/mfi/obv/cmf) ─────────────────────────
+  wma(source: number[], length: number): number[] {
+    const result: number[] = [];
+    const denom = (length * (length + 1)) / 2;
+    for (let i = 0; i < source.length; i++) {
+      if (i < length - 1) { result.push(NaN); continue; }
+      let sum = 0;
+      for (let j = 0; j < length; j++) sum += source[i - j] * (length - j);
+      result.push(sum / denom);
+    }
+    return result;
+  },
+
+  rma(source: number[], length: number): number[] {
+    // Wilder's smoothing: seeded with SMA, then alpha = 1/length.
+    const result: number[] = [];
+    let prev = NaN;
+    for (let i = 0; i < source.length; i++) {
+      if (i < length - 1) { result.push(NaN); continue; }
+      if (Number.isNaN(prev)) {
+        let sum = 0;
+        for (let j = i - length + 1; j <= i; j++) sum += source[j];
+        prev = sum / length;
+      } else {
+        prev = (prev * (length - 1) + source[i]) / length;
+      }
+      result.push(prev);
+    }
+    return result;
+  },
+
+  hma(source: number[], length: number): number[] {
+    const half = Math.max(1, Math.round(length / 2));
+    const sqrtLen = Math.max(1, Math.round(Math.sqrt(length)));
+    const wHalf = StdLib.wma(source, half);
+    const wFull = StdLib.wma(source, length);
+    const diff = wHalf.map((v, i) => 2 * v - wFull[i]);
+    return StdLib.wma(diff, sqrtLen);
+  },
+
+  vwma(source: number[], volume: number[], length: number): number[] {
+    const result: number[] = [];
+    for (let i = 0; i < source.length; i++) {
+      if (i < length - 1) { result.push(NaN); continue; }
+      let pv = 0, v = 0;
+      for (let j = i - length + 1; j <= i; j++) { pv += source[j] * volume[j]; v += volume[j]; }
+      result.push(v > 0 ? pv / v : NaN);
+    }
+    return result;
+  },
+
+  mom(source: number[], length: number): number[] {
+    const result: number[] = [];
+    for (let i = 0; i < source.length; i++) {
+      result.push(i < length ? NaN : source[i] - source[i - length]);
+    }
+    return result;
+  },
+
+  median(source: number[], length: number): number[] {
+    const result: number[] = [];
+    for (let i = 0; i < source.length; i++) {
+      if (i < length - 1) { result.push(NaN); continue; }
+      const win = source.slice(i - length + 1, i + 1).slice().sort((a, b) => a - b);
+      const mid = Math.floor(win.length / 2);
+      result.push(win.length % 2 === 0 ? (win[mid - 1] + win[mid]) / 2 : win[mid]);
+    }
+    return result;
+  },
+
+  // Pivot detection: NaN everywhere except the bar where the pivot is
+  // CONFIRMED (right bars after the pivot bar), where it returns the pivot
+  // price. Test with `ph > 0` in conditions (NaN comparisons are false).
+  pivothigh(source: number[], left: number, right: number): number[] {
+    const result: number[] = new Array(source.length).fill(NaN);
+    for (let p = left; p < source.length - right; p++) {
+      let isPivot = true;
+      for (let j = p - left; j <= p + right && isPivot; j++) {
+        if (j !== p && source[j] >= source[p]) isPivot = false;
+      }
+      if (isPivot) result[p + right] = source[p];
+    }
+    return result;
+  },
+
+  pivotlow(source: number[], left: number, right: number): number[] {
+    const result: number[] = new Array(source.length).fill(NaN);
+    for (let p = left; p < source.length - right; p++) {
+      let isPivot = true;
+      for (let j = p - left; j <= p + right && isPivot; j++) {
+        if (j !== p && source[j] <= source[p]) isPivot = false;
+      }
+      if (isPivot) result[p + right] = source[p];
+    }
+    return result;
+  },
+
+  stoch(high: number[], low: number[], close: number[], length: number): number[] {
+    const result: number[] = [];
+    for (let i = 0; i < close.length; i++) {
+      if (i < length - 1) { result.push(NaN); continue; }
+      let hh = -Infinity, ll = Infinity;
+      for (let j = i - length + 1; j <= i; j++) {
+        if (high[j] > hh) hh = high[j];
+        if (low[j] < ll) ll = low[j];
+      }
+      result.push(hh === ll ? 50 : ((close[i] - ll) / (hh - ll)) * 100);
+    }
+    return result;
+  },
+
+  mfi(high: number[], low: number[], close: number[], volume: number[], length: number): number[] {
+    const result: number[] = [NaN];
+    const tp: number[] = high.map((h, i) => (h + low[i] + close[i]) / 3);
+    for (let i = 1; i < close.length; i++) {
+      if (i < length) { result.push(NaN); continue; }
+      let pos = 0, neg = 0;
+      for (let j = i - length + 1; j <= i; j++) {
+        const mf = tp[j] * volume[j];
+        if (tp[j] > tp[j - 1]) pos += mf;
+        else if (tp[j] < tp[j - 1]) neg += mf;
+      }
+      result.push(neg === 0 ? 100 : 100 - 100 / (1 + pos / neg));
+    }
+    return result;
+  },
+
+  obv(close: number[], volume: number[]): number[] {
+    let sum = 0;
+    const result: number[] = [0];
+    for (let i = 1; i < close.length; i++) {
+      if (close[i] > close[i - 1]) sum += volume[i];
+      else if (close[i] < close[i - 1]) sum -= volume[i];
+      result.push(sum);
+    }
+    return result;
+  },
+
+  cmf(high: number[], low: number[], close: number[], volume: number[], length: number): number[] {
+    const result: number[] = [];
+    for (let i = 0; i < close.length; i++) {
+      if (i < length - 1) { result.push(NaN); continue; }
+      let mfv = 0, vol = 0;
+      for (let j = i - length + 1; j <= i; j++) {
+        const range = high[j] - low[j];
+        const mult = range === 0 ? 0 : ((close[j] - low[j]) - (high[j] - close[j])) / range;
+        mfv += mult * volume[j];
+        vol += volume[j];
+      }
+      result.push(vol > 0 ? mfv / vol : 0);
+    }
+    return result;
+  },
+
   correlation(a: number[], b: number[], length: number): number[] {
     const result: number[] = [];
     for (let i = 0; i < a.length; i++) {

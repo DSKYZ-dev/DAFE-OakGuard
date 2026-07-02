@@ -34,7 +34,7 @@ import {
   extractCodeBlocks, applyAgentCode, validateCurrentCode,
 } from './trade-advisor';
 import type { ChartSnapshot, IndicatorMetrics } from './trade-advisor/visual-adapter';
-import { prefetchModelProfile } from './trade-advisor/token-optimizer';
+import { prefetchModelProfile, setModelContextOverride } from './trade-advisor/token-optimizer';
 import { AdvisorVoice } from './trade-advisor/voice';
 import { LiveDataStream } from './data-stream';
 import { HybridDataEngine } from './data-stream/hybrid-engine';
@@ -58,7 +58,9 @@ import type { OrderType } from './trading/broker-port';
 import {
   addIndicator, removeIndicator, getActiveInstances,
   runAllInstances, getCombinedPlots, hasActiveIndicators,
-  setInstanceOverrides, setInstanceEnabled, type IndicatorInstance,
+  setInstanceOverrides, setInstanceEnabled, updateInstanceSource,
+  setInstanceDashboardVisible,
+  type IndicatorInstance,
 } from './indicator-manager';
 
 // ─── URL-based hard reset ──────────────────────────────────────────
@@ -193,6 +195,11 @@ function startLiveTicks(): void {
       };
       transformed.push(newBar);
       bars.push({ ...newBar });
+      // Extend the per-bar volume profile so the new bar gets the same VPI
+      // voxel/extrusion treatment as historical bars. Without this the fresh
+      // bar has no perBarVols entry and the 3D scene renders it as a plain
+      // flat candle (looked like a stray 2D bar among the extruded ones).
+      perBarVols.push(generatePerBarVolumes([newBar], 12)[0]);
       if (useHybrid && hybridEngine.isActive()) {
         // Re-anchor the new bar to the last close, but do NOT recalibrate from
         // synthetic-polluted bars — that creates a drift feedback loop. The
@@ -220,6 +227,11 @@ function startLiveTicks(): void {
       if (live.close < live.low) live.low = live.close;
       live.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
     }
+    // Refresh the live bar's per-bar volume so its VPI voxels grow with it
+    // (keeps the newest bar visually consistent with the extruded history).
+    if (perBarVols.length === transformed.length) {
+      perBarVols[perBarVols.length - 1] = generatePerBarVolumes([live], 12)[0];
+    }
     // Keep the one-click trading panel (buy/sell/spread) in sync with the tick.
     updateTradingPanel();
   }, tickMs);
@@ -234,27 +246,107 @@ function stopLiveTicks(): void {
   lastBarRollTime = 0;
 }
 
-// Toggle the coder model fields based on provider (local select vs Ollama text).
+// ─── Ollama model list (shared by both provider dropdowns) ────────
+// Fetched once from /api/ollama/models; each dropdown shows only the slice
+// matching its provider choice: "ollama" = local daemon tags, "ollama-cloud"
+// = signed-in cloud tags. Without this split, cloud tags were mixed in with
+// (and mistaken for) local models.
+let ollamaModelCache: any[] = [];
+let ollamaModelsError = '';
+// Remember the last selection per dropdown per kind, so flipping a provider
+// between Ollama Local and Ollama Cloud (and back) doesn't silently reset a
+// previously chosen model to the first option in the list.
+const ollamaChoiceMemory: Record<string, string> = {};
+
+function ollamaKindFor(provider: string): 'local' | 'cloud' {
+  return provider === 'ollama-cloud' ? 'cloud' : 'local';
+}
+
+function fillOllamaDropdown(ddId: string, kind: 'local' | 'cloud'): void {
+  const dd = document.getElementById(ddId) as HTMLSelectElement | null;
+  if (!dd) return;
+  const prev = dd.value;
+  if (prev) {
+    const prevModel = ollamaModelCache.find(m => m.name === prev);
+    if (prevModel) ollamaChoiceMemory[`${ddId}:${prevModel.cloud ? 'cloud' : 'local'}`] = prev;
+  }
+  dd.innerHTML = '';
+  const models = ollamaModelCache.filter(m => (kind === 'cloud') === !!m.cloud);
+  if (models.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = ollamaModelsError || (kind === 'cloud'
+      ? 'No cloud models — run `ollama signin`, then pull a *-cloud model'
+      : 'No local Ollama models — run `ollama pull <model>`');
+    dd.appendChild(opt);
+    return;
+  }
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.name;
+    const parts: string[] = [m.name];
+    if (m.parameter_size) parts.push(m.parameter_size);
+    if (m.cloud) parts.push('cloud');
+    else if (m.size_gb) parts.push(`${m.size_gb}GB`);
+    const ctx = m.context_length;
+    if (ctx) parts.push(ctx >= 1024 ? `${Math.round(ctx / 1024)}k ctx` : `${ctx} ctx`);
+    opt.textContent = parts.join(' · ');
+    dd.appendChild(opt);
+  }
+  const want = (prev && models.some(m => m.name === prev))
+    ? prev : ollamaChoiceMemory[`${ddId}:${kind}`];
+  if (want && Array.from(dd.options).some(o => o.value === want)) dd.value = want;
+}
+
+// Toggle the coder model fields based on provider (local select vs Ollama dropdown).
 function applyCoderProviderUI(provider: string): void {
-  const isOllama = provider === 'ollama';
+  const isOllama = provider.startsWith('ollama');
   const localRow = document.getElementById('coder-model-local-row');
   const cloudRow = document.getElementById('coder-model-cloud-row');
   if (localRow) localRow.style.display = isOllama ? 'none' : '';
   if (cloudRow) cloudRow.style.display = isOllama ? '' : 'none';
+  if (isOllama) fillOllamaDropdown('set-coder-model-cloud', ollamaKindFor(provider));
 }
 
 // Toggle the advisor model fields + local-only controls based on provider.
 function applyAdvisorProviderUI(provider: string): void {
-  const isOllama = provider === 'ollama';
+  const isOllama = provider.startsWith('ollama');
   const localRow = document.getElementById('advisor-model-local-row');
   const cloudRow = document.getElementById('advisor-model-cloud-row');
   if (localRow) localRow.style.display = isOllama ? 'none' : '';
   if (cloudRow) cloudRow.style.display = isOllama ? '' : 'none';
-  // The hot-reload button + hardware readout only apply to a local GPU model.
+  if (isOllama) fillOllamaDropdown('set-advisor-model-cloud', ollamaKindFor(provider));
+  // Hot-reload button is always available so the user can switch/hot-load a
+  // model regardless of provider. Only the hardware readout is local-specific.
   const switchBtn = document.getElementById('set-switch-model');
   const hwInfo = document.getElementById('set-hardware-info');
-  if (switchBtn) switchBtn.style.display = isOllama ? 'none' : '';
+  if (switchBtn) switchBtn.style.display = '';
   if (hwInfo) hwInfo.style.display = isOllama ? 'none' : '';
+}
+
+// Sync the advisor agent with the configured LLM at startup — the settings
+// panel does this too, but only when opened. Without this, a page load with
+// an Ollama provider left the agent budgeting tokens against the default
+// local model name until the user happened to open Settings.
+async function syncLlmConfigFromSettings(): Promise<void> {
+  try {
+    const data = await (await fetch(`${BACKEND_URL}/api/settings`)).json();
+    const advisorProv = data.llm_provider || 'local';
+    const coderProv = data.llm_coder_provider || 'local';
+    if (advisorProv.startsWith('ollama') || coderProv.startsWith('ollama')) {
+      try {
+        const om = await (await fetch(`${BACKEND_URL}/api/ollama/models`)).json();
+        if (om.ok && om.models) {
+          ollamaModelCache = om.models;
+          for (const m of om.models) {
+            if (m.name && m.context_length) setModelContextOverride(m.name, m.context_length);
+          }
+        }
+      } catch { /* daemon offline — overrides just stay unregistered */ }
+    }
+    const model = data.llm_trade_advisor_model;
+    if (model && model !== 'auto') advisor.config.model = model;
+  } catch { /* backend offline — defaults stand */ }
 }
 
 // Switch data-source mode. Hybrid detects the paid feed and, if live ticks are
@@ -982,6 +1074,30 @@ function buildIndicatorList() {
       inputsPanel.show();
     };
 
+    // Mandatory dashboard toggle — every script gets one, no opt-out for
+    // authors: metrics stay on the chart but can be dropped from the
+    // universal dashboard when unneeded.
+    const dashBtn = document.createElement('button');
+    dashBtn.textContent = '📊';
+    const dashStyle = (on: boolean) => {
+      dashBtn.title = on ? 'Shown on dashboard — click to hide its metrics'
+                         : 'Hidden from dashboard — click to show its metrics';
+      dashBtn.style.opacity = on ? '1' : '0.3';
+      dashBtn.style.borderColor = on ? 'rgba(34,204,136,0.35)' : 'rgba(255,255,255,0.15)';
+    };
+    Object.assign(dashBtn.style, {
+      background: 'none', border: '1px solid rgba(34,204,136,0.35)',
+      cursor: 'pointer', borderRadius: '4px',
+      width: '20px', height: '20px', fontSize: '9px', padding: '0',
+    });
+    dashStyle(inst.showInDashboard !== false);
+    dashBtn.onclick = () => {
+      const next = !(inst.showInDashboard !== false);
+      setInstanceDashboardVisible(inst.id, next);
+      dashStyle(next);
+      dashboard.refresh();
+    };
+
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
     closeBtn.title = 'Remove';
@@ -1021,6 +1137,7 @@ function buildIndicatorList() {
     };
 
     item.appendChild(label);
+    item.appendChild(dashBtn);
     item.appendChild(settingsBtn);
     item.appendChild(closeBtn);
     section.appendChild(item);
@@ -1268,6 +1385,21 @@ function renderTradeAccount(): void {
   if (uEl) { uEl.textContent = acct.unrealizedPnL.toFixed(2); uEl.className = `val ${acct.unrealizedPnL >= 0 ? 'pos' : 'neg'}`; }
 }
 
+/** Open a toolbar popover up or down depending on where the (draggable)
+ * toolbar currently sits — so pinning it to the top of the screen doesn't
+ * push an upward-opening menu off-screen. */
+function orientToolbarPopover(menu: HTMLElement): void {
+  const toolbar = document.getElementById('toolbar');
+  const openDown = toolbar ? (toolbar.getBoundingClientRect().top < window.innerHeight / 2) : false;
+  if (openDown) {
+    menu.style.top = '100%'; menu.style.bottom = 'auto';
+    menu.style.marginTop = '2px'; menu.style.marginBottom = '0';
+  } else {
+    menu.style.bottom = '100%'; menu.style.top = 'auto';
+    menu.style.marginBottom = '2px'; menu.style.marginTop = '0';
+  }
+}
+
 /** currentSymbol is free-typed user text, not a fixed enum — it must be
  * escaped before landing in innerHTML (trade lists render it directly). */
 function escapeHtml(s: string): string {
@@ -1355,6 +1487,7 @@ function updateTradingPanel(): void {
 document.addEventListener('DOMContentLoaded', () => {
   startupChecks();
   refreshProviderCapabilities();
+  syncLlmConfigFromSettings();
 
   // Initialize GPU particle system. Allocate the full buffer (cheap, ~200KB)
   // so the perf governor can scale the active count freely; start at the
@@ -1475,7 +1608,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!inst) {
       if (active.length === 1) {
         inst = active[0];
-        inst.source = source;
+        updateInstanceSource(inst.id, source);
       } else {
         // Either nothing is active, or multiple instances exist with no
         // known target — create a fresh instance rather than guessing which
@@ -1488,9 +1621,13 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       }
     } else {
-      inst.source = source;
+      updateInstanceSource(inst.id, source);
     }
     activeInputsId = inst.id;
+    // Keep the inputs panel in sync with the edited script — re-detecting
+    // inputs (above) means newly-added input() params now appear instead of a
+    // blank/stale panel.
+    inputsPanel.update(inst.inputs, inst.name);
     return inst;
   }
 
@@ -1640,11 +1777,29 @@ document.addEventListener('DOMContentLoaded', () => {
         const has3D = inst.plots.some(p => p.type === 'plot3d');
         const errors = inst.errors.length > 0 ? `\nErrors (${inst.errors.length}): ${inst.errors.slice(0, 3).join('; ')}` : '';
         stateInfo = `Indicator: ${inst.name} | Plots: ${plotTypes.size ? [...plotTypes].join(',') : 'none'} | Signals: ${signalCount} | 3D: ${has3D ? 'yes' : 'no'} | Prefer 3D: ${prefer3D}${errors}`;
-        if (signalCount === 0) stateInfo += '\nIssue: No signals generated.';
-        if (!has3D && prefer3D) stateInfo += '\nIssue: No 3D rendering.';
+        if (signalCount === 0) stateInfo += '\nIssue: No signals generated. You MUST add plotshape() calls this edit — see CRITICAL RULES below.';
+        // Only nudge toward 3D when the user hasn't explicitly asked for a
+        // 2D/main-chart-only indicator — the user's words outrank the toggle.
+        if (!has3D && prefer3D && !/\b(main chart only|2d only|no 3d|without 3d|remove( the)? 3d|flat chart)\b/i.test(msg)) stateInfo += '\nIssue: No 3D rendering.';
       } else {
         stateInfo = 'No active indicator.';
       }
+
+      // The state diagnostics above can flag "no signals generated," but that
+      // was never actually acted on — the rules below only said "preserve
+      // existing logic," so the model dutifully left the gap alone instead of
+      // fixing it. Detect the same signal intent from the user's own wording
+      // and give an explicit, unambiguous instruction either way.
+      const wantsSignals = /\b(signal|reversal|buy|sell|entry|exit|long|short|marker|arrow|triangle|cross(over|under))/i.test(msg);
+      const signalRule = (wantsSignals || /No signals generated/.test(stateInfo))
+        ? `\n- The user is asking for trading signals. You MUST add plotshape(bar_index, price, "LABEL", "triangleup"|"triangledown"|"circle"|"cross", "#hexcolor") calls with NO pane argument (or pane="main") so they render as markers on the MAIN price chart — not a plot() line in a separate oscillator pane. Derive the actual buy/sell condition from the indicator's own math (e.g. crossover/crossunder, threshold breach, divergence) rather than leaving signal count at zero.`
+        : '';
+      // The user's explicit wording beats the Prefer-3D toggle: "main chart
+      // only" must produce a clean 2D indicator, not a surface takeover.
+      const wants2DOnly = /\b(main chart only|2d only|no 3d|without 3d|remove( the)? 3d|flat chart)\b/i.test(msg);
+      const dimensionRule = wants2DOnly
+        ? `\n- The user asked for a MAIN-CHART-ONLY (2D) indicator: do NOT add ANY plot3d() calls, and REMOVE every existing plot3d() call. All rendering must be 2D — plot()/plotshape()/fill()/bgcolor() on the main pane.`
+        : '';
 
       const promptText = `[OakScript Expert] ${msg}
 
@@ -1656,14 +1811,17 @@ ${source}
 \`\`\`
 
 CRITICAL RULES:
-- You are EDITING the script above, NOT generating a new one. Preserve ALL existing logic, calculations, variables, loops, signals, and structure.
+- You are EDITING the script above, NOT generating a new one. Preserve ALL existing logic, calculations, variables, loops, signals, and structure — EXCEPT where the user's request or an Issue above requires a real change; fixing what was asked takes priority over pure preservation.
 - Do NOT simplify, summarize, remove, or rename existing logic. Only ADD or MODIFY what the user asked for.
 - Output the COMPLETE script (every line, start to finish) inside \`\`\`oakscript fences. Never output a partial script or stop mid-script.
 - Block syntax: use { } braces around multi-statement bodies under if/else/for/while. A single statement may follow without braces. There is NO indentation-based block parsing — multi-statement blocks MUST use braces.
 - Colors MUST be hex strings: "#22cc88" NOT "green". Strings MUST be quoted.
 - == not = in conditions. Use input() for params.
+- var is ONLY for persistent state with a LITERAL initial value (var lastHigh = 0.0), updated with := inside logic. A var initializer runs ONCE on bar 0 and FREEZES — NEVER declare calculations/conditions/inputs-derived expressions with var; plain assignment recomputes every bar.
+- NEVER use a negative history index like high[-1] — that reads a FUTURE bar. Use [1]/[2] for past bars; confirm swings 1-2 bars late.
+- DYNAMIC price levels (fibs, pivots, moving S/R that follow new swings) MUST use plot(level, "Title", "#hex", 1, "stepline") — the line then moves when the level changes. hline() is ONLY for constants that never change (e.g. RSI 70/30); an hline whose value changes leaves a NEW permanent line each time and buries the chart.
 - The 3D engine supports plot3d(series, name, style, color, pane) with styles: surface, ribbon, scatter, bars3d, wireframe, mesh, line3d, helix, vortex, manifold, nebula, constellation, torus, trail. pane="main" renders a 3D scene on the main chart; pane="separate" renders in the lower 3D pane. Multiple plot3d("separate") calls stack side-by-side.
-- When the user asks for 3D visuals, ADD plot3d() calls while keeping every existing 2D plot and signal intact. Make it visually stunning — use surface/ribbon/bars3d/helix/vortex/manifold with vivid hex colors.
+- When the user asks for 3D visuals, ADD plot3d() calls while keeping every existing 2D plot and signal intact. Make it visually stunning — use surface/ribbon/bars3d/helix/vortex/manifold with vivid hex colors.${signalRule}${dimensionRule}
 - Goal: the best, most visually stunning version of the user's idea.`;
       const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
       const resp = await advisor.sendMessage(promptText, snapshot, undefined, 'oakscript_coder');
@@ -1672,10 +1830,27 @@ CRITICAL RULES:
         appendChat('agent', resp.reply.slice(0, 600));
         const blocks = extractCodeBlocks(resp.reply);
         if (blocks.length > 0) {
+          // Run the draft through the validator BEFORE surfacing it — errors
+          // like frozen var initializers or future-bar indexes are silent at
+          // runtime (the script "works" but computes garbage), so the user
+          // could never catch them via Test. Give the model up to 2 fix
+          // rounds with the validator's targeted messages first.
+          let code = blocks[0];
+          try {
+            const { validate } = await import('./oakscript/validator');
+            if (!validate(code).valid) {
+              appendChat('agent', '⏳ Draft failed validation — auto-fixing…');
+              const iter = await advisor.validateAndIterate(code, 2, snapshot, undefined, msg);
+              code = iter.finalCode;
+              appendChat('agent', iter.valid
+                ? '✓ Auto-fix passed validation.'
+                : '⚠ Issues remain after auto-fix — use Test before Accept.');
+            }
+          } catch { /* validator unavailable — surface the raw draft */ }
           // Always surface the review panel (View / Test / Accept / Decline) so
           // the user can act on the proposal — even a partial one, which they
           // can Test before accepting. The accept handler guards against bad code.
-          applyAgentCode(blocks[0], msg.slice(0, 60), 'edit', source);
+          applyAgentCode(code, msg.slice(0, 60), 'edit', source);
         } else {
           appendChat('agent', '⚠ No code block found in the response — try rephrasing the request.');
         }
@@ -1834,7 +2009,7 @@ CRITICAL RULES:
       : securitiesCache;
     if (filtered.length === 0) {
       symbolDropdown.innerHTML = `<div style="padding:6px 10px;color:rgba(255,255,255,0.3)">No match — press Enter for "${escapeHtml(filter)}"</div>`;
-      symbolDropdown.style.display = 'block';
+      symbolDropdown.style.display = 'block'; orientToolbarPopover(symbolDropdown);
       return;
     }
     symbolDropdown.innerHTML = filtered.map((s, i) =>
@@ -1843,7 +2018,7 @@ CRITICAL RULES:
         <span style="color:rgba(255,255,255,0.25);font-size:9px">${escapeHtml(s.name)}</span>
       </div>`
     ).join('') + `<div class="sym-item" data-sym="${escapeHtml(filter)}" style="padding:4px 10px;cursor:pointer;color:rgba(0,204,255,0.4);font-size:9px;border-top:1px solid rgba(255,255,255,0.05)">↩ Use "${escapeHtml(filter)}" as custom symbol</div>`;
-    symbolDropdown.style.display = 'block';
+    symbolDropdown.style.display = 'block'; orientToolbarPopover(symbolDropdown);
     symbolDropdown.querySelectorAll('.sym-item').forEach(el => {
       el.addEventListener('mousedown', (e) => {
         e.preventDefault();
@@ -1921,6 +2096,17 @@ CRITICAL RULES:
       setPerfMode(val);
       setParticleCount(tierParticleCount(val));
     }
+  });
+
+  document.getElementById('chart-reset')?.addEventListener('click', () => {
+    // Restore the view to its initial state: newest bars in view, default zoom,
+    // no vertical pan or price-scale stretch.
+    view.scrollX = 0;
+    view.barSpacing = DEFAULT_BAR_SPACING;
+    view.offsetY = 0;
+    view.scaleY = 1;
+    visualAdapter.logAction('reset', 'Chart view reset to default');
+    updateUI();
   });
 
   document.getElementById('toolbar-collapse')?.addEventListener('click', () => {
@@ -2023,7 +2209,11 @@ CRITICAL RULES:
       if (data.tradovate_username) s('set-tradovate-user').value = data.tradovate_username;
       if (data.tradovate_environment) sel('set-tradovate-env').value = data.tradovate_environment;
       const advisorProvider = data.llm_provider || 'local';
+      const coderProvider = data.llm_coder_provider || 'local';
+      // Set both provider selects BEFORE populating the Ollama dropdowns —
+      // the dropdowns are filtered (local vs cloud tags) by these values.
       sel('set-llm-provider').value = advisorProvider;
+      sel('set-coder-provider').value = coderProvider;
       if (data.ollama_base_url) s('set-ollama-url').value = data.ollama_base_url;
 
       // Populate model dropdowns from backend
@@ -2031,21 +2221,25 @@ CRITICAL RULES:
       await populateOllamaDropdowns();
 
       // Restore advisor model into the right field for its provider.
-      if (advisorProvider === 'ollama') {
+      if (advisorProvider.startsWith('ollama')) {
         sel('set-advisor-model-cloud').value = data.llm_trade_advisor_model && data.llm_trade_advisor_model !== 'auto' ? data.llm_trade_advisor_model : '';
       } else if (data.llm_trade_advisor_model) {
         sel('set-advisor-model').value = data.llm_trade_advisor_model;
       }
       applyAdvisorProviderUI(advisorProvider);
-      // Coder: provider (local vs ollama cloud) + the right model field.
-      const coderProvider = data.llm_coder_provider || 'local';
-      sel('set-coder-provider').value = coderProvider;
-      if (coderProvider === 'ollama') {
+      // Coder: restore its model into the field matching its provider.
+      if (coderProvider.startsWith('ollama')) {
         sel('set-coder-model-cloud').value = data.llm_coder_model && data.llm_coder_model !== 'auto' ? data.llm_coder_model : '';
       } else if (data.llm_coder_model) {
         sel('set-coder-model').value = data.llm_coder_model;
       }
       applyCoderProviderUI(coderProvider);
+      // Point the advisor agent at the model that will actually serve it, so
+      // token budgeting resolves the right context (Ollama tags carry their
+      // real ctx as an override; local names track the llama.cpp process).
+      if (data.llm_trade_advisor_model && data.llm_trade_advisor_model !== 'auto') {
+        advisor.config.model = data.llm_trade_advisor_model;
+      }
 
       // Hardware info
       try {
@@ -2089,7 +2283,55 @@ CRITICAL RULES:
         if (el && data[key]) el.value = data[key];
       }
     } catch { /* silent */ }
+    // Re-apply any locally-saved edits on top of the backend defaults so the
+    // user's choices survive closing/reopening the panel even when the backend
+    // is offline (the fetch above just fails silently in that case).
+    restoreSettingsForm();
   }
+
+  // Generic client-side persistence for the settings form so toggling the panel
+  // doesn't wipe unsaved selections. Excluded from this:
+  //  - secret/masked fields — they live on the backend, never mirrored locally.
+  //  - LLM provider/model fields — these are already authoritatively loaded
+  //    from the backend's /api/settings response (and the Ollama dropdowns are
+  //    rebuilt live from the daemon's actual model list) every time the panel
+  //    opens. Re-applying a stale local snapshot on top of that after-the-fact
+  //    was clobbering a correctly-saved "ollama" provider back to whatever
+  //    value (often "local") happened to be cached from before — the exact
+  //    "everything keeps reverting to local" bug.
+  const SETTINGS_LOCAL_KEY = 'dafe_settings_form';
+  const SETTINGS_EXCLUDED_IDS = new Set([
+    'set-massive-key', 'set-serp-key', 'set-tradovate-pass',
+    'set-llm-provider', 'set-ollama-url', 'set-advisor-model', 'set-advisor-model-cloud',
+    'set-coder-provider', 'set-coder-model', 'set-coder-model-cloud',
+  ]);
+  function snapshotSettingsForm(): void {
+    const panel = document.getElementById('settings-panel');
+    if (!panel) return;
+    const out: Record<string, string | boolean> = {};
+    panel.querySelectorAll('input, select, textarea').forEach((el) => {
+      const e = el as HTMLInputElement;
+      if (!e.id || SETTINGS_EXCLUDED_IDS.has(e.id)) return;
+      out[e.id] = e.type === 'checkbox' ? e.checked : e.value;
+    });
+    try { localStorage.setItem(SETTINGS_LOCAL_KEY, JSON.stringify(out)); } catch {}
+  }
+  function restoreSettingsForm(): void {
+    let saved: Record<string, string | boolean> | null = null;
+    try { saved = JSON.parse(localStorage.getItem(SETTINGS_LOCAL_KEY) || 'null'); } catch {}
+    if (!saved) return;
+    for (const [id, val] of Object.entries(saved)) {
+      // Defensive: skip excluded ids even if an older snapshot (saved before
+      // this exclusion existed) still has them cached.
+      if (SETTINGS_EXCLUDED_IDS.has(id)) continue;
+      const e = document.getElementById(id) as HTMLInputElement | null;
+      if (!e) continue;
+      if (e.type === 'checkbox') e.checked = Boolean(val);
+      else e.value = String(val);
+    }
+  }
+  // Persist on any change within the panel.
+  document.getElementById('settings-panel')?.addEventListener('change', snapshotSettingsForm);
 
   // ─── Paper Trading settings (client-side only — no backend round trip) ──
   function updateTradeFormulaPreview(): void {
@@ -2174,40 +2416,29 @@ CRITICAL RULES:
     } catch { /* silent */ }
   }
 
-  // Populate the two Ollama model dropdowns from the backend's /api/ollama/models
-  // proxy (which lists every tag the local Ollama daemon knows — local AND cloud).
+  // Refresh the shared Ollama model cache from the backend's /api/ollama/models
+  // proxy (which lists every tag the local Ollama daemon knows — local AND
+  // cloud), then fill each dropdown with only the slice matching its
+  // provider's kind. Also registers each tag's REAL context size with the
+  // token optimizer so Ollama models stop being budgeted against the local
+  // llama.cpp context.
   async function populateOllamaDropdowns() {
-    const ids = ['set-advisor-model-cloud', 'set-coder-model-cloud'];
     try {
       const resp = await fetch(`${BACKEND_URL}/api/ollama/models`);
       const data = await resp.json();
-      for (const ddId of ids) {
-        const dd = document.getElementById(ddId) as HTMLSelectElement;
-        if (!dd) continue;
-        const prev = dd.value;
-        dd.innerHTML = '';
-        if (!data.ok || !data.models || data.models.length === 0) {
-          const opt = document.createElement('option');
-          opt.value = '';
-          opt.textContent = data.detail || 'No Ollama models — start Ollama or run `ollama signin`';
-          dd.appendChild(opt);
-          continue;
-        }
-        for (const m of data.models) {
-          const opt = document.createElement('option');
-          opt.value = m.name;
-          const parts: string[] = [m.name];
-          if (m.parameter_size) parts.push(m.parameter_size);
-          if (m.cloud) parts.push('cloud');
-          else if (m.size_gb) parts.push(`${m.size_gb}GB`);
-          const ctx = m.context_length;
-          if (ctx) parts.push(ctx >= 1024 ? `${Math.round(ctx / 1024)}k ctx` : `${ctx} ctx`);
-          opt.textContent = parts.join(' · ');
-          dd.appendChild(opt);
-        }
-        if (prev && Array.from(dd.options).some(o => o.value === prev)) dd.value = prev;
+      ollamaModelCache = (data.ok && data.models) ? data.models : [];
+      ollamaModelsError = data.ok ? '' : (data.detail || '');
+      for (const m of ollamaModelCache) {
+        if (m.name && m.context_length) setModelContextOverride(m.name, m.context_length);
       }
-    } catch { /* leave placeholder */ }
+    } catch {
+      ollamaModelCache = [];
+      ollamaModelsError = 'Backend unreachable — Ollama model list unavailable';
+    }
+    const advisorProv = (document.getElementById('set-llm-provider') as HTMLSelectElement)?.value || 'local';
+    const coderProv = (document.getElementById('set-coder-provider') as HTMLSelectElement)?.value || 'local';
+    fillOllamaDropdown('set-advisor-model-cloud', ollamaKindFor(advisorProv));
+    fillOllamaDropdown('set-coder-model-cloud', ollamaKindFor(coderProv));
   }
 
   document.getElementById('settings-save')?.addEventListener('click', async () => {
@@ -2221,13 +2452,15 @@ CRITICAL RULES:
       tradovate_environment: sel('set-tradovate-env'),
       llm_provider: sel('set-llm-provider'),
       ollama_base_url: g('set-ollama-url') || 'http://localhost:11434',
-      llm_trade_advisor_model: sel('set-llm-provider') === 'ollama'
-        ? (g('set-advisor-model-cloud').trim() || 'qwen3:latest')
+      // "auto" lets the backend pick a tag of the right kind (local vs cloud)
+      // from what the daemon actually has, instead of hardcoding a family.
+      llm_trade_advisor_model: sel('set-llm-provider').startsWith('ollama')
+        ? (g('set-advisor-model-cloud').trim() || 'auto')
         : sel('set-advisor-model'),
       llm_coder_provider: sel('set-coder-provider'),
-      // Coder model comes from the cloud text field when provider is ollama.
-      llm_coder_model: sel('set-coder-provider') === 'ollama'
-        ? (g('set-coder-model-cloud').trim() || 'qwen3-coder:480b-cloud')
+      // Coder model comes from the Ollama dropdown when provider is ollama*.
+      llm_coder_model: sel('set-coder-provider').startsWith('ollama')
+        ? (g('set-coder-model-cloud').trim() || 'auto')
         : sel('set-coder-model'),
       market_data_source: sel('set-data-source'),
       bg_viz: sel('set-bg-viz'),
@@ -2253,14 +2486,25 @@ CRITICAL RULES:
       }
       if (data.ok) {
         bgViz = (document.getElementById('set-bg-viz') as HTMLSelectElement)?.value as any || bgViz;
-        // Auto-reload model if the selection changed
-        const newModel = sel('set-advisor-model');
-        if (newModel && newModel !== (window as any).__dafeLastModel) {
-          (window as any).__dafeLastModel = newModel;
-          switchModelNow();
+        const advisorProv = sel('set-llm-provider');
+        const coderProv = sel('set-coder-provider');
+        // Keep the advisor agent pointed at the model that will actually
+        // serve it — an Ollama tag when on Ollama, the .gguf name when local.
+        // (Previously this always took the LOCAL dropdown, so Ollama users'
+        // token budgets were computed against a local model.)
+        const advisorModel = advisorProv.startsWith('ollama')
+          ? g('set-advisor-model-cloud').trim()
+          : sel('set-advisor-model');
+        if (advisorModel && advisorModel !== 'auto') advisor.config.model = advisorModel;
+        // Hot-reload only manages the local llama.cpp process — trigger it
+        // only when a role actually runs locally and its model changed.
+        if (advisorProv === 'local' || coderProv === 'local') {
+          const newModel = advisorProv === 'local' ? sel('set-advisor-model') : sel('set-coder-model');
+          if (newModel && newModel !== (window as any).__dafeLastModel) {
+            (window as any).__dafeLastModel = newModel;
+            switchModelNow();
+          }
         }
-        // Also update advisor's model reference
-        if (newModel) advisor.config.model = newModel;
         // Massive key may have just been added/removed — re-check which
         // sub-minute timeframes are actually servable.
         refreshProviderCapabilities();
@@ -2287,7 +2531,39 @@ CRITICAL RULES:
     status.style.color = '#FFB800';
     btn.disabled = true;
     try {
-      const model = (document.getElementById('set-advisor-model') as HTMLSelectElement)?.value || 'auto';
+      // /api/model/reload only manages the LOCAL llama.cpp process — it
+      // resolves whatever "model" string it's given against .gguf files on
+      // disk. Sending it an Ollama model id (e.g. "qwen3-coder:480b-cloud")
+      // doesn't error, it just fails to match and silently falls back to
+      // auto-picking a local model that fits available VRAM — which is how
+      // this button previously ended up hot-loading a small local model out
+      // from under a user who had explicitly selected Ollama for both roles.
+      // Ollama models don't need "reloading" at all — the model name is sent
+      // fresh with every chat request — so only ever hit this endpoint when
+      // at least one role is actually configured to run locally.
+      const advisorProvider = (document.getElementById('set-llm-provider') as HTMLSelectElement)?.value || 'local';
+      const coderProvider = (document.getElementById('set-coder-provider') as HTMLSelectElement)?.value || 'local';
+      // Only the explicit "local" provider runs on the llama.cpp process.
+      // (The old check was `!== 'ollama'`, which mis-classified any other
+      // provider value — e.g. "ollama-cloud" — as local.)
+      const advisorIsLocal = advisorProvider === 'local';
+      const coderIsLocal = coderProvider === 'local';
+
+      if (!advisorIsLocal && !coderIsLocal) {
+        status.textContent = 'Both roles use Ollama — no local reload needed, model is selected per-request.';
+        status.style.color = '#22cc88';
+        resetAdvisorChat();
+        return;
+      }
+
+      const autoOn = (document.getElementById('set-model-auto') as HTMLInputElement)?.checked;
+      // Prefer whichever role is actually local — the coder's local model if
+      // the coder is local, otherwise the advisor's (there is one local
+      // llama.cpp process shared by both roles, so only one can be "hot").
+      const chosen = coderIsLocal
+        ? (document.getElementById('set-coder-model') as HTMLSelectElement)?.value
+        : (document.getElementById('set-advisor-model') as HTMLSelectElement)?.value;
+      const model = autoOn ? 'auto' : (chosen || 'auto');
       status.textContent = `Loading ${model}... (may take 30-60s)`;
       const resp = await fetch(`${BACKEND_URL}/api/model/reload`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2299,6 +2575,7 @@ CRITICAL RULES:
         status.style.color = '#22cc88';
         // Refresh token optimizer with new context size
         import('./trade-advisor/token-optimizer').then(m => m.prefetchModelProfile());
+        resetAdvisorChat(`Now running ${data.model || model}.`);
       } else if (data.loading) {
         // Model is still loading (large / partially-offloaded). Poll status
         // until it becomes ready instead of reporting a hard failure.
@@ -2309,6 +2586,7 @@ CRITICAL RULES:
           status.textContent = `✓ ${data.model || model} ready`;
           status.style.color = '#22cc88';
           import('./trade-advisor/token-optimizer').then(m => m.prefetchModelProfile());
+          resetAdvisorChat(`Now running ${data.model || model}.`);
         } else {
           status.textContent = `⚠ ${data.model || model} still loading — try chatting in a moment`;
           status.style.color = '#FFB800';
@@ -2532,13 +2810,22 @@ CRITICAL RULES:
     const btn = document.getElementById('advisorVoiceFree');
     if (btn) btn.style.background = voice.isContinuous() ? '#00ff88' : '';
   });
-  document.getElementById('advisorClear')?.addEventListener('click', () => {
+  function resetAdvisorChat(reason?: string): void {
     advisorMessages = [];
+    // Also wipe the agent's own conversation history — clearing only the UI
+    // list left the model still primed with the previous exchange, which
+    // leaked stale context (and prior model's answers) into the next turn.
+    advisor.clearHistory();
     const container = document.getElementById('advisorMessages');
     if (container) {
-      container.innerHTML = '<div class="advisor-msg system">Hi, I\'m your Trade Advisor and assistant, how can I help you today?</div>';
+      const greeting = reason
+        ? `New model loaded — chat reset for a clean start. ${reason}`
+        : "Hi, I'm your Trade Advisor and assistant, how can I help you today?";
+      container.innerHTML = `<div class="advisor-msg system">${escapeHtml(greeting)}</div>`;
     }
-  });
+  }
+  document.getElementById('advisorClear')?.addEventListener('click', () => resetAdvisorChat());
+  (window as any).__resetAdvisorChat = resetAdvisorChat;
 
   document.getElementById('advisor-close')?.addEventListener('click', () => {
     advisorOpen = false;

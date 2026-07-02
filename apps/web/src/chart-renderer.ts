@@ -19,6 +19,13 @@ function hexToRgb(hex: string): string | null {
   return m ? `${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)}` : null;
 }
 
+function compactVol(v: number): string {
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (v >= 1e4) return (v / 1e3).toFixed(0) + 'K';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return v.toString();
+}
+
 function parseHex(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
   if (!m) return null;
@@ -434,7 +441,8 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
       case 'area': drawAreaBar(ctx, x, cy, visible, i, vLen, minP, pRange, height, view, bs, width); break;
       case 'renko': drawRenkoBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity); break;
       case 'kagi': drawKagiBar(ctx, x, hy, ly, bar, isBull, visible, i, vLen, minP, pRange, height, view, bs, width); break;
-      case 'footprint': drawFootprintBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity); break;
+      case 'footprint': drawFootprintBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start]); break;
+      case 'imbalance-bar': drawImbalanceBar(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start]); break;
       default: drawStandardCandle(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity); break;
     }
   }
@@ -547,13 +555,141 @@ function drawKagiBar(ctx: CanvasRenderingContext2D, x: number, hy: number, ly: n
 }
 
 function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number, bBot: number, bH: number,
-  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number): void {
-  ctx.shadowBlur = 4;
-  ctx.shadowColor = 'rgba(180, 140, 255, 0.1)';
-  ctx.fillStyle = `rgba(255, 68, 119, ${0.3 + intensity * 0.2})`;
-  ctx.fillRect(x - hW, bTop, hW * 0.4, bH);
-  ctx.fillStyle = `rgba(34, 204, 136, ${0.3 + intensity * 0.2})`;
-  ctx.fillRect(x - hW * 0.15, bTop, hW * 0.4, bH);
+  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume): void {
+  if (!pv || pv.levels.length === 0 || pv.maxVol === 0) {
+    drawStandardCandle(ctx, x, (bar.open + bar.high) / 2, (bar.close + bar.low) / 2,
+      bar.high, bar.low, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity);
+    return;
+  }
+
+  const bullCol = '#1affa0';
+  const bearCol = '#ff3b6b';
+  const barW = cW * 2.8;
+  const halfW = barW / 2;
+  const levels = pv.levels;
+  const levelH = bH / levels.length;
+
+  // Skip levels if too small for text
+  const minLevelH = 8;
+  const step = levelH < minLevelH ? Math.ceil(minLevelH / levelH) : 1;
+
+  // Bar border
+  ctx.strokeStyle = isBull ? bullCol : bearCol;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x - halfW, bTop, barW, bH);
+
+  // Draw each price level
+  ctx.font = '8px monospace';
+  const textBaseline = 'middle';
+
+  for (let j = 0; j < levels.length; j += step) {
+    const level = levels[j];
+    const ly = bTop + j * levelH;
+    const ratio = level.buyVol / Math.max(level.volume, 0.001);
+    const isBuyDom = ratio > 0.5;
+
+    // Level background
+    const alpha = 0.12 + (level.volume / pv.maxVol) * 0.3;
+    ctx.fillStyle = isBuyDom
+      ? `rgba(34, 204, 136, ${alpha})`
+      : `rgba(255, 68, 119, ${alpha})`;
+    ctx.fillRect(x - halfW + 1, ly, barW - 2, levelH - 1);
+
+    // Volume text: sellVol | buyVol
+    if (levelH >= 7) {
+      const textY = ly + levelH / 2;
+      const sellTxt = compactVol(level.sellVol);
+      const buyTxt = compactVol(level.buyVol);
+
+      ctx.textAlign = 'right';
+      ctx.fillStyle = `rgba(255, 68, 119, ${0.6 + ratio * 0.4})`;
+      ctx.fillText(sellTxt, x - 2, textY);
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = `rgba(34, 204, 136, ${0.6 + (1 - ratio) * 0.4})`;
+      ctx.fillText(buyTxt, x + 2, textY);
+    }
+  }
+
+  // Delta at bottom
+  const delta = pv.levels.reduce((s, l) => s + l.buyVol - l.sellVol, 0);
+  if (bH >= 18) {
+    ctx.font = '7px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = delta >= 0 ? bullCol : bearCol;
+    const dTxt = (delta >= 0 ? '+' : '') + compactVol(Math.abs(delta));
+    ctx.fillText('Δ' + dTxt, x, bBot - 3);
+  }
+}
+
+function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, cy: number, hy: number, ly: number,
+  bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume): void {
+  const bullCol = '#1affa0';
+  const bearCol = '#ff3b6b';
+  const color = isBull ? bullCol : bearCol;
+
+  // Wicks
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(x, hy);
+  ctx.lineTo(x, bTop);
+  ctx.moveTo(x, bBot);
+  ctx.lineTo(x, ly);
+  ctx.stroke();
+
+  // Body — thicker when higher volume intensity
+  const bodyW = cW * (1 + intensity * 0.5);
+  const bodyGrad = ctx.createLinearGradient(x - bodyW, bTop, x + bodyW, bTop);
+  const rgb = isBull ? '34,204,136' : '255,68,119';
+  bodyGrad.addColorStop(0, `rgba(${rgb}, 0.15)`);
+  bodyGrad.addColorStop(0.5, `rgba(${rgb}, ${0.4 + intensity * 0.4})`);
+  bodyGrad.addColorStop(1, `rgba(${rgb}, 0.15)`);
+  ctx.fillStyle = bodyGrad;
+  ctx.fillRect(x - bodyW, bTop, bodyW * 2, bH);
+
+  // Imbalance glow — stronger when more volume
+  if (pv && pv.maxVol > 0) {
+    const delta = pv.levels.reduce((s, l) => s + l.buyVol - l.sellVol, 0);
+    const totalVol = pv.levels.reduce((s, l) => s + l.volume, 0);
+    const imbRatio = totalVol > 0 ? Math.abs(delta) / totalVol : 0;
+    if (imbRatio > 0.3) {
+      ctx.shadowBlur = 8 + imbRatio * 12;
+      ctx.shadowColor = delta > 0 ? `${bullCol}66` : `${bearCol}66`;
+      ctx.fillStyle = delta > 0 ? `${bullCol}22` : `${bearCol}22`;
+      ctx.fillRect(x - bodyW - 2, bTop - 1, bodyW * 2 + 4, bH + 2);
+      ctx.shadowBlur = 0;
+    }
+
+    // Per-level volume overlay (compact, like footprint but subtler)
+    const levels = pv.levels;
+    const levelH = bH / levels.length;
+    const minLevelH = 10;
+    const step = levelH < minLevelH ? Math.ceil(minLevelH / levelH) : 1;
+    ctx.font = '7px monospace';
+    for (let j = 0; j < levels.length; j += step) {
+      const level = levels[j];
+      const lvlY = bTop + j * levelH;
+      const ratio = level.buyVol / Math.max(level.volume, 0.001);
+      const isBuyDom = ratio > 0.5;
+      const alpha = 0.08 + (level.volume / pv.maxVol) * 0.18;
+      ctx.fillStyle = isBuyDom ? `rgba(34,204,136,${alpha})` : `rgba(255,68,119,${alpha})`;
+      ctx.fillRect(x - bodyW, lvlY, bodyW * 2, levelH - 1);
+      if (levelH >= 9) {
+        ctx.textAlign = 'right';
+        ctx.fillStyle = `rgba(255,68,119,0.5)`;
+        ctx.fillText(compactVol(level.sellVol), x - 2, lvlY + levelH / 2);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = `rgba(34,204,136,0.5)`;
+        ctx.fillText(compactVol(level.buyVol), x + 2, lvlY + levelH / 2);
+      }
+    }
+  }
+
+  // Body outline
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x - bodyW, bTop, bodyW * 2, bH);
 }
 
 // ─── VOLUME PROFILE ────────────────────────────────────────────────

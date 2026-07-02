@@ -31,6 +31,21 @@ if /I "%1"=="vision" set "USE_VISION=1"
 if /I "%1"=="-no-llm" set "SKIP_LLAMA=1"
 if /I "%1"=="no-llm" set "SKIP_LLAMA=1"
 
+:: If the user has both the Trade Advisor and OakScript Coder set to Ollama
+:: in Settings, there's nothing local to serve — starting a local llama-server
+:: anyway just burns VRAM and is what made it look like "it's always loading
+:: local even when saved to Ollama" (the model swap was fine, but this script
+:: kept launching an unrelated local model in the background on every restart
+:: regardless of that choice). Skip it automatically in that case.
+if not defined SKIP_LLAMA (
+    for /f "usebackq delims=" %%s in (`python -c "import json,os; p=os.path.join(r'%~dp0backend','settings.json'); d=json.load(open(p)) if os.path.exists(p) else {}; ap=d.get('llm_provider','local'); cp=d.get('llm_coder_provider', ap); print('1' if ap.startswith('ollama') and cp.startswith('ollama') else '0')" 2^>nul`) do set "BOTH_OLLAMA=%%s"
+    if "!BOTH_OLLAMA!"=="1" (
+        set "SKIP_LLAMA=1"
+        echo  [INFO] Both LLM roles are set to Ollama in Settings — skipping local model launch.
+        echo         ^(switch either role back to Local in Settings to bring it back^)
+    )
+)
+
 :: ─── Banner ────────────────────────────────────────────────────
 echo.
 echo  DAFE Trading System

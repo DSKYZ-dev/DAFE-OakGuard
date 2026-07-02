@@ -1,7 +1,7 @@
 import type { Program, ASTNode } from './ast';
 import type { Identifier, NumberLiteral, StringLiteral, BooleanLiteral, ArrayLiteral, NilLiteral } from './ast';
 import type { BinaryExpr, UnaryExpr, TernaryExpr, CallExpr, IndexExpr, MemberExpr } from './ast';
-import type { VarDecl, Assignment, IfStatement, ForStatement, WhileStatement, ReturnStmt, ExpressionStmt } from './ast';
+import type { VarDecl, Assignment, IfStatement, ForStatement, WhileStatement, ReturnStmt, ExpressionStmt, FunctionDecl } from './ast';
 import type { OakPlot, OakAlert } from './runtime';
 import { StdLib } from './runtime';
 
@@ -162,6 +162,15 @@ export interface RuntimeContext {
   seriesByName: Map<string, number[]>;
   cache: Map<string, any>;
   loopSteps: number;
+  // Shared per-execution: dedupes hline() calls. The script runs once per
+  // bar, so a top-level hline is reached ~500 times per execution and a
+  // conditional one fires for every historical trigger — without dedup each
+  // call stacked another permanent line on the chart ("fib lines multiply").
+  hlineSeen: Set<string>;
+  // Shared per-execution: user-defined functions (f(x) => ...).
+  userFuncs: Map<string, FunctionDecl>;
+  // Recursion guard for user-function calls.
+  callDepth: number;
 }
 
 // Per-bar cap on while/for loop iterations. A buggy or pathological script
@@ -195,6 +204,8 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
   const seriesHistory = new Map<ASTNode, number[]>();
   const cache = new Map<string, any>();
   const seriesByName = new Map<string, number[]>();
+  const hlineSeen = new Set<string>();
+  const userFuncs = new Map<string, FunctionDecl>();
 
   // Execute bar by bar (PineScript execution model)
   for (let bi = 0; bi < barData.count; bi++) {
@@ -214,6 +225,9 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
       seriesByName,
       cache,
       loopSteps: 0,
+      hlineSeen,
+      userFuncs,
+      callDepth: 0,
     };
 
     // Set built-in variables
@@ -241,6 +255,7 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
 function evaluateStatement(stmt: ASTNode, ctx: RuntimeContext): void {
   switch (stmt.type) {
     case 'VarDecl': return evaluateVarDecl(stmt as VarDecl, ctx);
+    case 'FunctionDecl': ctx.userFuncs.set((stmt as FunctionDecl).name, stmt as FunctionDecl); return;
     case 'Assignment': evaluateAssignment(stmt as Assignment, ctx); return;
     case 'IfStatement': return evaluateIf(stmt as IfStatement, ctx);
     case 'ForStatement': return evaluateFor(stmt as ForStatement, ctx);
@@ -250,6 +265,56 @@ function evaluateStatement(stmt: ASTNode, ctx: RuntimeContext): void {
     case 'Return': ctx.returnValue = stmt.value ? evaluateExpression(stmt.value, ctx) : null; return;
     case 'ExpressionStmt': evaluateExpression((stmt as ExpressionStmt).expression, ctx); return;
   }
+}
+
+/** Invoke a user-defined function (f(x) => ...). Params shadow globals for
+ * the duration of the call and are restored after; the return value is the
+ * explicit `return` expression or the value of the last expression
+ * statement in the body. Control-flow state is saved/restored so a
+ * function's `return` never halts the surrounding bar execution. */
+function callUserFunction(decl: FunctionDecl, args: RuntimeValue[], ctx: RuntimeContext): RuntimeValue {
+  if (ctx.callDepth >= 64) {
+    throw new Error(`function '${decl.name}' recursed too deeply (max 64)`);
+  }
+  ctx.callDepth++;
+
+  // Shadow params (remember what they hid).
+  const shadowed = new Map<string, { had: boolean; value: RuntimeValue }>();
+  for (let i = 0; i < decl.params.length; i++) {
+    const p = decl.params[i];
+    shadowed.set(p, { had: ctx.vars.has(p), value: ctx.vars.get(p) ?? null });
+    ctx.vars.set(p, args[i] ?? null);
+  }
+
+  const prevReturn = ctx.returnValue;
+  const prevBreak = ctx.breakFlag;
+  const prevContinue = ctx.continueFlag;
+  ctx.returnValue = null;
+  ctx.breakFlag = false;
+  ctx.continueFlag = false;
+
+  let lastVal: RuntimeValue = null;
+  try {
+    for (const stmt of decl.body) {
+      if (stmt.type === 'ExpressionStmt') {
+        lastVal = evaluateExpression((stmt as ExpressionStmt).expression, ctx);
+      } else {
+        evaluateStatement(stmt, ctx);
+      }
+      if (ctx.returnValue !== null) { lastVal = ctx.returnValue; break; }
+      if (ctx.breakFlag || ctx.continueFlag) break; // stray break/continue: stop the body
+    }
+  } finally {
+    ctx.returnValue = prevReturn;
+    ctx.breakFlag = prevBreak;
+    ctx.continueFlag = prevContinue;
+    for (const [p, prev] of shadowed) {
+      if (prev.had) ctx.vars.set(p, prev.value);
+      else ctx.vars.delete(p);
+    }
+    ctx.callDepth--;
+  }
+  return lastVal;
 }
 
 function evaluateVarDecl(stmt: VarDecl, ctx: RuntimeContext): void {
@@ -524,7 +589,9 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       case 'sma': case 'ema': case 'rsi': case 'macd': case 'highest': case 'lowest':
       case 'stdev': case 'roc': case 'cum': case 'change':
       case 'barssince': case 'vwap': case 'linreg': case 'correlation':
-      case 'cci': case 'atr': case 'adx': case 'trueRange': {
+      case 'cci': case 'atr': case 'adx': case 'trueRange':
+      case 'wma': case 'rma': case 'hma': case 'vwma': case 'mom': case 'median':
+      case 'pivothigh': case 'pivotlow': {
         const sourceNode = expr.args[0];
         const param1 = typeof args[1] === 'number' ? args[1] : 14;
         const param2 = typeof args[2] === 'number' ? args[2] : param1;
@@ -578,6 +645,14 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
             else if (funcName === 'atr') result = fn.call(StdLib, ctx.bars.high, ctx.bars.low, ctx.bars.close, lenParam);
             else if (funcName === 'adx') result = fn.call(StdLib, ctx.bars.high, ctx.bars.low, ctx.bars.close, lenParam);
             else if (funcName === 'trueRange') result = fn.call(StdLib, ctx.bars.high, ctx.bars.low, ctx.bars.close);
+            else if (funcName === 'vwma') result = fn.call(StdLib, series, ctx.bars.volume, param1);
+            else if (funcName === 'pivothigh' || funcName === 'pivotlow') {
+              // pivothigh(source, left, right) — cache key already carries
+              // param1/param2, so confirmed pivots compute once per execution.
+              const left = typeof args[1] === 'number' ? args[1] : 5;
+              const right = typeof args[2] === 'number' ? args[2] : left;
+              result = fn.call(StdLib, series, left, right);
+            }
             else result = fn.call(StdLib, series, param1);
 
             if (isBuiltInSrc) ctx.cache.set(cacheKey, result);
@@ -608,6 +683,27 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const result = fn(a, b);
         ctx.cache.set(cacheKey, result);
         return result[ctx.barIndex] || false;
+      }
+
+      // Bars-based oscillators — read OHLCV directly from the chart, so the
+      // source args are positional/documentary and only the length matters:
+      //   stoch(high, low, close, length) | mfi(high, low, close, volume, length)
+      //   cmf(high, low, close, volume, length) | obv(close, volume)
+      case 'stoch': case 'mfi': case 'obv': case 'cmf': {
+        const L = funcName === 'stoch' ? (typeof args[3] === 'number' ? args[3] : 14)
+                : funcName === 'obv' ? 0
+                : typeof args[4] === 'number' ? args[4] : (funcName === 'cmf' ? 20 : 14);
+        const cacheKey = `${funcName}:bars:${L}`;
+        if (!ctx.cache.has(cacheKey)) {
+          const fn = StdLib[funcName as keyof typeof StdLib] as Function;
+          const b = ctx.bars;
+          const result = funcName === 'obv' ? fn.call(StdLib, b.close, b.volume)
+                       : funcName === 'stoch' ? fn.call(StdLib, b.high, b.low, b.close, L)
+                       : fn.call(StdLib, b.high, b.low, b.close, b.volume, L);
+          ctx.cache.set(cacheKey, result);
+        }
+        const arr = ctx.cache.get(cacheKey) as number[];
+        return arr[ctx.barIndex] ?? 0;
       }
 
       // Plot functions
@@ -710,6 +806,25 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const price = args[0] as number;
         const col = typeof args[1] === 'string' ? args[1] : '#b48cff';
         const pane = typeof args[2] === 'string' && args[2] === 'separate' ? 'separate' : 'main';
+        if (!Number.isFinite(price)) return price;
+        // Dedupe: the same hline statement is reached on every bar (or on
+        // every historical trigger when conditional), and each un-deduped
+        // call stacked another permanent line — a fib script repainted
+        // hundreds of lines over the chart. One entry per unique line.
+        const key = `${price}|${col}|${pane}`;
+        if (ctx.hlineSeen.has(key)) return price;
+        // Rolling cap: when a script emits ever-changing levels (dynamic
+        // fibs/pivots), drop the OLDEST line so stale sets clean themselves
+        // up instead of accumulating forever. 24 distinct lines per pane is
+        // far more than any readable indicator needs.
+        const paneLines = ctx.plots.filter(p => p.type === 'hline' && p.pane === pane);
+        if (paneLines.length >= 24) {
+          const oldest = paneLines[0];
+          const idx = ctx.plots.indexOf(oldest);
+          if (idx >= 0) ctx.plots.splice(idx, 1);
+          ctx.hlineSeen.delete(`${oldest.price}|${oldest.color}|${oldest.pane}`);
+        }
+        ctx.hlineSeen.add(key);
         ctx.plots.push({ type: 'hline', name: '', price, color: col, pane });
         return price;
       }
@@ -758,6 +873,25 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const b = Math.max(0, Math.min(255, Math.round(args[2] as number) || 0));
         const transp = typeof args[3] === 'number' ? Math.max(0, Math.min(100, args[3])) : 0;
         return `rgba(${r},${g},${b},${(1 - transp / 100).toFixed(3)})`;
+      }
+
+      case 'color.from_gradient': {
+        // color.from_gradient(value, bottomValue, topValue, bottomColor, topColor)
+        // — linearly interpolates between the two colors as value moves
+        // through [bottomValue, topValue]. Pine parity for heatmap coloring.
+        const value = typeof args[0] === 'number' ? args[0] : 0;
+        const bottomValue = typeof args[1] === 'number' ? args[1] : 0;
+        const topValue = typeof args[2] === 'number' ? args[2] : 100;
+        const bottomColor = typeof args[3] === 'string' ? args[3] : '#22cc88';
+        const topColor = typeof args[4] === 'string' ? args[4] : '#ff4477';
+        const span = topValue - bottomValue;
+        const t = span === 0 ? 0 : Math.max(0, Math.min(1, (value - bottomValue) / span));
+        const [r1, g1, b1] = hexToRgbTuple(bottomColor);
+        const [r2, g2, b2] = hexToRgbTuple(topColor);
+        const r = Math.round(r1 + (r2 - r1) * t);
+        const g = Math.round(g1 + (g2 - g1) * t);
+        const b = Math.round(b1 + (b2 - b1) * t);
+        return `rgba(${r},${g},${b},1)`;
       }
 
       case 'input': {
@@ -821,6 +955,13 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       case 'sin': return Math.sin(args[0] as number);
       case 'cos': return Math.cos(args[0] as number);
       case 'tan': return Math.tan(args[0] as number);
+      case 'pow': return Math.pow(args[0] as number, args[1] as number);
+      case 'sign': return Math.sign(args[0] as number);
+      case 'log10': return Math.log10(args[0] as number);
+      case 'avg': {
+        const nums = args.filter((a): a is number => typeof a === 'number');
+        return nums.length ? nums.reduce((s, v) => s + v, 0) / nums.length : 0;
+      }
       case 'array': {
         if (args.length === 1 && typeof args[0] === 'number') {
           const arr = new Array(args[0]);
@@ -906,6 +1047,11 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       }
 
       default: {
+        // User-defined function (f(x) => ...) — builtins take precedence
+        // (all cases above), then user functions, then object methods.
+        if (callee.type === 'Identifier' && ctx.userFuncs.has(funcName)) {
+          return callUserFunction(ctx.userFuncs.get(funcName)!, args, ctx);
+        }
         // funcName (the flattened dottedName, e.g. "m.set", "ring.push")
         // didn't match any recognized builtin/namespace case — that's
         // expected for a method call on a user variable (Matrix/OakRing
@@ -955,6 +1101,9 @@ function evaluateIndex(expr: IndexExpr, ctx: RuntimeContext): RuntimeValue {
 
   // Series lookback: close[5] = close value from 5 bars ago
   if (typeof obj === 'number' && typeof idx === 'number') {
+    // Negative lookback would read a FUTURE bar (repainting lookahead) —
+    // clamp to the current value so no script can peek ahead.
+    if (idx < 0) return obj;
     // Check if obj came from a built-in series (close, open, etc.)
     if (objExpr.type === 'Identifier') {
       const name = (objExpr as Identifier).name;

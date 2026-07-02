@@ -522,11 +522,18 @@ CONDITIONAL / PER-BAR COLOR (the heart of expressive indicators):
 COLOR HELPERS:
   color.new(baseColor, transp)   — transp 0 (opaque) .. 100 (fully transparent)
   color.rgb(r, g, b, transp?)    — channels 0..255, optional transp 0..100
+  color.from_gradient(value, bottomValue, topValue, bottomColor, topColor)
+    — interpolates between the two colors as value moves through the range.
+    heat = color.from_gradient(r, 0, 100, "#22cc88", "#ff4477")
+    plot(r, "RSI Heat", heat, 2, "separate")
     glassFill = color.new("#22aaff", 80)     // 20% opacity blue
     plot(vwap(close,volume), "VWAP", color.rgb(180,140,255,20), 2)
 
 hline(value, color, pane?)
   Draws a dashed horizontal reference line at the given value.
+  CONSTANTS ONLY (e.g. RSI 70/30) — for DYNAMIC levels (fibs, pivots,
+  moving S/R) use plot(level, "Title", "#hex", 1, "stepline") so the
+  line follows the level instead of leaving old copies behind.
   - value: number — price level or indicator threshold
   - color: hex string
   - pane: "main" or "separate"
@@ -682,7 +689,6 @@ TIPS:
   A colored mesh surface flowing through time. Each point's height
   represents its proximity to the current bar's close price.
   - Colors: green-yellow gradient (HSL 0.35 → 0.0)
-  - Best for: oscillators (RSI, CCI, Stochastics), price action surfaces
   - Requires: 40+ bars for good visual density
   - Pane: works on both "main" and "separate"
   - Main chart: floats above the price action, aligned to candle positions
@@ -1017,6 +1023,10 @@ RULES FOR COMBINING 2D & 3D
       title: 'Standard Library — Moving Averages',
       content: `sma(source, length)         — Simple Moving Average
 ema(source, length)         — Exponential Moving Average (multiplier = 2/(len+1))
+wma(source, length)         — Weighted Moving Average (linear weights)
+hma(source, length)         — Hull Moving Average (fast + smooth)
+rma(source, length)         — Wilder's smoothed MA (as used inside RSI/ATR)
+vwma(source, length)        — Volume-Weighted Moving Average
 macd(source, fast, slow, signal) — MACD indicator
   Returns an object with THREE properties:
     .macd   — MACD line array (fast EMA - slow EMA)
@@ -1045,12 +1055,22 @@ cci(high, low, close, length)
   Formula: (TP - SMA(TP)) / (0.015 × StdDev(TP))
   where TP = (H + L + C) / 3
 
+stoch(high, low, close, length)
+  Stochastic %K (0-100): where close sits in the high/low range.
+  For %D, smooth it: d = sma(stoch(high, low, close, 14), 3)
+
 roc(source, length)
   Rate of Change (%).
   ROC = ((price - price[n]) / price[n]) × 100
 
+mom(source, length)
+  Momentum: source - source[length].
+
 stdev(source, length)
-  Standard Deviation.`,
+  Standard Deviation.
+
+median(source, length)
+  Rolling median over the window.`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {
@@ -1069,7 +1089,16 @@ trueRange(high, low, close)
 adx(high, low, close, length)
   Average Directional Index.
   Measures trend strength (0-100), NOT direction.
-  Calculated via +DI, -DI, and DX smoothing.`,
+  Calculated via +DI, -DI, and DX smoothing.
+
+mfi(high, low, close, volume, length)
+  Money Flow Index (0-100) — volume-weighted RSI.
+
+obv(close, volume)
+  On-Balance Volume — cumulative volume flow.
+
+cmf(high, low, close, volume, length)
+  Chaikin Money Flow (-1..1) — buying vs selling pressure.`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {
@@ -1092,6 +1121,15 @@ highest(source, length)
 lowest(source, length)
   Lowest value over the last ` + "`length`" + ` bars.
 
+pivothigh(source, leftBars, rightBars)
+  Pivot-high PRICE on the bar where the pivot CONFIRMS (rightBars after
+  the actual high); NaN on all other bars. Test with ` + "`ph > 0`" + `.
+  Track the latest: var lastPh = 0.0; if ph > 0 { lastPh := ph }
+
+pivotlow(source, leftBars, rightBars)
+  Same for pivot lows — the standard building block for swing levels,
+  fib anchors, and support/resistance.
+
 cum(source)
   Cumulative sum from bar 0 to current bar.
 
@@ -1106,7 +1144,8 @@ correlation(a, b, length)
       title: 'Math & String Utilities',
       content: `Math functions:
   abs(x)    min(a,b)  max(a,b)  floor(x)  ceil(x)  round(x)
-  sqrt(x)   log(x)    exp(x)    sin(x)    cos(x)    tan(x)
+  sqrt(x)   log(x)    log10(x)  exp(x)    sin(x)    cos(x)    tan(x)
+  pow(base, exponent)   sign(x)   avg(a, b, ...)
 
 Type conversion:
   tostring(x)   — convert number/boolean to string

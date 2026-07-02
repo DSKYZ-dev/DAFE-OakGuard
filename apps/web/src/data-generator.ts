@@ -104,19 +104,46 @@ export function findPOC(bins: VolumeBin[]): VolumeBin | null {
 }
 
 // ─── TRANSFORM BAR TYPES ──────────────────────────────────────────
+
+/** Average bar range of the series — used to derive price-scale-relative
+ * defaults (renko brick, range-bar size) so bars don't all collapse into one
+ * when a fixed default (e.g. 50) is far larger than a $1.08 forex move or far
+ * smaller than a $67k BTC move. */
+function avgBarRange(bars: BaseBar[]): number {
+  if (bars.length === 0) return 1;
+  let sum = 0;
+  for (const b of bars) sum += (b.high - b.low);
+  return (sum / bars.length) || 1;
+}
+
+/** Average bar volume — used to derive volume/dollar-bar targets. */
+function avgBarVolume(bars: BaseBar[]): number {
+  if (bars.length === 0) return 1;
+  let sum = 0;
+  for (const b of bars) sum += b.volume;
+  return (sum / bars.length) || 1;
+}
+
 export function transformBars(bars: BaseBar[], type: BarType, params?: Record<string, number>): BaseBar[] {
+  if (bars.length === 0) return bars;
+  // Scale-relative defaults so a fixed constant doesn't collapse every bar into
+  // one (forex ~1.08) or explode into thousands (BTC ~67k). Each ≈ a few source
+  // bars' worth of movement/volume, which yields a readable number of bars.
+  const rng = avgBarRange(bars);
+  const vol = avgBarVolume(bars);
+  const avgClose = bars[bars.length - 1].close || 1;
   switch (type) {
     case 'candlestick': return bars;
     case 'heikin-ashi': return transformHeikinAshi(bars);
-    case 'renko': return transformRenko(bars, params?.brickSize ?? 50);
-    case 'range-bar': return transformRangeBar(bars, params?.range ?? 100);
-    case 'volume-bar': return transformVolumeBar(bars, params?.volTarget ?? 10000);
-    case 'tick-bar': return transformTickBar(bars, params?.tickCount ?? 10);
-    case 'kagi': return transformKagi(bars, params?.reversal ?? 50);
+    case 'renko': return transformRenko(bars, params?.brickSize ?? Math.max(rng * 0.75, avgClose * 1e-4));
+    case 'range-bar': return transformRangeBar(bars, params?.range ?? Math.max(rng * 1.5, avgClose * 2e-4));
+    case 'volume-bar': return transformVolumeBar(bars, params?.volTarget ?? Math.max(vol * 3, 1));
+    case 'tick-bar': return transformTickBar(bars, params?.tickCount ?? 5);
+    case 'kagi': return transformKagi(bars, params?.reversal ?? Math.max(rng * 0.9, avgClose * 1.2e-4));
     case 'footprint': return bars; // footprint adds per-level data; base OHLC same
     case 'line': return bars;
     case 'area': return bars;
-    case 'dollar-bar': return transformDollarBar(bars, params?.dollarTarget ?? 1_000_000);
+    case 'dollar-bar': return transformDollarBar(bars, params?.dollarTarget ?? Math.max(vol * avgClose * 3, 1));
     case 'imbalance-bar': return transformImbalanceBar(bars, params?.imbalanceThreshold ?? 0.3);
     default: return bars;
   }
@@ -227,24 +254,42 @@ function transformKagi(bars: BaseBar[], reversal: number): BaseBar[] {
   const result: BaseBar[] = [];
   if (bars.length < 2) return bars;
   let direction: 'up' | 'down' = bars[1].close >= bars[0].close ? 'up' : 'down';
-  let pivot = bars[0].close;
+  // `extreme` is the high/low water-mark of the current leg. The prior version
+  // only moved its pivot at reversals, so in a trending market the counter-move
+  // was measured from a stale point and almost never triggered — yielding just
+  // a handful of segments. Track the running extreme and reverse when price
+  // retraces `reversal` from it (the correct kagi rule).
+  let extreme = bars[0].close;
+  let legStart = bars[0].close;
+  let legStartTs = bars[0].timestamp;
 
   for (let i = 1; i < bars.length; i++) {
-    const bar = bars[i];
-    const move = bar.close - pivot;
-    if ((direction === 'up' && move < -reversal) || (direction === 'down' && move > reversal)) {
-      direction = direction === 'up' ? 'down' : 'up';
-      pivot = bar.close;
-      result.push({
-        timestamp: bar.timestamp,
-        open: bars[i - 1].close,
-        high: direction === 'up' ? bar.close : bars[i - 1].close,
-        low: direction === 'down' ? bar.close : bars[i - 1].close,
-        close: bar.close,
-        volume: bar.volume,
-      });
+    const c = bars[i].close;
+    if (direction === 'up') {
+      if (c > extreme) extreme = c;
+      else if (c <= extreme - reversal) {
+        // Reversal down — close the up-leg from its start to the peak.
+        result.push({ timestamp: legStartTs, open: legStart, high: extreme, low: Math.min(legStart, extreme), close: extreme, volume: bars[i].volume });
+        direction = 'down';
+        legStart = extreme; legStartTs = bars[i].timestamp; extreme = c;
+      }
+    } else {
+      if (c < extreme) extreme = c;
+      else if (c >= extreme + reversal) {
+        // Reversal up — close the down-leg from its start to the trough.
+        result.push({ timestamp: legStartTs, open: legStart, high: Math.max(legStart, extreme), low: extreme, close: extreme, volume: bars[i].volume });
+        direction = 'up';
+        legStart = extreme; legStartTs = bars[i].timestamp; extreme = c;
+      }
     }
   }
+  // Emit the in-progress final leg so the newest move is visible.
+  const lastC = bars[bars.length - 1].close;
+  result.push({
+    timestamp: bars[bars.length - 1].timestamp,
+    open: legStart, high: Math.max(legStart, lastC), low: Math.min(legStart, lastC), close: lastC,
+    volume: bars[bars.length - 1].volume,
+  });
   return result.length > 0 ? result : bars.slice(0, 1);
 }
 

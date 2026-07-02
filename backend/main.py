@@ -82,6 +82,13 @@ DEFAULTS: dict[str, Any] = {
     "market_data_source": "yahoo",
 }
 
+def _is_cloud_model_name(name: str) -> bool:
+    """Ollama cloud tags follow the "*-cloud" / "*:cloud" naming convention
+    (e.g. qwen3-coder:480b-cloud, gpt-oss:120b-cloud)."""
+    n = (name or "").lower()
+    return n.endswith("-cloud") or ":cloud" in n
+
+
 def load_settings() -> dict[str, Any]:
     s = dict(DEFAULTS)
     if os.path.exists(SETTINGS_FILE):
@@ -90,6 +97,14 @@ def load_settings() -> dict[str, Any]:
                 s.update(json.load(f))
         except Exception:
             pass
+    # Migration: older versions had a single "ollama" provider covering both
+    # the local daemon and its signed-in cloud models. If a saved model tag is
+    # clearly a cloud tag, surface it as the explicit "ollama-cloud" provider
+    # so the UI and routing treat it as cloud, not local.
+    for prov_key, model_key in (("llm_provider", "llm_trade_advisor_model"),
+                                ("llm_coder_provider", "llm_coder_model")):
+        if s.get(prov_key) == "ollama" and _is_cloud_model_name(str(s.get(model_key, ""))):
+            s[prov_key] = "ollama-cloud"
     return s
 
 def save_settings(data: dict[str, Any]) -> None:
@@ -387,10 +402,14 @@ async def api_ollama_models():
             if caps and "completion" not in caps and "chat" not in caps:
                 continue
             details = m.get("details", {}) or {}
-            remote = bool(m.get("remote_host"))
+            name = m.get("model") or m.get("name", "")
+            # Some Ollama versions don't report remote_host in /api/tags, so
+            # also recognize cloud models by their "*-cloud" tag convention —
+            # otherwise cloud models get mislabeled (and filtered) as local.
+            remote = bool(m.get("remote_host")) or _is_cloud_model_name(name)
             size_bytes = m.get("size", 0) or 0
             models.append({
-                "name": m.get("model") or m.get("name", ""),
+                "name": name,
                 "size": size_bytes,
                 "size_gb": round(size_bytes / (1024 ** 3), 2),
                 "parameter_size": details.get("parameter_size", ""),
@@ -482,6 +501,19 @@ AGENT_SYSTEM_PROMPTS = {
     ),
     "oakscript_coder": (
         "You are the DAFE OakScript Coder, an expert at the OakScript indicator language. "
+        "OakScript is NOT PineScript — never use: ta./math./str. namespaces (functions are bare: rsi(), sma(), abs()); "
+        "input.int/input.float (use input(default, \"Title\", min?, max?, step?)); named arguments (ALL arguments are positional); "
+        "indicator()/study()/strategy() declarations (scripts start directly with code); shape.*/location.*/plot.style_* constants; "
+        "color.red-style constants (colors are quoted hex strings like \"#22cc88\"); request.security/nz()/na() do not exist. "
+        "ALWAYS structure every script in this exact order: "
+        "(1) input() declarations. "
+        "(2) Indicator calculations — plain assignments (NO var keyword), recomputed every bar: fastMa = ema(close, 9). Every variable must be assigned BEFORE the line that uses it; an undefined name silently reads as 0/false with NO error. "
+        "(3) Persistent state ONLY: var x = 0.0 with a LITERAL initial value, updated inside logic with :=. CRITICAL: a var initializer runs ONCE on bar 0 and the value persists — `var lvl = highest(high, 20)` FREEZES at the first bar forever. NEVER put calculations, conditions, or series expressions in a var initializer. "
+        "(4) Signal conditions as plain booleans: buySig = crossover(fastMa, slowMa) and r < 70. "
+        "(5) Signal markers INSIDE conditionals: if buySig { plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\") } / if sellSig { plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\") } — signature plotshape(bar_index, price, title, style, color, pane?), buy markers at low, sell markers at high. "
+        "(6) Unconditional rendering LAST at top level: plot()/hline()/fill()/plot3d() must NEVER be inside if-blocks or they render nothing (bgcolor is the exception — it may be conditional). "
+        "DYNAMIC price levels (fibs, pivots, moving S/R) = plot(level, \"Title\", \"#hex\", 1, \"stepline\") so the line follows the level; hline() is ONLY for constants that never change (RSI 70/30) — an hline whose value changes leaves a new permanent line each time. "
+        "Previous-bar access works via history indexing: close[1], myVar[1]; change(x) = x - x[1]. "
         "Output COMPLETE oakscript code inside ```oakscript fences — every line, start to finish, never partial or truncated. "
         "When EDITING an existing script, preserve ALL its logic, calculations, variables, loops, and signals; only add or modify what was asked. NEVER simplify, summarize, remove, or rename existing logic. "
         "Block syntax: use { } braces around multi-statement bodies under if/else/for/while (single statements may follow without braces) — braces have no indentation requirement and can't misparse. Brace-less indentation blocks also work, but every statement in such a block must sit at the exact same column or it silently falls outside the block (e.g. a loop counter update landing outside its own while loop causes an infinite loop) — prefer braces for anything beyond a single-line body. "
@@ -496,12 +528,21 @@ AGENT_SYSTEM_PROMPTS = {
     ),
 }
 
-async def _pick_ollama_auto_model(base_url: str, prefer_coder: bool) -> str:
+async def _pick_ollama_auto_model(base_url: str, prefer_coder: bool,
+                                  cloud: Optional[bool] = None) -> str:
     """Pick a default Ollama model from whatever the user actually has
     installed/signed into, instead of assuming a specific family (e.g. Qwen)
     is present — a user with only Llama/Mistral/DeepSeek tags pulled would
-    otherwise get a hardcoded "qwen3:latest" that doesn't exist for them."""
-    fallback = "qwen3-coder:480b-cloud" if prefer_coder else "qwen3:latest"
+    otherwise get a hardcoded "qwen3:latest" that doesn't exist for them.
+
+    `cloud` filters candidates by kind: True = cloud tags only (provider
+    "ollama-cloud"), False = local tags only (provider "ollama"), None = any.
+    If the requested kind has no matches, fall back to any chat-capable tag
+    rather than failing the request outright."""
+    if cloud:
+        fallback = "qwen3-coder:480b-cloud" if prefer_coder else "gpt-oss:120b-cloud"
+    else:
+        fallback = "qwen3-coder:480b-cloud" if prefer_coder else "qwen3:latest"
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{base_url.rstrip('/')}/api/tags")
@@ -517,6 +558,11 @@ async def _pick_ollama_auto_model(base_url: str, prefer_coder: bool) -> str:
                 names.append(n)
         if not names:
             return fallback
+        if cloud is not None:
+            kind = [n for n in names
+                    if _is_cloud_model_name(n) == cloud]
+            if kind:
+                names = kind
         if prefer_coder:
             coder_like = [n for n in names if "coder" in n.lower()]
             if coder_like:
@@ -541,9 +587,10 @@ async def api_chat(body: dict[str, Any]):
         provider = settings.get("llm_coder_provider", settings.get("llm_provider", "local"))
     else:
         provider = settings.get("llm_provider", "local")
-        # On Ollama the configured model is a cloud tag; ignore the body's
-        # (advisor-default) model. On local, the body's selected .gguf is fine.
-        if provider == "ollama":
+        # On Ollama (local daemon or cloud) the configured model is an explicit
+        # tag; ignore the body's (advisor-default) model. On local, the body's
+        # selected .gguf is fine.
+        if provider.startswith("ollama"):
             model = settings.get("llm_trade_advisor_model", "auto")
         else:
             model = body.get("model", "") or settings.get("llm_trade_advisor_model", "auto")
@@ -566,6 +613,9 @@ async def api_chat(body: dict[str, Any]):
         model = await _pick_ollama_auto_model(
             settings.get("ollama_base_url", "http://localhost:11434"),
             prefer_coder=agent == "oakscript_coder",
+            # "ollama-cloud" auto-picks only cloud tags; "ollama" only local
+            # tags — so a cloud selection never silently lands on a local model.
+            cloud=provider == "ollama-cloud",
         )
 
     # Build messages: system first, then conversation, then user message.
@@ -575,7 +625,13 @@ async def api_chat(body: dict[str, Any]):
         "When introducing yourself, say: \"Hi there, I'm your Trade Advisor and assistant. How can I help you today?\" "
     )
 
-    full_system = f"{system_prompt}\n\n{identity_override}"
+    # The identity override is for the ADVISOR persona only. Appending it to
+    # coder requests told the code-generation model it was a chatty trading
+    # assistant — measurably degrading code quality (wrong persona wins).
+    if agent == "oakscript_coder":
+        full_system = system_prompt
+    else:
+        full_system = f"{system_prompt}\n\n{identity_override}"
 
     # Accumulate any system-context from the message history
     extra_context = []

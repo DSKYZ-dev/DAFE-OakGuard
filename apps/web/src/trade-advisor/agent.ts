@@ -8,9 +8,41 @@ import { optimizePrompt, resetBudget, estimateTokens, getModelContextLimit } fro
 
 export const TRADE_ADVISOR_PROMPT = `You are the DAFE Trade Advisor — expert trading analyst. You analyze OHLCV charts, identify patterns (S/R, trend lines, candlestick patterns, divergences), evaluate risk/reward, and research markets. Be concise, data-driven, reference specific price levels and indicator values. Provide actionable insights with clear rationale.`;
 
+// Dedicated coder persona. Coder requests previously reused the ADVISOR
+// prompt above (and the backend appended an advisor identity on top), so the
+// code-generation model was never actually told it was a coder — a major
+// cause of structurally broken scripts. Keep this in sync with
+// AGENT_SYSTEM_PROMPTS["oakscript_coder"] in backend/main.py.
+export const OAKSCRIPT_CODER_PROMPT =
+  'You are the DAFE OakScript Coder, an expert at the OakScript indicator language. ' +
+  'OakScript is NOT PineScript — never use: ta./math./str. namespaces (functions are bare: rsi(), sma(), abs()); ' +
+  'input.int/input.float (use input(default, "Title", min?, max?, step?)); named arguments (ALL arguments are positional); ' +
+  'indicator()/study()/strategy() declarations (scripts start directly with code); shape.*/location.*/plot.style_* constants; ' +
+  'color.red-style constants (colors are quoted hex strings like "#22cc88"); request.security/nz()/na() do not exist. ' +
+  'ALWAYS structure every script in this exact order: ' +
+  '(1) input() declarations. ' +
+  '(2) Indicator calculations — plain assignments (NO var keyword), recomputed every bar: fastMa = ema(close, 9). Every variable must be assigned BEFORE the line that uses it; an undefined name silently reads as 0/false with NO error. ' +
+  '(3) Persistent state ONLY: var x = 0.0 with a LITERAL initial value, updated inside logic with :=. CRITICAL: a var initializer runs ONCE on bar 0 and the value persists — `var lvl = highest(high, 20)` FREEZES at the first bar forever. NEVER put calculations, conditions, or series expressions in a var initializer. ' +
+  '(4) Signal conditions as plain booleans: buySig = crossover(fastMa, slowMa) and r < 70. ' +
+  '(5) Signal markers INSIDE conditionals: if buySig { plotshape(bar_index, low, "Buy", "triangleup", "#22cc88") } / if sellSig { plotshape(bar_index, high, "Sell", "triangledown", "#ff4477") } — signature plotshape(bar_index, price, title, style, color, pane?), buy markers at low, sell markers at high. ' +
+  '(6) Unconditional rendering LAST at top level: plot()/hline()/fill()/plot3d() must NEVER be inside if-blocks or they render nothing (bgcolor is the exception — it may be conditional). ' +
+  'DYNAMIC price levels (fibs, pivots, moving S/R) = plot(level, "Title", "#hex", 1, "stepline") so the line follows the level; hline() is ONLY for constants that never change (RSI 70/30) — an hline whose value changes leaves a new permanent line each time. ' +
+  'Previous-bar access works via history indexing: close[1], myVar[1]; change(x) = x - x[1]. ' +
+  'Output COMPLETE oakscript code inside ```oakscript fences — every line, start to finish, never partial or truncated. ' +
+  'When EDITING an existing script, preserve ALL its logic, calculations, variables, loops, and signals; only add or modify what was asked. NEVER simplify, summarize, remove, or rename existing logic. ' +
+  'Block syntax: use { } braces around multi-statement bodies under if/else/for/while (single statements may follow without braces) — braces have no indentation requirement and can\'t misparse. Prefer braces for anything beyond a single-line body. ' +
+  '== not =. Strings quoted: "#22cc88" not green. MACD: m.macd/m.signal/m.hist. Use input() for params. ' +
+  'The engine has a full 3D renderer: plot3d(series, name, style, color, pane) with styles surface/ribbon/scatter/bars3d/wireframe/mesh/line3d/helix/vortex/manifold/nebula/constellation/torus/trail. ' +
+  'pane="3d" is the flagship mode: an exclusive full-chart takeover where the geometry renders unified WITH the 3D price bars — while active, NO 2D plots or separate-pane 3D render from any indicator, and only one pane="3d" indicator can be active at a time. ' +
+  'pane="separate" renders in the lower 3D pane instead (multiple calls stack together there; also exclusive, one at a time). Default/pane="main" is a lighter legacy overlay mode — prefer pane="3d" or pane="separate" explicitly. ' +
+  'Give each plot3d call a genuinely DIFFERENT source value — look for other already-computed values in the script (a stdev, a count, a raw vs. smoothed version, a margin) so each 3D layer answers a different question. ' +
+  'Always make indicators visually stunning — combine vivid hex colors with 3D plots alongside the 2D plots and signals. ' +
+  'Before finishing, double-check every variable name against its actual input()/declaration — a typo silently reads as 0/false with no error. ' +
+  'Your goal: the best, most visually impressive version of the user\'s idea.';
+
 // Minimal inline reference — fallback if doc search fails.
 // The agent should call /api/oak/search for detailed docs.
-const OAKSCRIPT_FALLBACK_REF = `OakScript: use { } braces for multi-statement if/else/for/while blocks — no indentation requirement, can't misparse (brace-less indentation blocks also work but every statement must share the exact same column or it silently falls outside the block, which for a while loop can strand the counter update and freeze the page). == not =. Strings quoted. MACD: m.macd/m.signal/m.hist. Fns: sma,ema,macd,rsi,cci,adx,atr,roc,vwap,stdev,crossover,crossunder,highest,lowest,barssince,cum,change,linreg,correlation,trueRange. Math: abs,min,max,floor,ceil,round,sqrt,log,exp,sin,cos,tan. Input: input(14,"Title"). 2D: plot(val,title,color,lw,style?,pane?). plotshape(bar,price,title,style,color,pane). hline,fill,bgcolor. 3D: plot3d(series,name,style,color,pane) styles: surface,ribbon,scatter,bars3d,wireframe,mesh,line3d,helix,vortex,manifold,nebula,constellation,torus,trail. pane="3d" = exclusive full-chart takeover unified with the 3D bars (only one active at a time, no 2D/separate content renders alongside it); pane="separate" = lower 3D pane (also exclusive, one at a time); give each plot3d call a genuinely different source value, not the same number under multiple style names. Pitfalls: a misspelled/undefined variable silently reads as 0/false with no error — double-check names against input() declarations. Use /api/oak/search?q=<query> for details.`;
+const OAKSCRIPT_FALLBACK_REF = `OakScript: use { } braces for multi-statement if/else/for/while blocks — no indentation requirement, can't misparse (brace-less indentation blocks also work but every statement must share the exact same column or it silently falls outside the block, which for a while loop can strand the counter update and freeze the page). == not =. Strings quoted. MACD: m.macd/m.signal/m.hist. Fns: sma,ema,wma,hma,rma,vwma,macd,rsi,cci,adx,atr,roc,mom,stoch,mfi,obv,cmf,vwap,stdev,median,crossover,crossunder,highest,lowest,pivothigh,pivotlow,barssince,cum,change,linreg,correlation,trueRange. Math: abs,min,max,floor,ceil,round,sqrt,log,log10,exp,pow,sign,avg,sin,cos,tan. Colors: color.new,color.rgb,color.from_gradient. Input: input(14,"Title"). 2D: plot(val,title,color,lw,style?,pane?). plotshape(bar,price,title,style,color,pane). hline,fill,bgcolor. 3D: plot3d(series,name,style,color,pane) styles: surface,ribbon,scatter,bars3d,wireframe,mesh,line3d,helix,vortex,manifold,nebula,constellation,torus,trail. pane="3d" = exclusive full-chart takeover unified with the 3D bars (only one active at a time, no 2D/separate content renders alongside it); pane="separate" = lower 3D pane (also exclusive, one at a time); give each plot3d call a genuinely different source value, not the same number under multiple style names. Pitfalls: a misspelled/undefined variable silently reads as 0/false with no error — double-check names against input() declarations. Use /api/oak/search?q=<query> for details.`;
 
 export interface AgentConfig {
   baseUrl: string;
@@ -105,8 +137,11 @@ export class TradeAdvisorAgent {
     // (500 bars of OHLC). Feeding it the chart state ballooned the prompt to
     // ~29k tokens, forcing truncation that cut off the generated code mid-fence
     // (the "buttons do nothing" symptom). Keep its context lean.
-    let systemPrompt = this.buildSystemPrompt(isCoder ? undefined : chartSnapshot,
-                                              isCoder ? undefined : searchResults);
+    // It also gets its OWN persona: reusing the advisor's system prompt told
+    // the model it was a trading analyst, not a code generator.
+    let systemPrompt = isCoder
+      ? OAKSCRIPT_CODER_PROMPT
+      : this.buildSystemPrompt(chartSnapshot, searchResults);
     if (isOakScriptRequest) {
       // The coder needs to be a genuine "resource master" of the language for
       // one-shot generation/edits — 2200 chars was only enough for a few
@@ -567,7 +602,11 @@ Output the FINAL corrected code inside \`\`\`oakscript fences. Before the code, 
           onIteration?.(iterations, [], currentCode);
           return { valid: true, finalCode: currentCode, iterations };
         }
-        issues = result.issues.map(is => is.message);
+        // Include the line number and the targeted fix, not just the message —
+        // the fix text is what lets the model correct Pine idioms / undefined
+        // vars in ONE iteration instead of guessing.
+        issues = result.issues.map(is =>
+          `L${is.line} [${is.code}] ${is.message}${is.fix ? ` FIX: ${is.fix}` : ''}`);
       } catch {
         // If validator itself fails, try parse directly
         try {

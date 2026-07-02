@@ -50,6 +50,17 @@ export function initWidgetMenu(toggleId: string, menuId: string): void {
     const open = menu.style.display !== 'none';
     if (open) { menu.style.display = 'none'; return; }
     render();
+    // Open up or down depending on where the draggable toolbar sits, so a
+    // top-pinned toolbar doesn't push this menu off the top of the screen.
+    const toolbar = document.getElementById('toolbar');
+    const openDown = toolbar ? toolbar.getBoundingClientRect().top < window.innerHeight / 2 : false;
+    if (openDown) {
+      menu.style.top = '100%'; menu.style.bottom = 'auto';
+      menu.style.marginTop = '2px'; menu.style.marginBottom = '0';
+    } else {
+      menu.style.bottom = '100%'; menu.style.top = 'auto';
+      menu.style.marginBottom = '2px'; menu.style.marginTop = '0';
+    }
     menu.style.display = 'block';
   });
   document.addEventListener('click', (e) => {

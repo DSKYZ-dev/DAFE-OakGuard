@@ -112,6 +112,113 @@ function extrudedBox(
   ctx.stroke();
 }
 
+// ─── 3D line / area series ──────────────────────────────────────────
+// Renders the close-price curve as a projected ribbon in the iso scene so the
+// Line and Area chart types read as a continuous line (with an optional filled
+// skirt for Area), not a row of bars.
+function draw3DLineSeries(
+  ctx: CanvasRenderingContext2D,
+  visible: { close: number }[],
+  vLen: number,
+  p2y: (p: number) => number,
+  view: ViewState,
+  bs: number,
+  width: number,
+  height: number,
+  fill: boolean,
+): void {
+  const lineCol = '#38d0ff';
+  // Centre the curve on each bar's front-face column.
+  const bw = Math.max(1.2, bs * 0.72);
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 0; i < vLen; i++) {
+    const cx = barX(i, vLen, width, bs, view.scrollX) + bw / 2;
+    const p = project(cx, p2y(visible[i].close), 0);
+    pts.push({ x: p.x, y: p.y });
+  }
+  if (pts.length === 0) return;
+
+  ctx.save();
+  if (fill) {
+    // Skirt down to the floor of the price area, following the projected base.
+    const floorY = height * BOT_FRAC;
+    const baseL = project(barX(0, vLen, width, bs, view.scrollX) + bw / 2, floorY, 0);
+    const baseR = project(barX(vLen - 1, vLen, width, bs, view.scrollX) + bw / 2, floorY, 0);
+    const grad = ctx.createLinearGradient(0, pts[0].y, 0, baseL.y);
+    grad.addColorStop(0, withAlpha(lineCol, 0.32));
+    grad.addColorStop(1, withAlpha(lineCol, 0.02));
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(baseL.x, baseL.y);
+    for (const pt of pts) ctx.lineTo(pt.x, pt.y);
+    ctx.lineTo(baseR.x, baseR.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.shadowBlur = 12;
+  ctx.shadowColor = withAlpha(lineCol, 0.6);
+  ctx.strokeStyle = lineCol;
+  ctx.lineWidth = 2.4;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+  ctx.stroke();
+  // Node dots for readability
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = lineCol;
+  const step = pts.length > 120 ? 4 : 1;
+  for (let i = 0; i < pts.length; i += step) {
+    ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// Kagi is a reversal chart — a continuous stepped line whose thickness/colour
+// flips at yin/yang turns — not a row of bars. Map its (few) reversal points
+// across the full visible width so it reads as a clean zigzag instead of a
+// cluster of candles jammed at the newest edge.
+function draw3DKagiSeries(
+  ctx: CanvasRenderingContext2D,
+  visible: { open: number; close: number }[],
+  vLen: number,
+  p2y: (p: number) => number,
+  _view: ViewState,
+  width: number,
+): void {
+  if (vLen < 2) return;
+  // Kagi has few reversal points — spread them evenly across the full plot
+  // width (rather than by bar spacing, which would jam them at the newest
+  // edge) so the zigzag reads across the whole chart.
+  const left = 12;
+  const rightEdge = chartRight(width);
+  const span = Math.max(1, rightEdge - left);
+  const xs: number[] = [];
+  for (let i = 0; i < vLen; i++) xs.push(left + (i / (vLen - 1)) * span);
+  const up = '#1affa0', dn = '#ff3b6b';
+
+  ctx.save();
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  for (let i = 1; i < vLen; i++) {
+    const rising = visible[i].close >= visible[i].open;
+    const col = rising ? up : dn;
+    const yPrev = p2y(visible[i - 1].close);
+    const yCur = p2y(visible[i].close);
+    const a = project(xs[i - 1], yPrev, 0);
+    const b = project(xs[i], yPrev, 0);   // horizontal leg at prior level
+    const c = project(xs[i], yCur, 0);    // vertical leg to new level
+    ctx.strokeStyle = col;
+    ctx.lineWidth = rising ? 3.4 : 1.8;   // yang (up) thicker than yin (down)
+    ctx.shadowBlur = 8;
+    ctx.shadowColor = withAlpha(col, 0.5);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.lineTo(c.x, c.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 // ─── Graph-paper background (3D "graph" mode) ───────────────────────
 // Static (never self-animates) and anchored to the chart's view transform, so
 // it pans and scales WITH the chart under any zoom/pan/stretch/compress and
@@ -629,6 +736,14 @@ export function draw3DScene(
   const p2y = (p: number) => priceToY(p, minP, pRange, height, view);
   const depth = BAR_DEPTH * bs;
 
+  // Line / area chart types are a continuous curve, not per-bar solids — draw
+  // them as a projected 3D ribbon instead of candles (they were previously
+  // falling through to the candle loop, so "Line" looked identical to bars).
+  if (opts.barType === 'line' || opts.barType === 'area') {
+    draw3DLineSeries(ctx, visible, vLen, p2y, view, bs, width, height, opts.barType === 'area');
+  } else if (opts.barType === 'kagi') {
+    draw3DKagiSeries(ctx, visible, vLen, p2y, view, width);
+  } else {
   // ── Candles: paint right-to-left so left bars (front) occlude right bars' tails ──
   ctx.save();
   for (let i = vLen - 1; i >= 0; i--) {
@@ -652,7 +767,9 @@ export function draw3DScene(
     ctx.shadowBlur = 14;
     ctx.shadowColor = withAlpha(color, 0.45 * depthFade);
 
-    // Wick: bold extruded line from low to high
+    // Wick: bold extruded line from low to high. Renko/range/volume/dollar/
+    // tick/imbalance bars carry no meaningful wick (open==high or ==low after
+    // transform), so this naturally renders as a clean brick for them.
     const wFront = project(x, highY, 0);
     const wBack = project(x, lowY, 0);
     ctx.strokeStyle = withAlpha(color, 0.95 * depthFade);
@@ -688,9 +805,13 @@ export function draw3DScene(
     ctx.lineTo(ftR.x, ftR.y); ctx.lineTo(fbR.x, fbR.y); ctx.closePath(); ctx.fill();
   }
   ctx.restore();
+  }
 
-  // Volume profile renders ON TOP of candles so the extruded boxes cover the candle bodies.
-  if (opts.volumeEnabled && (opts.volumeMode === '3D-Extrude' || opts.volumeMode === '3D-Heatmap')) {
+  // Volume profile renders ON TOP of candles so the extruded boxes cover the
+  // candle bodies. Skip it entirely for line/area — the per-bar VPI voxels
+  // would bury the curve and make Line look identical to the bar types.
+  const isCurve = opts.barType === 'line' || opts.barType === 'area' || opts.barType === 'kagi';
+  if (!isCurve && opts.volumeEnabled && (opts.volumeMode === '3D-Extrude' || opts.volumeMode === '3D-Heatmap')) {
     draw3DVolume(ctx, visible, start, vLen, minP, pRange, view, opts.perBarVols, opts.vpiEnabled, opts.volumeMode, opts.visualEngine, opts.profileWidth ?? 50, opts.vpComputed);
   }
 

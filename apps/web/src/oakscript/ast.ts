@@ -1,6 +1,6 @@
 export type ASTNode =
   | Program | VarDecl | Assignment | IfStatement | ForStatement | WhileStatement
-  | BreakStmt | ContinueStmt | ReturnStmt | ExpressionStmt
+  | BreakStmt | ContinueStmt | ReturnStmt | ExpressionStmt | FunctionDecl
   | BinaryExpr | UnaryExpr | TernaryExpr | CallExpr | IndexExpr | MemberExpr
   | Identifier | NumberLiteral | StringLiteral | BooleanLiteral | ArrayLiteral | NilLiteral;
 
@@ -14,6 +14,10 @@ export interface BreakStmt { type: 'Break'; }
 export interface ContinueStmt { type: 'Continue'; }
 export interface ReturnStmt { type: 'Return'; value: ASTNode | null; }
 export interface ExpressionStmt { type: 'ExpressionStmt'; expression: ASTNode; }
+// User-defined function: f(a, b) => expr  |  f(a, b) => { stmts; return v }
+// (Pine-style arrow functions. body is a statement list; a single-expression
+// body is stored as one ReturnStmt.)
+export interface FunctionDecl { type: 'FunctionDecl'; name: string; params: string[]; body: ASTNode[]; }
 
 export interface BinaryExpr { type: 'BinaryExpr'; left: ASTNode; op: string; right: ASTNode; }
 export interface UnaryExpr { type: 'UnaryExpr'; op: string; argument: ASTNode; }

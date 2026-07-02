@@ -33,6 +33,23 @@ export function setRunningContext(ctx: number): void {
   if (ctx > 0) RUNNING_CTX = ctx;
 }
 
+// Ollama models (local daemon tags AND cloud tags) do NOT run inside the
+// local llama.cpp process, so RUNNING_CTX is the wrong limit for them — a
+// 256k-context cloud model was being budgeted (and its prompts truncated)
+// as if it had the local model's context. The UI feeds each Ollama model's
+// real context_length (from /api/ollama/models) in here.
+const CTX_OVERRIDES = new Map<string, number>();
+
+export function setModelContextOverride(modelName: string, ctx: number): void {
+  if (modelName && ctx > 0) CTX_OVERRIDES.set(modelName.toLowerCase(), ctx);
+}
+
+/** Ollama cloud tags follow the "*-cloud" / "*:cloud" naming convention. */
+export function isCloudModelTag(name: string): boolean {
+  const n = (name || '').toLowerCase();
+  return n.endsWith('-cloud') || n.includes(':cloud');
+}
+
 // The context size only changes on a model switch, so polling /api/model/status
 // on every profile lookup wastes requests (the backend log showed hundreds of
 // rapid status calls). Throttle to once per CTX_TTL and de-dupe concurrent calls.
@@ -64,6 +81,14 @@ export function invalidateModelCtx(): void { _lastCtxFetch = 0; }
 
 function buildProfile(modelName: string, ctx: number): ModelProfile {
   const key = modelName.toLowerCase();
+  const override = CTX_OVERRIDES.get(key);
+  if (override) {
+    ctx = override;
+  } else if (ctx <= 0 && isCloudModelTag(key)) {
+    // Cloud tag with no reported context yet — these are all big-context
+    // models; a generous default beats squeezing it to the local model's ctx.
+    ctx = 131072;
+  }
   return {
     name: modelName,
     ctxLimit: ctx > 0 ? ctx : (RUNNING_CTX > 0 ? RUNNING_CTX : FALLBACK_PROFILE.ctxLimit),
@@ -87,6 +112,15 @@ async function resolveProfileAsync(modelName: string): Promise<ModelProfile> {
 function resolveProfile(modelName: string): ModelProfile {
   const key = modelName.toLowerCase();
   const cached = CACHED_PROFILES.get(key);
+  // Ollama models carry their own context — RUNNING_CTX (the local llama.cpp
+  // process) is irrelevant to them, so resolve entirely from the override.
+  const override = CTX_OVERRIDES.get(key);
+  if (override || isCloudModelTag(key)) {
+    if (cached && (!override || cached.ctxLimit === override)) return cached;
+    const profile = buildProfile(modelName, override || 0);
+    CACHED_PROFILES.set(key, profile);
+    return profile;
+  }
   // Always use the freshest RUNNING_CTX — if it changed, rebuild.
   if (cached && RUNNING_CTX > 0 && cached.ctxLimit === RUNNING_CTX) return cached;
   if (cached && RUNNING_CTX === 0) return cached;  // no better info available

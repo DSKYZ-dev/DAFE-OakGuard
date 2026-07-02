@@ -99,8 +99,14 @@ SECTIONS: list[dict] = [
             "plot(value, title, color, linewidth, style?, pane?)\n"
             "Styles: \"line\", \"stepline\", \"area\", \"histogram\", \"columns\", \"circles\", \"cross\".\n"
             "Conditional color: color = close > open ? \"#22cc88\" : \"#ff4477\"\n"
-            "Color helpers: color.new(base, transp), color.rgb(r, g, b, transp?)\n"
-            "hline(value, color, pane?) — dashed horizontal reference\n"
+            "Color helpers: color.new(base, transp), color.rgb(r, g, b, transp?), "
+            "color.from_gradient(value, bottomValue, topValue, bottomColor, topColor) "
+            "— heatmap/gradient coloring\n"
+            "hline(value, color, pane?) — dashed horizontal reference. CONSTANTS ONLY "
+            "(e.g. RSI 70/30): each distinct value creates a permanent line (deduped, "
+            "capped at 24/pane, oldest dropped). DYNAMIC levels (fibs, pivots, moving "
+            "S/R) must use plot(level, \"Title\", \"#hex\", 1, \"stepline\") instead — "
+            "the stepline follows the level as it changes.\n"
             "fill(top, bottom, color) — translucent band between two plots\n"
             "bgcolor(color) — background tint per bar"
         ),
@@ -147,21 +153,29 @@ SECTIONS: list[dict] = [
         "content": (
             "sma(source, length) — Simple Moving Average\n"
             "ema(source, length) — Exponential Moving Average\n"
+            "wma(source, length) — Weighted MA; hma(source, length) — Hull MA; "
+            "rma(source, length) — Wilder's smoothing; vwma(source, length) — Volume-weighted MA\n"
             "macd(source, fast, slow, signal) — returns {.macd, .signal, .hist}\n"
             "    Usage: m = macd(close, 12, 26, 9); plot(m.macd, \"MACD\", \"#22aaff\", 2)\n"
             "linreg(source, length, offset) — Linear regression"
         ),
-        "keywords": ["sma", "ema", "macd", "linreg", "moving average", "ma", "signal", "histogram"],
+        "keywords": ["sma", "ema", "wma", "hma", "rma", "vwma", "hull", "wilder",
+                     "macd", "linreg", "moving average", "ma", "signal", "histogram"],
     },
     {
         "title": "Standard Library — Oscillators",
         "content": (
             "rsi(source, length) — RSI 0-100, Wilder's smoothing\n"
             "cci(high, low, close, length) — Commodity Channel Index\n"
+            "stoch(high, low, close, length) — Stochastic %K 0-100 "
+            "(smooth with sma(k, 3) for %D)\n"
             "roc(source, length) — Rate of Change %\n"
-            "stdev(source, length) — Standard Deviation"
+            "mom(source, length) — Momentum: source - source[length]\n"
+            "stdev(source, length) — Standard Deviation\n"
+            "median(source, length) — Rolling median"
         ),
-        "keywords": ["rsi", "cci", "roc", "stdev", "oscillator", "momentum", "overbought", "oversold"],
+        "keywords": ["rsi", "cci", "stoch", "stochastic", "roc", "mom", "momentum",
+                     "stdev", "median", "oscillator", "overbought", "oversold"],
     },
     {
         "title": "Standard Library — Volume & Volatility",
@@ -169,9 +183,14 @@ SECTIONS: list[dict] = [
             "vwap(close, volume) — Volume Weighted Average Price\n"
             "atr(high, low, close, length) — Average True Range\n"
             "trueRange(high, low, close) — Raw True Range\n"
-            "adx(high, low, close, length) — Average Directional Index 0-100"
+            "adx(high, low, close, length) — Average Directional Index 0-100\n"
+            "mfi(high, low, close, volume, length) — Money Flow Index 0-100\n"
+            "obv(close, volume) — On-Balance Volume (cumulative)\n"
+            "cmf(high, low, close, volume, length) — Chaikin Money Flow -1..1"
         ),
-        "keywords": ["vwap", "atr", "trueRange", "adx", "volume", "volatility", "average true range"],
+        "keywords": ["vwap", "atr", "trueRange", "adx", "mfi", "obv", "cmf",
+                     "money flow", "on balance", "chaikin", "volume", "volatility",
+                     "average true range"],
     },
     {
         "title": "Standard Library — Signal Detection",
@@ -181,23 +200,29 @@ SECTIONS: list[dict] = [
             "barssince(condition) — bars since condition last true\n"
             "highest(source, length) — highest value over window\n"
             "lowest(source, length) — lowest value over window\n"
+            "pivothigh(source, leftBars, rightBars) — pivot-high PRICE on the bar "
+            "where it confirms (rightBars later), NaN otherwise. Test with ph > 0.\n"
+            "pivotlow(source, leftBars, rightBars) — same for pivot lows.\n"
             "cum(source) — cumulative sum from bar 0\n"
             "change(source) — source - source[1]\n"
             "correlation(a, b, length) — Pearson correlation"
         ),
         "keywords": [
             "crossover", "crossunder", "barssince", "highest", "lowest",
+            "pivothigh", "pivotlow", "pivot", "swing", "fractal",
             "cum", "change", "correlation", "signal", "detect", "condition",
         ],
     },
     {
         "title": "Math & String Utilities",
         "content": (
-            "Math: abs, min, max, floor, ceil, round, sqrt, log, exp, sin, cos, tan\n"
+            "Math: abs, min, max, floor, ceil, round, sqrt, log, log10, exp, "
+            "pow(base, exp), sign, avg(a, b, ...), sin, cos, tan\n"
             "Conversion: tostring(x), tonumber(x)\n"
             "Format: str.format(\"Price: {}\", close), \"Value: \" + tostring(close)"
         ),
-        "keywords": ["math", "abs", "sqrt", "sin", "cos", "tan", "tostring", "tonumber", "format"],
+        "keywords": ["math", "abs", "sqrt", "pow", "sign", "log10", "avg",
+                     "sin", "cos", "tan", "tostring", "tonumber", "format"],
     },
     {
         "title": "Execution Model (Bar-by-Bar)",
@@ -261,7 +286,21 @@ SECTIONS: list[dict] = [
             "(main) and ONE pane=\"separate\" 3D indicator can be active at a time; "
             "adding a second of either kind automatically replaces the first one in "
             "that slot.\n"
-            "14. plot3d's source expression must be evaluated on EVERY bar (not only "
+            "14. Fib/pivot/S-R lines multiplying and burying the chart → the script "
+            "used hline() for DYNAMIC levels. hline is for constants only; every "
+            "distinct value becomes a permanent line (engine dedupes and caps at 24 "
+            "per pane, dropping oldest). Use plot(level, \"Title\", \"#hex\", 1, "
+            "\"stepline\") — one line per level that steps to each new value, old "
+            "positions clean up automatically.\n"
+            "15. Indicator 'runs' but every value is stuck/never updates → per-bar "
+            "calculations were declared with var. A var initializer executes ONCE "
+            "(bar 0) and the value persists — `var lvl = highest(high, 20)` is "
+            "frozen forever. var is ONLY for accumulator state with a literal "
+            "initial value; write calculations as plain assignments.\n"
+            "16. Signals repaint / look perfect in history but fail live → negative "
+            "history index (high[-1]) read a future bar. The engine clamps these "
+            "to the current bar; use [1]/[2] and confirm pivots 1-2 bars late.\n"
+            "17. plot3d's source expression must be evaluated on EVERY bar (not only "
             "inside a conditional that skips bars) for its historical series to "
             "reconstruct correctly — plot3d itself only fires once, on the final "
             "bar, but it needs the full per-bar history of its source expression to "
@@ -269,6 +308,104 @@ SECTIONS: list[dict] = [
         ),
         "keywords": ["pitfall", "troubleshoot", "error", "bug", "fix", "common mistake", "gotcha",
                      "performance", "slow", "undefined variable", "sparse scan"],
+    },
+    {
+        "title": "User-Defined Functions",
+        "content": (
+            "Pine-style arrow functions:\n"
+            "    norm(x, lo, hi) => (x - lo) / max(hi - lo, 0.0001) * 100\n"
+            "    score(r, a) => {\n"
+            "        base = r > 70 ? -1 : r < 30 ? 1 : 0\n"
+            "        return base * (a > 25 ? 2 : 1)\n"
+            "    }\n"
+            "Single-expression body after =>, or a { } block whose value is the "
+            "explicit return (or the last expression). Declare functions near the "
+            "top, BEFORE first use. Params are positional and shadow globals only "
+            "for the call — do NOT name params after builtins (close, high, plot). "
+            "Builtins cannot be overridden. Results are per-bar values: they can be "
+            "history-indexed (mySpread(a,b) then sp[1]) and fed to builtins "
+            "(sma(spread, 10)). Max call depth 64 — no deep recursion."
+        ),
+        "keywords": ["function", "functions", "define", "def", "reusable", "helper",
+                     "arrow", "custom function", "method", "modular"],
+    },
+    {
+        "title": "Anchoring — Swings, Sessions, Days, Custom Events",
+        "content": (
+            "Anchoring = computing FROM a reference point. The universal pattern:\n"
+            "1. DETECT the anchor bar (a condition true on exactly that bar):\n"
+            "   newDay = floor(time / 86400000) != floor(time[1] / 86400000)  "
+            "(time is unix MILLISECONDS)\n"
+            "   ph = pivothigh(high, 10, 10)  — swing anchor confirms when ph > 0\n"
+            "   evt = crossover(ema(close, 9), ema(close, 21))  — custom event anchor\n"
+            "2. STORE anchor values in var state (literal init, updated with :=):\n"
+            "   var anchorHi = 0.0\n"
+            "   if ph > 0 { anchorHi := ph }\n"
+            "   var dayOpen = 0.0\n"
+            "   if newDay or bar_index == 0 { dayOpen := open }\n"
+            "3. RESET accumulators AT the anchor (anchored VWAP pattern):\n"
+            "   var cumPV = 0.0\n"
+            "   var cumV = 0.0\n"
+            "   if newDay { cumPV := 0.0; cumV := 0.0 }\n"
+            "   cumPV := cumPV + close * volume\n"
+            "   cumV := cumV + volume\n"
+            "   avwap = cumV > 0 ? cumPV / cumV : close\n"
+            "4. DERIVE levels from anchors, render with steplines:\n"
+            "   rng = anchorHi - anchorLo\n"
+            "   fib618 = anchorLo + rng * 0.618\n"
+            "   plot(fib618, \"Fib 61.8\", \"#ff33cc\", 1, \"stepline\")\n"
+            "5. Bars since anchor: barssince(newDay). Highest since anchor: "
+            "var hiSince = 0.0; if newDay { hiSince := high }; "
+            "if high > hiSince { hiSince := high }"
+        ),
+        "keywords": ["anchor", "anchored", "anchoring", "session", "day", "open",
+                     "week", "vwap", "avwap", "reference", "reset", "swing anchor",
+                     "day open", "session open", "from swing", "fib anchor"],
+    },
+    {
+        "title": "Script Structure — Canonical Order",
+        "content": (
+            "Every OakScript indicator follows this exact top-to-bottom order "
+            "(the script executes top-to-bottom once per bar, so sequence matters):\n"
+            "1. input() declarations — all tunable parameters first.\n"
+            "2. Indicator calculations — every variable assigned BEFORE the line "
+            "that uses it. An undefined name silently reads as 0/false, NO error.\n"
+            "3. Persistent state — var x = 0.0 (survives across bars), updated with :=.\n"
+            "4. Signal conditions as plain booleans:\n"
+            "    buySig = crossover(fastMa, slowMa) and r < 70\n"
+            "    sellSig = crossunder(fastMa, slowMa) or r > 80\n"
+            "5. Signal markers INSIDE if-blocks (buy at low, sell at high):\n"
+            "    if buySig { plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\") }\n"
+            "    if sellSig { plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\") }\n"
+            "6. Unconditional rendering LAST at top level — plot()/hline()/fill()/plot3d() "
+            "must NEVER be inside if-blocks or they render nothing "
+            "(bgcolor is the exception: it may be conditional)."
+        ),
+        "keywords": ["structure", "order", "sequence", "skeleton", "template",
+                     "generate", "create", "build", "write", "script", "signal",
+                     "buy", "sell", "entry", "exit", "trade", "strategy"],
+    },
+    {
+        "title": "OakScript vs PineScript — Critical Differences",
+        "content": (
+            "OakScript is PineScript-INSPIRED but different. NEVER write:\n"
+            "- ta.rsi(...) / math.max(...) / str.tostring(...) → functions are BARE: "
+            "rsi(), max(), tostring()\n"
+            "- input.int/input.float/input.bool → single input(default, \"Title\", min?, max?, step?)\n"
+            "- indicator(\"...\")/study(...)/strategy(...) declarations → scripts start "
+            "directly with code, delete these lines\n"
+            "- named arguments plot(x, color=..., linewidth=2) → ALL arguments positional: "
+            "plot(x, \"Title\", \"#22cc88\", 2)\n"
+            "- shape.triangleup / location.belowbar / size.small → plotshape takes a QUOTED "
+            "style string and an explicit price: plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n"
+            "- color.red / color.green constants → quoted hex strings \"#ff4477\" / \"#22cc88\"\n"
+            "- nz(x) / na(x) / request.security / strategy.entry → do not exist. "
+            "Missing values read as 0; emit trade signals with plotshape inside if-blocks.\n"
+            "History indexing DOES work like Pine: close[1], myVar[1]."
+        ),
+        "keywords": ["pinescript", "pine", "ta", "difference", "namespace", "named",
+                     "argument", "shape", "location", "study", "strategy", "convert",
+                     "port", "translate", "migrate"],
     },
     {
         "title": "Example: RSI Divergence Detector",
@@ -340,6 +477,23 @@ FUNCTIONS: list[dict] = [
     {"name": "atr", "signature": "atr(high, low, close, length)", "desc": "Average True Range", "category": "volume_volatility"},
     {"name": "trueRange", "signature": "trueRange(high, low, close)", "desc": "Raw True Range array", "category": "volume_volatility"},
     {"name": "adx", "signature": "adx(high, low, close, length)", "desc": "Average Directional Index 0-100", "category": "volume_volatility"},
+    {"name": "wma", "signature": "wma(source, length)", "desc": "Weighted Moving Average", "category": "moving_average"},
+    {"name": "hma", "signature": "hma(source, length)", "desc": "Hull Moving Average (fast + smooth)", "category": "moving_average"},
+    {"name": "rma", "signature": "rma(source, length)", "desc": "Wilder's smoothed MA (RSI-style)", "category": "moving_average"},
+    {"name": "vwma", "signature": "vwma(source, length)", "desc": "Volume-Weighted Moving Average", "category": "moving_average"},
+    {"name": "mom", "signature": "mom(source, length)", "desc": "Momentum: source - source[length]", "category": "oscillator"},
+    {"name": "median", "signature": "median(source, length)", "desc": "Rolling median over window", "category": "oscillator"},
+    {"name": "stoch", "signature": "stoch(high, low, close, length)", "desc": "Stochastic %K 0-100", "category": "oscillator"},
+    {"name": "mfi", "signature": "mfi(high, low, close, volume, length)", "desc": "Money Flow Index 0-100", "category": "volume_volatility"},
+    {"name": "obv", "signature": "obv(close, volume)", "desc": "On-Balance Volume (cumulative)", "category": "volume_volatility"},
+    {"name": "cmf", "signature": "cmf(high, low, close, volume, length)", "desc": "Chaikin Money Flow -1..1", "category": "volume_volatility"},
+    {"name": "pivothigh", "signature": "pivothigh(source, leftBars, rightBars)", "desc": "Pivot high price on its confirmation bar, NaN otherwise — test with ph > 0", "category": "signal"},
+    {"name": "pivotlow", "signature": "pivotlow(source, leftBars, rightBars)", "desc": "Pivot low price on its confirmation bar, NaN otherwise — test with pl > 0", "category": "signal"},
+    {"name": "color.from_gradient", "signature": "color.from_gradient(value, bottomValue, topValue, bottomColor, topColor)", "desc": "Interpolated color as value moves bottom->top (heatmaps)", "category": "color"},
+    {"name": "pow", "signature": "pow(base, exponent)", "desc": "Power", "category": "math_string"},
+    {"name": "sign", "signature": "sign(x)", "desc": "-1, 0, or 1", "category": "math_string"},
+    {"name": "log10", "signature": "log10(x)", "desc": "Base-10 logarithm", "category": "math_string"},
+    {"name": "avg", "signature": "avg(a, b, ...)", "desc": "Average of the arguments", "category": "math_string"},
     {"name": "crossover", "signature": "crossover(a, b)", "desc": "True when a crosses above b", "category": "signal"},
     {"name": "crossunder", "signature": "crossunder(a, b)", "desc": "True when a crosses below b", "category": "signal"},
     {"name": "barssince", "signature": "barssince(condition)", "desc": "Bars since condition was true", "category": "signal"},
@@ -380,6 +534,81 @@ FUNCTIONS: list[dict] = [
 
 # ─── Inline full examples ──────────────────────────────────────────
 EXAMPLES: list[dict] = [
+    {
+        "name": "Trade Signal Skeleton (MA Cross + RSI Filter)",
+        # The canonical shape of a signal-emitting indicator — inputs, calcs,
+        # boolean conditions, conditional markers, unconditional plots last.
+        "code": (
+            'fastLen = input(9, "Fast MA")\n'
+            'slowLen = input(21, "Slow MA")\n'
+            'rsiLen = input(14, "RSI Length")\n'
+            'rsiMax = input(70, "Max RSI for Buys")\n'
+            'rsiMin = input(30, "Min RSI for Sells")\n\n'
+            "fastMa = ema(close, fastLen)\n"
+            "slowMa = ema(close, slowLen)\n"
+            "r = rsi(close, rsiLen)\n\n"
+            "buySig = crossover(fastMa, slowMa) and r < rsiMax\n"
+            "sellSig = crossunder(fastMa, slowMa) and r > rsiMin\n\n"
+            "if buySig {\n"
+            '    plotshape(bar_index, low, "Buy", "triangleup", "#22cc88")\n'
+            "}\n"
+            "if sellSig {\n"
+            '    plotshape(bar_index, high, "Sell", "triangledown", "#ff4477")\n'
+            "}\n\n"
+            'plot(fastMa, "Fast MA", "#22aaff", 2)\n'
+            'plot(slowMa, "Slow MA", "#ffd43b", 2)\n'
+            'plot(r, "RSI", "#b48cff", 2, "separate")\n'
+            'hline(rsiMax, "#ff4477", "separate")\n'
+            'hline(rsiMin, "#22cc88", "separate")\n'
+            'plot3d(fastMa - slowMa, "MA Spread", "ribbon", "#22aaff", "separate")\n'
+            'plot3d(r, "RSI Terrain", "surface", "#b48cff", "separate")'
+        ),
+        "keywords": ["signal", "buy", "sell", "trade", "entry", "exit", "cross",
+                     "ma cross", "strategy", "skeleton", "template", "structure"],
+    },
+    {
+        "name": "Anchored VWAP + Day Open Levels",
+        # The canonical anchoring script: day-boundary detection, anchor-reset
+        # accumulators, derived bands, anchored signals, stepline levels.
+        "code": (
+            'devMult = input(1.5, "Band Multiplier", 0.5, 4.0, 0.5)\n\n'
+            "newDay = floor(time / 86400000) != floor(time[1] / 86400000)\n\n"
+            "var dayOpen = 0.0\n"
+            "if newDay or bar_index == 0 {\n"
+            "    dayOpen := open\n"
+            "}\n\n"
+            "var cumPV = 0.0\n"
+            "var cumV = 0.0\n"
+            "var cumP2V = 0.0\n"
+            "if newDay {\n"
+            "    cumPV := 0.0\n"
+            "    cumV := 0.0\n"
+            "    cumP2V := 0.0\n"
+            "}\n"
+            "cumPV := cumPV + close * volume\n"
+            "cumV := cumV + volume\n"
+            "cumP2V := cumP2V + close * close * volume\n\n"
+            "avwap = cumV > 0 ? cumPV / cumV : close\n"
+            "spread2 = cumV > 0 ? cumP2V / cumV - avwap * avwap : 0\n"
+            "dev = sqrt(max(spread2, 0))\n\n"
+            "buySig = crossover(close, avwap) and close > dayOpen\n"
+            "sellSig = crossunder(close, avwap) and close < dayOpen\n\n"
+            "if buySig {\n"
+            '    plotshape(bar_index, low, "AVWAP Buy", "triangleup", "#22cc88")\n'
+            "}\n"
+            "if sellSig {\n"
+            '    plotshape(bar_index, high, "AVWAP Sell", "triangledown", "#ff4477")\n'
+            "}\n\n"
+            'plot(avwap, "Anchored VWAP", "#22aaff", 2)\n'
+            'plot(avwap + dev * devMult, "Upper Band", "#b48cff", 1)\n'
+            'plot(avwap - dev * devMult, "Lower Band", "#b48cff", 1)\n'
+            'plot(dayOpen, "Day Open", "#ffd43b", 1, "stepline")\n'
+            'plot3d(close - avwap, "VWAP Distance", "ribbon", "#22aaff", "separate")\n'
+            'plot3d(dev, "Volatility", "surface", "#b48cff", "separate")'
+        ),
+        "keywords": ["anchor", "anchored", "vwap", "avwap", "session", "day open",
+                     "bands", "reset", "accumulator"],
+    },
     {
         "name": "RSI Divergence Detector",
         "code": (
@@ -515,6 +744,10 @@ SYNONYMS: dict[str, list[str]] = {
     "alert": ["alertcondition"], "notify": ["alert", "alertcondition"],
     "divergence": ["rsi", "crossover", "crossunder"], "color": ["color.new", "color.rgb"],
     "conditional": ["ternary"], "transparency": ["color.new", "rgba"],
+    "trade": ["signal", "crossover", "crossunder", "plotshape", "buy", "sell"],
+    "strategy": ["signal", "crossover", "crossunder", "plotshape", "structure"],
+    "generate": ["structure", "skeleton"], "create": ["structure", "skeleton"],
+    "pinescript": ["pine", "difference"], "pine": ["pinescript", "difference"],
 }
 
 # Always-on micro-guardrails so the model never forgets the non-negotiables.
@@ -533,7 +766,19 @@ SYNTAX_RULES = (
     "(a count, a stdev, a raw vs. smoothed version) instead of visualizing the same "
     "number under 3 different style names. pane=\"3d\" is an exclusive main-chart "
     "takeover (no 2D or separate-pane 3D renders alongside it) and only one pane=\"3d\" "
-    "plus one pane=\"separate\" 3D indicator can be active at a time."
+    "plus one pane=\"separate\" 3D indicator can be active at a time. "
+    "STRUCTURE (top-to-bottom, once per bar): 1) input() declarations 2) calculations "
+    "(assign every variable before use) 3) var persistent state 4) boolean signal "
+    "conditions 5) plotshape markers INSIDE if-blocks (buy at low/triangleup, sell at "
+    "high/triangledown) 6) unconditional plot/hline/fill/plot3d LAST at top level. "
+    "NOT PineScript: no ta./math. namespaces (bare rsi(), max()), no input.int, no "
+    "named arguments, no indicator()/study() line, no shape.*/location.*/color.red "
+    "constants, no nz()/na(); history indexing close[1]/myVar[1] DOES work. "
+    "var is ONLY for persistent state with a LITERAL initial value (var last = 0.0) "
+    "updated via := — a var initializer runs ONCE on bar 0 and FREEZES, so never "
+    "declare per-bar calculations/conditions with var (plain assignment recomputes "
+    "each bar). Negative history indexes (high[-1]) read the FUTURE and are "
+    "forbidden — use [1]/[2] and confirm swings 1-2 bars late."
 )
 
 

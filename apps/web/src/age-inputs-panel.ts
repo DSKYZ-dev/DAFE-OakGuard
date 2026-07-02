@@ -237,8 +237,10 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
     update(inputs: InputDef[], name?: string) {
       currentScope = name;
       scrollArea.innerHTML = '';
-      if (inputs.length === 0) {
-        scrollArea.innerHTML = '<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">No inputs found in script.</div>';
+      // Guard against a null/undefined inputs list — `undefined.length` used to
+      // throw here, leaving the panel completely blank (no rows, no message).
+      if (!inputs || inputs.length === 0) {
+        scrollArea.innerHTML = `<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">${name ? `“${name}” has` : 'This script has'} no configurable inputs. Add <code style="color:#b48cff">input(...)</code> calls to your script to expose parameters here.</div>`;
         return;
       }
 

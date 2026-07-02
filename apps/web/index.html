@@ -352,6 +352,7 @@
       display: flex; align-items: center; justify-content: space-between;
       cursor: grab;
     }
+    .trading-panel-header-buttons { display: flex; align-items: center; gap: 4px; }
     .trading-panel-title {
       font-weight: 700; font-size: 11px;
       color: rgba(0,204,255,0.8);
@@ -637,6 +638,7 @@
       cursor: pointer;
     }
     #news-header span { color: rgba(0,204,255,0.7); font-size: 11px; font-weight: 600; }
+    .news-header-buttons { display: flex; align-items: center; gap: 4px; }
     #news-header button {
       background: none; border: none; color: rgba(255,255,255,0.3);
       cursor: pointer; font-size: 14px; padding: 0 2px;
@@ -769,7 +771,8 @@
         <label>Trade Advisor Provider
           <select id="set-llm-provider">
             <option value="local">Local (this GPU / llama.cpp)</option>
-            <option value="ollama">Ollama (local or cloud)</option>
+            <option value="ollama">Ollama Local (daemon on this machine)</option>
+            <option value="ollama-cloud">Ollama Cloud (signed-in cloud models)</option>
           </select>
         </label>
         <label>Ollama URL <input type="text" id="set-ollama-url" placeholder="http://localhost:11434"></label>
@@ -782,7 +785,8 @@
         <label>OakScript Coder Provider
           <select id="set-coder-provider">
             <option value="local">Local (this GPU)</option>
-            <option value="ollama">Ollama (local or cloud)</option>
+            <option value="ollama">Ollama Local (daemon on this machine)</option>
+            <option value="ollama-cloud">Ollama Cloud (signed-in cloud models)</option>
           </select>
         </label>
         <label id="coder-model-local-row">OakScript Coder Model
@@ -792,8 +796,12 @@
           <select id="set-coder-model-cloud"><option value="">(loading Ollama models…)</option></select>
         </label>
         <div id="set-coder-info" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:2px;line-height:1.4;">
-          Ollama can run large cloud coder models off-device (e.g. qwen3-coder:480b-cloud) — far better at OakScript than what fits in 8GB. Install Ollama, run <b>ollama signin</b>, then pick a model above. The agent is auto-fed the OakScript documentation.
+          Ollama Local runs models pulled onto this machine via the Ollama daemon; Ollama Cloud runs large off-device models (e.g. qwen3-coder:480b-cloud) — far better at OakScript than what fits in 8GB. Install Ollama, run <b>ollama signin</b> for cloud, then pick a model above. The agent is auto-fed the OakScript documentation.
         </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+          <input type="checkbox" id="set-model-auto" style="width:auto;">
+          <span>Auto-select best model (off = use my choice above)</span>
+        </label>
         <button id="set-switch-model" style="width:100%;margin-top:6px;padding:6px;border:1px solid rgba(180,140,255,0.3);border-radius:5px;background:rgba(180,140,255,0.08);color:#b48cff;cursor:pointer;font-size:11px;font-weight:600;">🔄 Switch Model Now (hot reload)</button>
         <div id="set-switch-status" style="color:rgba(255,184,0,0.7);font-size:9px;margin-top:2px;display:none;"></div>
         <label>Advisor Voice
@@ -899,8 +907,10 @@
   <div id="news-box">
     <div id="news-header">
       <span>📰 News &amp; Events</span>
-      <button id="news-toggle" title="Collapse">−</button>
-      <button id="news-close" title="Close">✕</button>
+      <div class="news-header-buttons">
+        <button id="news-toggle" title="Collapse">−</button>
+        <button id="news-close" title="Close">✕</button>
+      </div>
     </div>
     <div id="news-body">
       <div id="news-list" style="font-size:11px;color:rgba(255,255,255,0.5);padding:8px;text-align:center">Loading news...</div>
@@ -957,8 +967,10 @@
   <div id="trading-panel">
     <div class="trading-panel-header" id="tradingPanelHeader">
       <span class="trading-panel-title">Trading</span>
-      <button class="trading-panel-collapse" id="tradingPanelCollapse">−</button>
-      <button class="trading-panel-collapse" id="tradingPanelClose" title="Close">✕</button>
+      <div class="trading-panel-header-buttons">
+        <button class="trading-panel-collapse" id="tradingPanelCollapse">−</button>
+        <button class="trading-panel-collapse" id="tradingPanelClose" title="Close">✕</button>
+      </div>
     </div>
     <div class="trading-panel-body" id="tradingPanelBody">
       <div class="trading-spread">
@@ -1105,6 +1117,7 @@
       <div id="widgets-menu" style="display:none;position:absolute;right:0;bottom:100%;margin-bottom:2px;background:rgba(10,10,25,0.96);border:1px solid rgba(180,140,255,0.2);border-radius:6px;z-index:9999;font-size:11px;min-width:170px;padding:4px 0;"></div>
     </div>
     <button id="live-tick-toggle" title="Live tick simulation">◆ Live</button>
+    <button id="chart-reset" title="Reset chart view (zoom, pan, scale)">⟳ Reset</button>
     <button id="settings-toggle" title="Settings">⚙</button>
     <button id="toolbar-collapse" title="Collapse toolbar">▲</button>
     <select id="perf-select" title="Performance mode">

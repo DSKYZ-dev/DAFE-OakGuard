@@ -20,6 +20,24 @@ export interface IndicatorInstance {
   alerts: OakAlert[];
   overrides: Map<string, any>;
   enabled: boolean;
+  // Mandatory per-indicator toggle: whether this script's metrics appear on
+  // the universal dashboard. Injected by the manager for EVERY script (not
+  // declared in source), persisted per indicator name.
+  showInDashboard: boolean;
+}
+
+// Dashboard visibility persistence — set of indicator NAMES the user hid.
+const DASH_HIDDEN_KEY = 'dafe_dash_hidden_indicators';
+
+function loadDashHidden(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(DASH_HIDDEN_KEY) || '[]');
+    return new Set(Array.isArray(raw) ? raw : []);
+  } catch { return new Set(); }
+}
+
+function saveDashHidden(hidden: Set<string>): void {
+  try { localStorage.setItem(DASH_HIDDEN_KEY, JSON.stringify([...hidden])); } catch {}
 }
 
 let instances = new Map<string, IndicatorInstance>();
@@ -85,15 +103,38 @@ export function addIndicator(indDef: IndicatorDef): IndicatorInstance {
     alerts: [],
     overrides: new Map<string, any>(),
     enabled: true,
+    showInDashboard: !loadDashHidden().has(indDef.name),
   };
   instances.set(id, instance);
   instanceOrder.push(id);
   return instance;
 }
 
+/** Toggle whether an instance's metrics appear on the universal dashboard.
+ * Persisted by indicator name so the choice survives reloads. */
+export function setInstanceDashboardVisible(id: string, visible: boolean): void {
+  const inst = instances.get(id);
+  if (!inst) return;
+  inst.showInDashboard = visible;
+  const hidden = loadDashHidden();
+  if (visible) hidden.delete(inst.name); else hidden.add(inst.name);
+  saveDashHidden(hidden);
+}
+
 export function removeIndicator(id: string): void {
   instances.delete(id);
   instanceOrder = instanceOrder.filter(i => i !== id);
+}
+
+/** Update an instance's source AND re-detect its inputs. Editing a script
+ * (e.g. adding an input()) previously left inst.inputs stale, so the inputs
+ * panel showed nothing for freshly-added parameters. */
+export function updateInstanceSource(id: string, source: string): IndicatorInstance | undefined {
+  const inst = instances.get(id);
+  if (!inst) return undefined;
+  inst.source = source;
+  inst.inputs = detectInputsFromSource(source);
+  return inst;
 }
 
 export function getInstance(id: string): IndicatorInstance | undefined {

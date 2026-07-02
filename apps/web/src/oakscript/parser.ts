@@ -1,6 +1,6 @@
 import { Token, tokenize } from './lexer';
 import type { ASTNode, Program, VarDecl, IfStatement, ForStatement, WhileStatement,
-  BreakStmt, ContinueStmt, ReturnStmt, ExpressionStmt, BinaryExpr, UnaryExpr,
+  BreakStmt, ContinueStmt, ReturnStmt, ExpressionStmt, FunctionDecl, BinaryExpr, UnaryExpr,
   CallExpr, IndexExpr, MemberExpr, Identifier, NumberLiteral, StringLiteral,
   BooleanLiteral, ArrayLiteral, NilLiteral } from './ast';
 
@@ -70,7 +70,52 @@ class Parser {
     if (this.match('KEYWORD', 'continue')) { this.advance(); return { type: 'Continue' } as ContinueStmt; }
     if (this.match('KEYWORD', 'return')) { this.advance(); const v = this.parseExpression(); return { type: 'Return', value: v } as ReturnStmt; }
 
+    // User-defined function: IDENT ( simple-params ) => ...
+    // Detected by lookahead so `f(x) => x * 2` at statement level is a
+    // declaration, while `a => b` inside expressions keeps its legacy
+    // comparison meaning.
+    const fnDecl = this.tryParseFunctionDecl();
+    if (fnDecl) return fnDecl;
+
     return this.parseExpressionStmt();
+  }
+
+  /** Try to parse `name(p1, p2) => body`. Returns null (position untouched)
+   * if the statement isn't shaped like a function declaration. */
+  private tryParseFunctionDecl(): FunctionDecl | null {
+    if (this.peek().type !== 'IDENTIFIER' || !(this.peek(1).type === 'PUNCTUATION' && this.peek(1).value === '(')) {
+      return null;
+    }
+    // Lookahead: params must be zero or more bare identifiers separated by
+    // commas, closed by ')' followed immediately by '=>'.
+    let i = 2;
+    const params: string[] = [];
+    while (true) {
+      const t = this.peek(i);
+      if (t.type === 'PUNCTUATION' && t.value === ')') { i++; break; }
+      if (t.type !== 'IDENTIFIER') return null;
+      params.push(t.value);
+      i++;
+      const sep = this.peek(i);
+      if (sep.type === 'PUNCTUATION' && sep.value === ',') { i++; continue; }
+      if (sep.type === 'PUNCTUATION' && sep.value === ')') { i++; break; }
+      return null;
+    }
+    const arrow = this.peek(i);
+    if (!(arrow.type === 'OPERATOR' && arrow.value === '=>')) return null;
+
+    // Committed: consume the name, then jump past '(' params ')' and '=>'
+    // (the arrow sat at lookahead offset i from the pre-advance position).
+    const name = this.advance().value;
+    this.pos += i;
+    // Body: braces block with optional `return`, or a single expression.
+    let body: ASTNode[];
+    if (this.match('PUNCTUATION', '{')) {
+      body = this.parseBlock();
+    } else {
+      body = [{ type: 'Return', value: this.parseExpression() } as ReturnStmt];
+    }
+    return { type: 'FunctionDecl', name, params, body };
   }
 
   private parseVarDecl(): VarDecl {

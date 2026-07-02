@@ -191,9 +191,17 @@ export function createDashboard(): {
   return {
     panel,
     refresh() {
-      const instances = getActiveInstances();
-      if (instances.length === 0) {
+      const all = getActiveInstances();
+      // Honor each indicator's mandatory dashboard toggle (📊 in the Active
+      // Indicators panel) — hidden ones keep rendering on the chart but stay
+      // off this dash.
+      const instances = all.filter(i => i.showInDashboard !== false);
+      if (all.length === 0) {
         content.innerHTML = '<div style="color:rgba(255,255,255,0.25);font-size:10px;padding:8px;">No active indicators. Select one from the toolbar.</div>';
+        return;
+      }
+      if (instances.length === 0) {
+        content.innerHTML = `<div style="color:rgba(255,255,255,0.25);font-size:10px;padding:8px;">All ${all.length} indicator${all.length > 1 ? 's are' : ' is'} hidden from the dashboard — use the 📊 toggle in the Active Indicators panel to show metrics.</div>`;
         return;
       }
 

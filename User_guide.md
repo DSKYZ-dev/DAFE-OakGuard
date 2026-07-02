@@ -374,9 +374,9 @@ Click the **gear icon** in the top bar to open the settings panel.
 
 | Setting | Description |
 |---------|-------------|
-| **LLM Provider** | `local` (llama.cpp) or `ollama` |
-| **Ollama URL** | Ollama server address |
-| **Trade Advisor Model** | Model name for the advisor |
+| **LLM Provider** | `Local` (llama.cpp on this GPU), `Ollama Local` (models pulled into the Ollama daemon), or `Ollama Cloud` (signed-in cloud models like `qwen3-coder:480b-cloud` — run `ollama signin` first). The Trade Advisor and OakScript Coder each have their own provider + model. |
+| **Ollama URL** | Ollama server address (used by both Ollama Local and Ollama Cloud) |
+| **Trade Advisor Model** | Model name for the advisor — the dropdown shows only models matching the chosen provider |
 | **Advisor Voice** | TTS voice preference: Auto, Natural, Male, Female, Soft |
 
 ### Data
