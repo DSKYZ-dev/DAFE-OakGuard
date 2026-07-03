@@ -673,16 +673,74 @@ TIPS:
     // ═══════════════════════════════════════════════════════════════════
     {
       title: '3D Plotting — plot3d() Complete Reference',
-      content: `plot3d(series, name, style, color, pane?)
+      content: `plot3d(series, name, style, color, pane?, z_level?)
   Renders indicator data as a 3D visualization using Three.js (WebGL).
   - series: any number array — rsi(), macd.macd, volume, custom formula
   - name:   string — title displayed in the 3D scene
-  - style:  string — must be one of the 14 styles below (QUOTED)
+  - style:  string — must be one of the 15 styles below (QUOTED)
   - color:  hex string
   - pane:   "main" (overlays price chart) or "separate" (lower pane)
+  - z_level: number (optional) — Z-axis stacking position. Same level = stacked
+    together at the same depth; different levels = spaced apart (ascending, 2.4 units).
+    Omit for auto-spacing. Example: plot3d(r, "RSI", "surface", "#b48cff", "separate", 0)
+    stacks RSI and MACD at level 0, while plot3d(volume, "Vol", "bars3d", "#ffd43b", "separate", 1)
+    places volume bars at a separate depth.
+
+plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?)
+  Places a 3D geometric shape at a specific (bar, price, z) coordinate.
+  - bar_index: number — X-axis position (use bar_index variable for current bar)
+  - price: number — Y-axis position (e.g. high, low, close, or a custom value)
+  - title: string — label for the legend
+  - shape: string — "cube", "sphere", "pyramid", "torus", "diamond",
+    "coneup", "conedown"
+  - color: hex string or named color ("#22cc88", "#ff4477", etc.)
+  - size: number — scale factor (0.2 = small, 1.0 = normal, 3.0 = large)
+  - z_level: number (optional) — Z-axis position, same rules as plot3d z_level
+  - pane: string (optional) — "separate" (default) renders in the lower 3D pane;
+    "3d" renders in the main 3D chart scene (must also have plot3d calls with pane="3d")
+  - rx, ry, rz: numbers (optional) — rotation in DEGREES around each axis,
+    applied on top of any built-in orientation. Pose any shape for custom
+    scenes: plotshape_3d(..., "3d", 0, 45, 0) spins it 45° around Y.
+
+  SIGNAL CONES — the standard buy/sell markers:
+  "coneup"   — auto-offsets BELOW the given price with a small gap (gap and
+               cone scale with size), tip pointing UP at the bar. Use for
+               BUYS at low, colored green (#22cc88).
+  "conedown" — flipped upside down, auto-offsets ABOVE the given price, tip
+               pointing DOWN at the bar. Use for SELLS at high, colored red
+               (#ff4477).
+  Pass a strength-derived size to make cones proportional to signal quality.
+  Example:
+    strength = min(abs(fastMa - slowMa) / atr(high, low, close, 14) + 0.6, 2.2)
+    if buySig
+        plotshape_3d(bar_index, low, "Buy", "coneup", "#22cc88", strength, 0, "3d")
+    if sellSig
+        plotshape_3d(bar_index, high, "Sell", "conedown", "#ff4477", strength, 0, "3d")
+  → Shapes render only when the chart is in 3D mode.
+  → 2D plotshape() does NOT render in 3D mode — use plotshape_3d instead.
+  → Multiple shapes on the same bar will overlap; use size and z_level to arrange them.
+
+label3d(bar_index, price, text, color?, size?, z_level?, pane?)
+  Places a billboard TEXT label at an exact (bar, price, z) coordinate in a 3D
+  scene — the tool for naming peaks, levels, zones, and signals (the way a
+  market-cap landscape labels its assets or a solar-system scene names planets).
+  - bar_index: number — X-axis position
+  - price:     number — Y-axis position
+  - text:      string — the label text (keep it SHORT: "POC", "BTC", "Breakout")
+  - color:     hex string (default "#ffffff")
+  - size:      number 0.2–3.0 (default 1)
+  - z_level:   number (optional) — same stacking rules as plot3d
+  - pane:      "separate" (default, lower 3D pane) or "3d" (main 3D scene)
+  Example:
+    if crossover(close, poc)
+        label3d(bar_index, close, "POC RECLAIM", "#22cc88", 1.2)
+  → Call it INSIDE a condition (or it stamps a label on every bar; the engine
+    caps rendering at the 40 most recent labels).
+  → Labels always face the camera and render on top of geometry.
+  → Pair with plotshape_3d for labeled markers: shape for geometry, label3d for the name.
 
 ═══════════════════════════════════════════════════════════════════
-14 VISUALIZATION STYLES — Complete Reference
+15 VISUALIZATION STYLES — Complete Reference
 ═══════════════════════════════════════════════════════════════════
 
 "surface" — Volumetric Price-Weighted Mesh
@@ -817,6 +875,18 @@ TIPS:
   - Best for: streaming data, real-time feeds, volume trails
   - Requires: 3+ bars
   - Pane: both "main" and "separate"
+
+"ridgeline" — Temporal Distribution Joyplot
+  Slices the series into 4–16 time windows, histograms each window's values,
+  and stacks the resulting smoothed curves in depth — a "market memory"
+  landscape showing where the values LIVED in each period (the classic
+  temporal volume-profile look).
+  - Windows: auto-sized (≈12 bars each, 4–16 ridges); bins: 28 per ridge
+  - Color: HSL ramp across ridges — cool (oldest) → hot (newest)
+  - Best for: price/value distributions over time, volume profiles, regime memory
+  - Requires: 24+ bars (more bars = more ridges)
+  - Pane: both "3d" and "separate"
+  - Pair with label3d to name the point of control or key ridges
 
 ═══════════════════════════════════════════════════════════════════
 PANE BEHAVIOR — Critical Details
@@ -1017,6 +1087,98 @@ RULES FOR COMBINING 2D & 3D
 6. The splitter bar between main chart and lower pane is draggable
 7. For pure 2D oscillators: use plot(rsi, "RSI", ..., "separate")
 8. For 3D dashboards: use plot3d(rsi, "RSI", "surface", ..., "separate")`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: '3D Creative Visual Vocabulary — Kinematic & Topological Techniques',
+      content: `When you need the agent to generate cutting-edge 3D indicators, use
+      these visual vocabularies. They transform math into geometry.
+      
+      ═══════════════════════════════════════════════════════════════════
+      HIGHER-ORDER CALCULUS — 2nd & 3rd Derivative Indicators
+      ═══════════════════════════════════════════════════════════════════
+      These are not MACD/RSI — they measure CHANGE OF CHANGE of momentum.
+      
+      // Velocity (1st derivative): rate of price change
+      vel = close - close[1]
+      
+      // Acceleration (2nd derivative): change of velocity  
+      acc = vel - vel[1]
+      
+      // Jerk (3rd derivative): change of acceleration
+      jerk = acc - acc[1]
+      
+      // Render them as 3D ribbons to see momentum layers
+      plot3d(vel, "Velocity", "ribbon", "#22aaff", "separate", 0)
+      plot3d(acc, "Acceleration", "ribbon", "#ff8800", "separate", 0)
+      plot3d(jerk, "Jerk", "ribbon", "#ff4477", "separate", 0)
+      
+      ═══════════════════════════════════════════════════════════════════
+      KINEMATIC SIGNATURE — Phase-Space Embedding
+      ═══════════════════════════════════════════════════════════════════
+      Plot price vs its own lag to reveal attractors and cycles:
+      
+      // 3D phase space: (price, price[5], price[10])
+      plot3d(close, "Phase Space", "scatter", "#b48cff", "main")
+      // Add a 2nd trace with different z_level for depth
+      plot3d(close[5], "Lag 5", "line", "#22cc88", "main", 1)
+      
+      When you see spiral or loop patterns, the market has
+      a short-term cyclic attractor — mean reversion opportunity.
+      
+      ═══════════════════════════════════════════════════════════════════
+      TOPOLOGICAL SIGNATURES — Knots, Wraps & Vortices
+      ═══════════════════════════════════════════════════════════════════
+      Cross-indicator wraps detect regime changes:
+      
+      r = rsi(close, 14)
+      m = macd(close, 12, 26, 9)
+      
+      // Normalize both to 0-1 range for topological comparison
+      rNorm = r / 100
+      mNorm = (m.macd - lowest(m.macd, 100)) / (highest(m.macd, 100) - lowest(m.macd, 100) + 0.001)
+      
+      // Cross-3D: when RSI wraps above MACD, trend is up
+      // Use z_level=2 to float above other geometry
+      plot3d(rNorm, "RSI Norm", "line", "#22cc88", "separate", 2)
+      plot3d(mNorm, "MACD Norm", "line", "#ff4477", "separate", 2)
+      plot3d(rNorm - mNorm, "Spread", "bars3d", "#b48cff", "separate", 2)
+      
+      // Mark wrap crossovers with 3D shapes
+      if crossover(rNorm, mNorm)
+          plotshape_3d(bar_index, high * 1.02, "Wrap Bull", "diamond", "#22cc88", 1.5, 2)
+      if crossunder(rNorm, mNorm)
+          plotshape_3d(bar_index, high * 1.02, "Wrap Bear", "diamond", "#ff4477", 1.5, 2)
+      
+      ═══════════════════════════════════════════════════════════════════
+      VORTEX SHEET — Surface from Synthetic Dimensions
+      ═══════════════════════════════════════════════════════════════════
+      Build a surface from a single series by creating synthetic
+      dimensions via phase-shifted lags:
+      
+      src = rsi(close, 14)
+      // 3 surfaces at different phase shifts + z_levels create a vortex
+      plot3d(src, "Phase 0", "surface", "#22cc88", "separate", 0)
+      plot3d(src[2], "Phase 2", "surface", "#b48cff", "separate", 1)
+      plot3d(src[5], "Phase 5", "surface", "#ff4477", "separate", 2)
+      
+      → This creates a multi-layered "vortex sheet" effect — each
+        surface phase-shifted and depth-separated, producing a 3D
+        toroidal wave structure when orbited.
+      
+      ═══════════════════════════════════════════════════════════════════
+      GOLDEN RULES FOR 3D SIGNALS
+      ═══════════════════════════════════════════════════════════════════
+      
+      1. ALWAYS use plotshape_3d() instead of plotshape() when chart is in
+         3D mode — 2D shapes do NOT render in 3D mode
+      2. Use z_level to layer signals: lowest indicator at level 0,
+         overlays at level 1-3, shapes at level 2-4
+      3. Normalize indicators to [0,1] range before comparing across types
+      4. Higher-order derivatives (jerk, snap) produce noisier series —
+         smooth them: ema(jerk, 5)
+      5. Phase-space plots work best with scatter or line style, not surface
+      6. Vortex sheets are GPU-intensive — use with ≤80 bars of history`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {

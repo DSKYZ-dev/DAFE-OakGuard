@@ -42,7 +42,7 @@ let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
 
-const DEFAULT_SCRIPT = `// DAFE Trading Systems - DskyzInvestment
+const DEFAULT_SCRIPT = `//DAFE Trading Systems - DskyzInvestment
 `;
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -404,6 +404,28 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   editorPanel.appendChild(editorWrapper);
   updateLineNumbers();
 
+  // ── Resize handle between editor and bottom panels ────────────
+  const editorResizeHandle = document.createElement('div');
+  Object.assign(editorResizeHandle.style, {
+    height: '4px', cursor: 'ns-resize', flexShrink: '0',
+    background: 'rgba(180,140,255,0.06)',
+    borderTop: '1px solid rgba(180,140,255,0.08)',
+    borderBottom: '1px solid rgba(180,140,255,0.08)',
+  });
+  editorResizeHandle.title = 'Drag to resize editor';
+  let editorResizing = false;
+  editorResizeHandle.addEventListener('mousedown', (e) => {
+    editorResizing = true; e.preventDefault();
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!editorResizing || !editorWrapper) return;
+    const newH = Math.max(50, editorWrapper.offsetHeight + (e.clientY - (editorWrapper.getBoundingClientRect().bottom)));
+    editorWrapper.style.height = newH + 'px';
+    editorWrapper.style.flex = '0 0 auto';
+  });
+  document.addEventListener('mouseup', () => { editorResizing = false; });
+  editorPanel.appendChild(editorResizeHandle);
+
   // ── Controls bar ────────────────────────────────────────────────
   const controls = document.createElement('div');
   Object.assign(controls.style, {
@@ -621,6 +643,17 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   controls.appendChild(indSelect);
   controls.appendChild(docsBtn);
 
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = '▶ Apply';
+  applyBtn.title = 'Run script on chart';
+  Object.assign(applyBtn.style, {
+    padding: '3px 9px', border: '1px solid rgba(34,204,136,0.4)',
+    borderRadius: '4px', background: 'rgba(34,204,136,0.15)',
+    color: '#22cc88', cursor: 'pointer', fontSize: '10px', fontWeight: '700',
+  });
+  applyBtn.onclick = () => doRun();
+  controls.appendChild(applyBtn);
+
   // ── Agent command buttons ────────────────────────────────────
   const agentSep = document.createElement('div');
   agentSep.style.width = '1px'; agentSep.style.height = '16px';
@@ -698,9 +731,11 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   // ── Documentation Panel ─────────────────────────────────────────
   docPanel = document.createElement('div');
+  docPanel.id = 'oakscript-docs';
   Object.assign(docPanel.style, {
-    flex: '1', overflow: 'auto', display: 'none', minHeight: '0',
+    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '300px',
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
+    flexShrink: '0',
   });
   editorPanel.appendChild(docPanel);
 
@@ -717,7 +752,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     maxHeight: '80px', overflow: 'auto', padding: '2px 8px',
     fontSize: '9px', fontFamily: 'monospace',
     color: 'rgba(255,255,255,0.5)',
-    display: 'none',
+    display: 'none', resize: 'vertical',
   });
 
   const chatHeader = document.createElement('div');
@@ -1053,7 +1088,12 @@ function toggleDocs(): void {
   if (!docPanel) return;
   const isVisible = docPanel.style.display !== 'none';
   docPanel.style.display = isVisible ? 'none' : 'block';
-  if (!isVisible) renderDocs();
+  if (!isVisible) {
+    try { renderDocs(); } catch (e) {
+      docPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load docs: ${e}</div>`;
+      docPanel.style.display = 'block';
+    }
+  }
 }
 
 function renderDocs(): void {

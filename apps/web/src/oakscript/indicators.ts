@@ -134,6 +134,111 @@ rsiLen = input(14, "RSI Length")
 rsiVal = rsi(close, rsiLen)
 plot3d(rsiVal, "RSI Scatter", "scatter", "#ff6b6b", "separate")`,
   },
+  {
+    name: 'EMA Spread Line3D',
+    description: 'Fast/slow EMA spread as a thin 3D line — a minimal trend-strength trace ("line3d" style)',
+    category: '3D Visualizations',
+    source: `// EMA Spread Line3D
+fastLen = input(9, "Fast EMA")
+slowLen = input(21, "Slow EMA")
+spread = ema(close, fastLen) - ema(close, slowLen)
+plot3d(spread, "EMA Spread", "line3d", "#22aaff", "separate")`,
+  },
+  {
+    name: 'ATR Wireframe Terrain',
+    description: 'Volatility (ATR) as an x-ray wireframe landscape — calm valleys, volatile peaks ("wireframe" style)',
+    category: '3D Visualizations',
+    source: `// ATR Wireframe Terrain
+atrLen = input(14, "ATR Length")
+a = atr(high, low, close, atrLen)
+plot3d(a, "ATR Terrain", "wireframe", "#22cc88", "separate")`,
+  },
+  {
+    name: 'Momentum Mesh',
+    description: 'Rate-of-change momentum as a solid opaque mesh surface ("mesh" style)',
+    category: '3D Visualizations',
+    source: `// Momentum Mesh
+rocLen = input(10, "ROC Length")
+r = roc(close, rocLen)
+plot3d(r, "Momentum Mesh", "mesh", "#ff8800", "separate")`,
+  },
+  {
+    name: 'Stochastic Helix',
+    description: 'Stochastic %K wrapped in an interweaving double-helix — cyclic momentum as DNA ("helix" style)',
+    category: '3D Visualizations',
+    source: `// Stochastic Helix
+stochLen = input(14, "Stochastic Length")
+k = stoch(high, low, close, stochLen)
+plot3d(k, "Stoch Helix", "helix", "#b48cff", "separate")`,
+  },
+  {
+    name: 'ADX Vortex Funnel',
+    description: 'Trend strength (ADX) as a six-armed converging spiral tornado ("vortex" style)',
+    category: '3D Visualizations',
+    source: `// ADX Vortex Funnel
+adxLen = input(14, "ADX Length")
+strength = adx(high, low, close, adxLen)
+plot3d(strength, "Trend Vortex", "vortex", "#ff4477", "separate")`,
+  },
+  {
+    name: 'CCI Manifold Sheet',
+    description: 'CCI as a flowing wireframe manifold ribbon — multi-spline market topology ("manifold" style)',
+    category: '3D Visualizations',
+    source: `// CCI Manifold Sheet
+cciLen = input(20, "CCI Length")
+c = cci(high, low, close, cciLen)
+plot3d(c, "CCI Manifold", "manifold", "#22aaff", "separate")`,
+  },
+  {
+    name: 'Money Flow Nebula',
+    description: 'MFI as a glowing volumetric particle cloud — money-flow atmosphere ("nebula" style)',
+    category: '3D Visualizations',
+    source: `// Money Flow Nebula
+mfiLen = input(14, "MFI Length")
+flow = mfi(high, low, close, volume, mfiLen)
+plot3d(flow, "Flow Nebula", "nebula", "#b48cff", "separate")`,
+  },
+  {
+    name: 'Pivot Constellation',
+    description: 'Chaikin Money Flow as connected glowing stars — sparse structure recognition ("constellation" style)',
+    category: '3D Visualizations',
+    source: `// Pivot Constellation
+cmfLen = input(20, "CMF Length")
+flow = cmf(high, low, close, volume, cmfLen)
+plot3d(flow * 100, "Flow Stars", "constellation", "#ffd43b", "separate")`,
+  },
+  {
+    name: 'Volume Torus Tunnel',
+    description: 'Relative volume as a flowing tunnel of rings — ring size tracks activity ("torus" style)',
+    category: '3D Visualizations',
+    source: `// Volume Torus Tunnel
+volLen = input(20, "Baseline Length")
+relVol = volume / max(sma(volume, volLen), 1)
+plot3d(relVol, "Volume Rings", "torus", "#22aaff", "separate")`,
+  },
+  {
+    name: 'OBV Trail Stream',
+    description: 'On-Balance Volume as a streaming ribbon whose width breathes with flow ("trail" style)',
+    category: '3D Visualizations',
+    source: `// OBV Trail Stream
+o = obv(close, volume)
+plot3d(o, "OBV Trail", "trail", "#22cc88", "separate")`,
+  },
+  {
+    name: 'Temporal Price Ridgeline',
+    description: 'Stacked price-distribution ridges over time with a labeled point of control — joyplot market memory ("ridgeline" style + label3d)',
+    category: '3D Visualizations',
+    source: `// Temporal Price Ridgeline
+// Where has price LIVED? Each ridge is one time slice's price distribution.
+poc = median(close, 50)
+plot3d(close, "Price Ridges", "ridgeline", "#b48cff", "separate")
+if crossover(close, poc) {
+    label3d(bar_index, close, "POC RECLAIM", "#22cc88", 1.2, 0, "separate")
+}
+if crossunder(close, poc) {
+    label3d(bar_index, close, "POC LOSS", "#ff4477", 1.2, 0, "separate")
+}`,
+  },
 
   {
     name: 'MACD',

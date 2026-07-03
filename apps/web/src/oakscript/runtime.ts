@@ -1,5 +1,5 @@
 export interface OakPlot {
-  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d';
+  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d' | 'plot3d_shape' | 'plot3d_label';
   name: string;
   value?: number;
   series?: number[];
@@ -11,10 +11,18 @@ export interface OakPlot {
   x?: number;
   y?: number;
   barIdx?: number;
-  pane?: 'main' | 'separate';
+  pane?: 'main' | 'separate' | '3d';
   fillTop?: number;
   fillBot?: number;
   is3D?: boolean;
+  // 3D shape fields
+  shape3d?: 'cube' | 'sphere' | 'pyramid' | 'torus' | 'diamond' | 'coneup' | 'conedown';
+  // rotation in degrees (applied after any built-in orientation, e.g. conedown's flip)
+  rx?: number;
+  ry?: number;
+  rz?: number;
+  size?: number;
+  z_level?: number;
 }
 
 export interface OakPlot3D {
@@ -22,13 +30,14 @@ export interface OakPlot3D {
   name: string;
   series: number[];
   style: 'surface' | 'ribbon' | 'bars3d' | 'scatter' | 'line3d' | 'wireframe' | 'mesh'
-    | 'helix' | 'vortex' | 'manifold' | 'nebula' | 'constellation' | 'torus' | 'trail';
+    | 'helix' | 'vortex' | 'manifold' | 'nebula' | 'constellation' | 'torus' | 'trail' | 'ridgeline';
   color: string;
   pane: 'main' | 'separate' | '3d';
+  z_level?: number;
 }
 
 export interface OakPlot {
-  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d';
+  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d' | 'plot3d_shape' | 'plot3d_label';
   name: string;
   value?: number;
   series?: number[];
@@ -40,10 +49,17 @@ export interface OakPlot {
   x?: number;
   y?: number;
   barIdx?: number;
-  pane?: 'main' | 'separate';
+  pane?: 'main' | 'separate' | '3d';
   fillTop?: number;
   fillBot?: number;
   is3D?: boolean;
+  shape3d?: 'cube' | 'sphere' | 'pyramid' | 'torus' | 'diamond' | 'coneup' | 'conedown';
+  // rotation in degrees (applied after any built-in orientation, e.g. conedown's flip)
+  rx?: number;
+  ry?: number;
+  rz?: number;
+  size?: number;
+  z_level?: number;
 }
 
 export interface OakAlert {

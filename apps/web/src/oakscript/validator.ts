@@ -22,7 +22,7 @@ export interface ValidationResult {
 
 const KNOWN_BLOCK_KEYWORDS = new Set(['if', 'else', 'for', 'while']);
 const ALL_KEYWORDS = new Set([
-  'indicator', 'strategy', 'plot', 'plotshape', 'plotarrow', 'plotchar', 'plot3d',
+  'indicator', 'strategy', 'plot', 'plotshape', 'plotshape_3d', 'plotarrow', 'plotchar', 'plot3d',
   'input', 'label', 'table', 'hline', 'fill', 'bgcolor',
   'var', 'varip', 'if', 'else', 'for', 'while', 'in',
   'break', 'continue', 'return', 'true', 'false', 'nil',
@@ -77,11 +77,13 @@ const BUILTIN_FN_SIGNATURES: Record<string, { minArgs: number; maxArgs: number; 
   log10:     { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
   avg:       { minArgs: 2, maxArgs: 8, argDescriptions: ['a', 'b', '...'] },
   'color.from_gradient': { minArgs: 5, maxArgs: 5, argDescriptions: ['value', 'bottomValue', 'topValue', 'bottomColor', 'topColor'] },
+  plotshape_3d: { minArgs: 2, maxArgs: 11, argDescriptions: ['bar_index', 'price', 'title', 'shape', 'color', 'size', 'z_level', 'pane', 'rx_deg', 'ry_deg', 'rz_deg'] },
+  label3d:   { minArgs: 3, maxArgs: 7, argDescriptions: ['bar_index', 'price', 'text', 'color', 'size', 'z_level', 'pane'] },
   plot:      { minArgs: 1, maxArgs: 6, argDescriptions: ['value', 'title', 'color', 'linewidth', 'style|pane', 'pane'] },
   plotshape: { minArgs: 2, maxArgs: 6, argDescriptions: ['bar_index', 'price', 'title', 'style', 'color', 'pane'] },
   plotarrow: { minArgs: 2, maxArgs: 6, argDescriptions: ['bar_index', 'price', 'title', 'direction', 'color', 'pane'] },
   plotchar:  { minArgs: 2, maxArgs: 5, argDescriptions: ['bar_index', 'price', 'char', 'color', 'pane'] },
-  plot3d:    { minArgs: 2, maxArgs: 5, argDescriptions: ['series', 'name', 'style', 'color', 'pane'] },
+  plot3d:    { minArgs: 2, maxArgs: 6, argDescriptions: ['series', 'name', 'style', 'color', 'pane', 'z_level'] },
   hline:     { minArgs: 1, maxArgs: 3, argDescriptions: ['price', 'color', 'pane'] },
   fill:      { minArgs: 3, maxArgs: 3, argDescriptions: ['top', 'bottom', 'color'] },
   bgcolor:   { minArgs: 1, maxArgs: 2, argDescriptions: ['color', 'pane'] },
@@ -136,7 +138,7 @@ const BUILTIN_FN_SIGNATURES: Record<string, { minArgs: number; maxArgs: number; 
 // keyword set (e.g. `color.new(...)` — "color" alone is a plain identifier).
 const KNOWN_EXTRA_IDENTIFIERS = new Set(['color', 'null', 'math', 'vwap', 'atr',
   'cci', 'adx', 'trueRange', 'linreg', 'variance', 'oakring', 'matrix',
-  'tostring', 'tonumber', 'exp', 'sqrt', 'plot3d']);
+  'tostring', 'tonumber', 'exp', 'sqrt', 'plot3d', 'label3d']);
 
 // PineScript color constants — the giveaway that the model wrote Pine, not Oak.
 const PINE_COLORS = 'red|green|blue|white|black|orange|yellow|purple|fuchsia|aqua|lime|maroon|navy|olive|silver|teal|gray|grey';
@@ -167,6 +169,7 @@ const PLOTSHAPE_STYLES = new Set([
 const PLOT3D_STYLES = new Set([
   'surface', 'ribbon', 'bars3d', 'scatter', 'line3d', 'wireframe', 'mesh',
   'helix', 'vortex', 'manifold', 'nebula', 'constellation', 'torus', 'trail',
+  'ridgeline',
 ]);
 
 /**
@@ -390,6 +393,27 @@ export function validate(source: string): ValidationResult {
     }
   }
 
+  // ── 3D pane mismatch: shapes/labels invisible in pane="3d" mode ──
+  // When any plot3d uses pane="3d" (exclusive full-chart takeover), the lower
+  // 3D pane is hidden — so a plotshape_3d/label3d that defaults to (or names)
+  // "separate" renders NOWHERE. Silent, and exactly the arg a model forgets.
+  {
+    if (/plot3d\s*\([^)]*"3d"/.test(source)) {
+      for (let li = 0; li < lines.length; li++) {
+        const raw = lines[li].trim();
+        if (!raw || raw.startsWith('//')) continue;
+        const m = /(plotshape_3d|label3d)\s*\(([^)]*)\)/.exec(raw);
+        if (m && !/"3d"/.test(m[2])) {
+          issues.push({
+            line: li + 1, col: 1, severity: 'error', code: 'MISMATCHED_3D_PANE',
+            message: `${m[1]}() targets the "separate" pane, but a plot3d(..., "3d") call makes this an exclusive main-chart 3D indicator — the lower pane is hidden, so this marker renders NOWHERE.`,
+            fix: `Add "3d" as the final pane argument: ${m[1]}(..., z_level, "3d").`,
+          });
+        }
+      }
+    }
+  }
+
   // ── Undefined variables & unknown functions ──
   // The runtime resolves unknown names to null (→ 0/false) with NO error, so
   // a single typo produces an indicator that "works" but never signals. Flag
@@ -528,6 +552,12 @@ export function validate(source: string): ValidationResult {
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.type === 'IDENTIFIER' || (t.type === 'KEYWORD' && !KNOWN_BLOCK_KEYWORDS.has(t.value))) {
+      // A dotted property (array.min, ring.avg, m.macd) is NOT the bare
+      // builtin of the same name — checking it against the builtin signature
+      // false-errored valid shipped indicators (array.min(x) flagged as
+      // "min() expects 2 args") and sent the agent's auto-fix loop chasing
+      // phantom issues.
+      if (tokens[i - 1]?.value === '.') continue;
       const fnName = t.value;
       const sig = BUILTIN_FN_SIGNATURES[fnName];
       if (!sig) continue;

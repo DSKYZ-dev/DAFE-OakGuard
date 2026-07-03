@@ -2,11 +2,12 @@
  * Advanced 3D Indicator Visualizations Engine
  * Powers OakScript plot3d("main") — realistic 3D geometries overlaid on the chart.
  * Styles: surface, ribbon, scatter, bars3d, wireframe, line3d, mesh,
- *         helix, vortex, manifold, nebula, constellation, torus, trail
+ *         helix, vortex, manifold, nebula, constellation, torus, trail, ridgeline
  */
 import * as THREE from 'three';
 import type { BaseBar } from '@dafe/types';
-import type { OakPlot3D } from './oakscript/runtime';
+import type { OakPlot, OakPlot3D } from './oakscript/runtime';
+import { makeTextSprite } from './three-lower-pane';
 import { type ViewState, getVisibleRange, barX, priceToY, chartRight, TOP_FRAC, BOT_FRAC } from './chart-renderer';
 
 export type VizType = 'surface' | 'ribbon' | 'scatter' | 'wireframe' | 'bars3d' | 'line3d' | 'mesh'
@@ -131,7 +132,7 @@ function disposeMesh(obj: THREE.Object3D): void {
   if (anyObj.geometry || anyObj.material) {
     anyObj.geometry?.dispose();
     if (Array.isArray(anyObj.material)) anyObj.material.forEach(m => m.dispose());
-    else anyObj.material?.dispose();
+    else { (anyObj.material as THREE.Material & { map?: THREE.Texture })?.map?.dispose(); anyObj.material?.dispose(); }
   }
   if (obj instanceof THREE.Group) obj.children.forEach(c => disposeMesh(c));
 }
@@ -1146,6 +1147,46 @@ function buildTorusFromSeries(series: number[], view: ViewState, width: number, 
   return group;
 }
 
+function buildRidgelineFromSeries(series: number[], view: ViewState, width: number, visibleCount?: number): THREE.Group | null {
+  // Temporal distribution joyplot: time windows along X (aligned to bars),
+  // value bins along Z, ridge height = frequency. Colored on an HSL ramp so
+  // early ridges read cool and recent ridges hot.
+  const vals = series.filter(v => isFinite(v) && !isNaN(v));
+  if (vals.length < 24) return null;
+  const sMin = Math.min(...vals), sMax = Math.max(...vals);
+  const range = sMax - sMin || 1;
+  const windows = Math.max(4, Math.min(16, Math.floor(vals.length / 12)));
+  const bins = 28;
+  const winLen = Math.floor(vals.length / windows);
+  const group = new THREE.Group();
+  let maxFreq = 1;
+  const hists: number[][] = [];
+  for (let w = 0; w < windows; w++) {
+    const hist = new Array(bins).fill(0);
+    const from = w * winLen, to = w === windows - 1 ? vals.length : from + winLen;
+    for (let i = from; i < to; i++) {
+      const b = Math.max(0, Math.min(bins - 1, Math.floor(((vals[i] - sMin) / range) * (bins - 1))));
+      hist[b]++;
+    }
+    const sm = hist.map((v, i) => (hist[i - 1] ?? v) * 0.25 + v * 0.5 + (hist[i + 1] ?? v) * 0.25);
+    maxFreq = Math.max(maxFreq, ...sm);
+    hists.push(sm);
+  }
+  for (let w = 0; w < windows; w++) {
+    const x = seriesX(w, windows, view, width, visibleCount);
+    const pts: THREE.Vector3[] = [];
+    for (let b = 0; b < bins; b++) {
+      pts.push(new THREE.Vector3(x, (hists[w][b] / maxFreq) * 3 - 3, (b / (bins - 1)) * 4 - 2));
+    }
+    const hue = 0.5 + (w / Math.max(windows - 1, 1)) * 0.6;
+    const col = new THREE.Color().setHSL(hue % 1, 0.8, 0.55);
+    const curve = new THREE.CatmullRomCurve3(pts);
+    group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(bins * 3)),
+      new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.9 })));
+  }
+  return group;
+}
+
 // ─── Entry point ────────────────────────────────────────────
 let _rebuildNeeded = true;
 
@@ -1160,20 +1201,16 @@ export function renderMain3DScene(
   plots: OakPlot3D[],
   view: ViewState,
   width: number,
-  height: number
+  height: number,
+  shapes?: OakPlot[]
 ): void {
   if (!_initialized || !_chart3DMode) {
     _chart3DMode = true;
     initChart3D();
-    // initChart3D() always wipes bars + indicator geometry (clearViz, bar
-    // group reset) — it must guarantee its own rebuild rather than relying
-    // on the caller's dirty-tracking to coincidentally also fire, or the
-    // scene can come back from a dispose/reinit permanently empty.
     _rebuildNeeded = true;
   }
   if (!_scene || !_camera || !_renderer) return;
 
-  // Update canvas size
   const canvas = getCanvas();
   if (canvas.width !== width || canvas.height !== height) {
     _renderer.setSize(width, height, false);
@@ -1181,20 +1218,15 @@ export function renderMain3DScene(
     _camera.updateProjectionMatrix();
   }
 
-  // Rebuild geometry only when dirty
   if (_rebuildNeeded) {
     _rebuildNeeded = false;
-
-    // Clear old indicator geometry but preserve bar group
     clearViz();
 
-    // Build and add 3D bars
     if (!_barGroup || _barGroup.children.length === 0) {
       const bg = buildBarGroup(bars, view, width);
       if (bg) { _barGroup = bg; _scene.add(_barGroup); }
     }
 
-    // Compute visible bar count so indicator geometry aligns with bars
     const { start, end } = getVisibleRange(view, width, bars.length);
     const visibleCount = end - start + 1;
 
@@ -1228,6 +1260,70 @@ export function renderMain3DScene(
           { const g = buildConstellationFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
         case 'torus':
           { const g = buildTorusFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+        case 'ridgeline':
+          { const g = buildRidgelineFromSeries(series, view, width, visibleCount); if (g) _scene.add(g); break; }
+      }
+    }
+
+    // ── Render 3D shapes (plotshape_3d with pane="3d") ──
+    if (shapes) {
+      const visible = visibleBars(bars, view, width);
+      if (visible.length > 0) {
+        const { min: minP, max: maxP, range: pRange } = normRange(visible);
+        const halfW = width * 0.5;
+        const total = visible.length;
+        let labelBudget = 40;
+        for (let li = shapes.length - 1; li >= 0 && labelBudget > 0; li--) {
+          const sp = shapes[li];
+          if (sp.type !== 'plot3d_label' || sp.pane !== '3d' || !sp.text) continue;
+          labelBudget--;
+          const vi = (sp.barIdx ?? 0) - start;
+          if (vi < 0 || vi >= total) continue;
+          const px = barX(vi, total, width, view.barSpacing, view.scrollX);
+          const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
+          sprite.position.set(
+            ((px - halfW) / halfW) * 5,
+            ((sp.price ?? minP) - minP) / pRange * 6 - 3 + 0.4,
+            (sp.z_level ?? 0) * 0.3,
+          );
+          _scene.add(sprite);
+        }
+        for (const sp of shapes) {
+          if (sp.type !== 'plot3d_shape' || sp.pane !== '3d') continue;
+          const barIdx = sp.barIdx ?? 0;
+          const vi = barIdx - start;
+          if (vi < 0 || vi >= total) continue;
+          const px = barX(vi, total, width, view.barSpacing, view.scrollX);
+          const x = ((px - halfW) / halfW) * 5;
+          const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
+          const z = (sp.z_level ?? 0) * 0.3;
+          const s = sp.size ?? 1;
+          let geometry: THREE.BufferGeometry;
+          switch (sp.shape3d) {
+            case 'cube': geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3); break;
+            case 'sphere': geometry = new THREE.SphereGeometry(s * 0.2, 8, 6); break;
+            case 'pyramid': geometry = new THREE.ConeGeometry(s * 0.25, s * 0.35, 4); break;
+            case 'torus': geometry = new THREE.TorusGeometry(s * 0.2, s * 0.07, 6, 8); break;
+            case 'diamond': geometry = new THREE.OctahedronGeometry(s * 0.25); break;
+            case 'coneup': case 'conedown': geometry = new THREE.ConeGeometry(s * 0.22, s * 0.5, 12); break;
+            default: geometry = new THREE.BoxGeometry(s * 0.25, s * 0.25, s * 0.25);
+          }
+          const col = new THREE.Color(sp.color ?? '#b48cff');
+          const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+            color: col, emissive: col.clone().multiplyScalar(0.2),
+            specular: 0x222244, shininess: 60,
+          }));
+          // Signal cones: offset from the bar (gap scales with size), tip
+          // pointing AT the price — coneup below, conedown flipped above.
+          let yOff = 0;
+          let baseRotZ = 0;
+          if (sp.shape3d === 'coneup') { yOff = -(0.15 + 0.25) * s; }
+          else if (sp.shape3d === 'conedown') { yOff = (0.15 + 0.25) * s; baseRotZ = Math.PI; }
+          const d2r = Math.PI / 180;
+          mesh.rotation.set((sp.rx ?? 0) * d2r, (sp.ry ?? 0) * d2r, baseRotZ + (sp.rz ?? 0) * d2r);
+          mesh.position.set(x, y + yOff, z);
+          _scene.add(mesh);
+        }
       }
     }
   }

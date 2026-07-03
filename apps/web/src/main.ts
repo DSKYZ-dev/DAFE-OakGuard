@@ -1711,7 +1711,24 @@ document.addEventListener('DOMContentLoaded', () => {
       for (const inst of getActiveInstances()) {
         for (const e of inst.errors) errs.push(e);
       }
-      if (errs.length === 0) { appendChat('agent', 'No errors to fix.'); return; }
+      if (errs.length === 0) {
+        const src = document.getElementById('os-textarea') as HTMLTextAreaElement;
+        if (src && src.value.trim() !== getDefaultScript().trim()) {
+          try {
+            const { validate, formatValidationIssues } = await import('./oakscript/validator');
+            const vResult = validate(src.value);
+            if (!vResult.valid) {
+              const vErrs = formatValidationIssues(vResult.issues);
+              appendChat('agent', `Validation found issues — sending to advisor:\n${vErrs}`);
+              await agentDiagnoseErrors((reply: string) => {
+                appendChat('agent', reply.slice(0, 200));
+              });
+              return;
+            }
+          } catch {}
+        }
+        appendChat('agent', 'No errors to fix.'); return;
+      }
       appendChat('agent', `Diagnosing ${errs.length} error(s)...`);
       await agentDiagnoseErrors((reply: string) => {
         appendChat('agent', reply.slice(0, 200));
@@ -1820,8 +1837,8 @@ CRITICAL RULES:
 - var is ONLY for persistent state with a LITERAL initial value (var lastHigh = 0.0), updated with := inside logic. A var initializer runs ONCE on bar 0 and FREEZES — NEVER declare calculations/conditions/inputs-derived expressions with var; plain assignment recomputes every bar.
 - NEVER use a negative history index like high[-1] — that reads a FUTURE bar. Use [1]/[2] for past bars; confirm swings 1-2 bars late.
 - DYNAMIC price levels (fibs, pivots, moving S/R that follow new swings) MUST use plot(level, "Title", "#hex", 1, "stepline") — the line then moves when the level changes. hline() is ONLY for constants that never change (e.g. RSI 70/30); an hline whose value changes leaves a NEW permanent line each time and buries the chart.
-- The 3D engine supports plot3d(series, name, style, color, pane) with styles: surface, ribbon, scatter, bars3d, wireframe, mesh, line3d, helix, vortex, manifold, nebula, constellation, torus, trail. pane="main" renders a 3D scene on the main chart; pane="separate" renders in the lower 3D pane. Multiple plot3d("separate") calls stack side-by-side.
-- When the user asks for 3D visuals, ADD plot3d() calls while keeping every existing 2D plot and signal intact. Make it visually stunning — use surface/ribbon/bars3d/helix/vortex/manifold with vivid hex colors.${signalRule}${dimensionRule}
+- 3D: Full plot3d/plotshape_3d docs are in the coder system prompt. Key: 2D plot()/plotshape() do NOT render in 3D mode — use plot3d()/plotshape_3d(). MANDATORY: plotshape_3d() must pair with at least one plot3d() (same pane). When user wants 3D or derivatives, think in GEOMETRY and DEPTH — layered ribbons, phase-space scatter, topological wraps, vortex sheets at different z_levels. Make it visually stunning.${signalRule}${dimensionRule}
+- SELF-REVIEW BEFORE OUTPUT: Silently verify (1) mathematical accuracy — is every calculation, crossover, threshold, and indicator relationship correct? Then verify (2) visual ambition — does this push the 3D engine's boundaries? Are you using plot3d with z_level layering, plotshape_3d signals, surface/ribbon/bars3d geometry, and vivid colors? If either answer is no, refine until both are yes.
 - Goal: the best, most visually stunning version of the user's idea.`;
       const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
       const resp = await advisor.sendMessage(promptText, snapshot, undefined, 'oakscript_coder');
@@ -3090,8 +3107,11 @@ function frameBody(now: number) {
   const hasPane3d = combined3d ? combined3d.plot3d.some(p => p.pane === '3d') : false;
 
   if (hasPane3d) {
-    // 3D indicator mode: render bars + indicator geometry in Three.js every frame
-    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.width, canvas.height);
+    // 3D indicator mode: render bars + indicator geometry + 3D shapes in Three.js
+    const shape3DForMain = combined3d
+      ? [...combined3d.main, ...combined3d.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane === '3d')
+      : [];
+    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.width, canvas.height, shape3DForMain);
     // Draw time axis on the 2D canvas (always needed)
     drawTimeAxis(ctx, transformed, view);
   } else if (is3DMode) {
@@ -3158,7 +3178,8 @@ function frameBody(now: number) {
       } else {
         // Regular mode: handle separate pane 3D + overlay 3D
         const sep3D = combined.plot3d.filter(p => p.pane === 'separate') as OakPlot3D[];
-        show3D(sep3D);
+        const shape3DforSep = [...combined.main, ...combined.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane !== '3d');
+        show3D(sep3D, shape3DforSep, transformed.length);
         const main3D = combined.plot3d.filter(p => p.pane !== 'separate') as OakPlot3D[];
         if (main3D.length > 0 && !isViz3DActive()) toggle3DViz(transformed, view, canvas.width, canvas.height);
         if (main3D.length === 0 && isViz3DActive()) { disposeViz(); }

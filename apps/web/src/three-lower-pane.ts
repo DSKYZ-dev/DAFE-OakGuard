@@ -3,7 +3,7 @@
  * Minimal surface area — no mouse handlers, no orbit controls.
  */
 import * as THREE from 'three';
-import type { OakPlot3D } from './oakscript/runtime';
+import type { OakPlot3D, OakPlot } from './oakscript/runtime';
 
 const ID = 'three-lower-scene';
 let _ok = false;
@@ -50,8 +50,8 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   } catch { return null; }
 }
 
-export function show3D(plots: OakPlot3D[]): void {
-  if (plots.length === 0) { hide3D(); return; }
+export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: number): void {
+  if (plots.length === 0 && (!shapePlots || shapePlots.length === 0)) { hide3D(); return; }
   const r = ensure();
   if (!r) return;
   _ok = true;
@@ -64,18 +64,75 @@ export function show3D(plots: OakPlot3D[]): void {
   }
   for (const child of toRemove) { dispose(child); r.scene.remove(child); }
 
+  // Determine total bar count: from explicit totalBars param, or plot3d series length, or shape barIdx
+  let barCount = 0;
+  if (totalBars !== undefined) {
+    barCount = totalBars;
+  } else if (plots.length > 0 && plots[0].series) {
+    barCount = plots[0].series.length;
+  } else if (shapePlots && shapePlots.length > 0) {
+    barCount = Math.max(0, ...shapePlots.map(s => s.barIdx ?? 0)) + 1;
+  }
+  if (barCount < 2 && plots.length === 0 && (!shapePlots || shapePlots.length === 0)) return;
+
+  // Compute global Y range from plot3d values if present, otherwise from shape prices
+  let min = 0, max = 1, range = 1;
   const allVals = plots.flatMap(p => p.series.filter(v => isFinite(v) && !isNaN(v)));
-  if (allVals.length < 2) return;
-  const min = Math.min(...allVals), max = Math.max(...allVals), range = max - min || 1;
-  const zSpacing = plots.length <= 1 ? 0 : -(plots.length - 1) * 1.2;
+  if (allVals.length >= 2) {
+    min = Math.min(...allVals);
+    max = Math.max(...allVals);
+    range = max - min || 1;
+  } else if (shapePlots && shapePlots.length > 0) {
+    const prices = shapePlots.map(s => s.price ?? 0).filter(v => isFinite(v));
+    if (prices.length >= 2) {
+      min = Math.min(...prices);
+      max = Math.max(...prices);
+      range = max - min || 1;
+    }
+  }
 
-  for (let pi = 0; pi < plots.length; pi++) {
-    const p = plots[pi];
-    const z = zSpacing + pi * 2.4;
-    const vals = p.series.filter(v => isFinite(v) && !isNaN(v));
-    if (vals.length < 2) continue;
+  // Group plots by z_level — same level = stacked together at same Z,
+  // different levels = spaced apart. If z_level is unspecified, auto-space.
+  // Include shape z_levels in the mapping for consistent positioning.
+  const shapeLevels = shapePlots
+    ? new Set(shapePlots.filter(s => s.type === 'plot3d_shape' || s.type === 'plot3d_label').map(s => s.z_level ?? 0))
+    : new Set<number>();
+  const hasLevels = plots.some(p => p.z_level !== undefined) || shapeLevels.size > 0;
+  const groups = new Map<number, typeof plots>();
+  if (hasLevels) {
+    // Collect levels from both plot3d and shapes
+    const allLevels = new Set<number>();
+    for (const p of plots) allLevels.add(p.z_level ?? 0);
+    for (const lvl of shapeLevels) allLevels.add(lvl);
+    for (const key of allLevels) groups.set(key, []);
+    for (const p of plots) {
+      const key = p.z_level ?? 0;
+      groups.get(key)!.push(p);
+    }
+  } else {
+    // Auto-spacing: each plot gets its own Z
+    for (let i = 0; i < plots.length; i++) {
+      groups.set(i, [plots[i]]);
+    }
+  }
 
-    if (p.style === 'surface' || p.style === 'wireframe' || p.style === 'mesh') {
+  // Compute Z offsets: sort levels ascending, space groups by 2.4 units
+  const sortedLevels = [...groups.keys()].sort((a, b) => a - b);
+  const zOffsets = new Map<number, number>();
+  sortedLevels.forEach((key, idx) => {
+    zOffsets.set(key, idx * 2.4);
+  });
+
+  for (const [level, groupPlots] of groups) {
+    const baseZ = zOffsets.get(level) ?? 0;
+    for (let gi = 0; gi < groupPlots.length; gi++) {
+      const p = groupPlots[gi];
+      // Stack within the same level: micro-offset so stacked visuals don't Z-fight
+      const z = baseZ + gi * 0.05;
+      const vals = p.series.filter(v => isFinite(v) && !isNaN(v));
+      if (vals.length < 2) continue;
+
+      if (p.style === 'surface' || p.style === 'wireframe' || p.style === 'mesh') {
       const isWire = p.style === 'wireframe';
       const xs = Math.min(vals.length, 80), hs = 15;
       const verts: number[] = [], idx: number[] = [], cols: number[] = [];
@@ -271,6 +328,44 @@ export function show3D(plots: OakPlot3D[]): void {
       }
       r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(centerPts), count, 0.025, 6, false),
         new THREE.MeshPhongMaterial({ color: 0xb48cff, emissive: 0x442288, transparent: true, opacity: 0.25 })));
+    } else if (p.style === 'ridgeline') {
+      // Temporal distribution joyplot (LuxAlgo "Temporal VP" look): slice the
+      // series into time windows, histogram each window's values, and stack
+      // the resulting curves along Z with an HSL ramp (cyan → purple → red →
+      // amber). Each ridge answers "where did the values live in this period".
+      const windows = Math.max(4, Math.min(16, Math.floor(vals.length / 12)));
+      const bins = 28;
+      const winLen = Math.floor(vals.length / windows);
+      let maxFreq = 1;
+      const hists: number[][] = [];
+      for (let w = 0; w < windows; w++) {
+        const hist = new Array(bins).fill(0);
+        const from = w * winLen, to = w === windows - 1 ? vals.length : from + winLen;
+        for (let i = from; i < to; i++) {
+          const b = Math.max(0, Math.min(bins - 1, Math.floor(((vals[i] - min) / range) * (bins - 1))));
+          hist[b]++;
+        }
+        // one smoothing pass so ridges read as curves, not staircases
+        const sm = hist.map((v, i) => (hist[i - 1] ?? v) * 0.25 + v * 0.5 + (hist[i + 1] ?? v) * 0.25);
+        maxFreq = Math.max(maxFreq, ...sm);
+        hists.push(sm);
+      }
+      for (let w = 0; w < windows; w++) {
+        const pts: THREE.Vector3[] = [];
+        const zr = z + (w / Math.max(windows - 1, 1)) * 4 - 2;
+        for (let b = 0; b < bins; b++) {
+          pts.push(new THREE.Vector3((b / (bins - 1)) * 10 - 5, (hists[w][b] / maxFreq) * 3.2, zr));
+        }
+        const hue = 0.5 + (w / Math.max(windows - 1, 1)) * 0.6; // cyan → violet → red → amber (wraps)
+        const col = new THREE.Color().setHSL(hue % 1, 0.8, 0.55);
+        const curve = new THREE.CatmullRomCurve3(pts);
+        r.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(curve.getPoints(bins * 3)),
+          new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.9 })));
+        // faint floor shadow line anchoring each ridge
+        const floorPts = pts.map(v => new THREE.Vector3(v.x, 0.01, v.z));
+        r.scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(floorPts),
+          new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.15 })));
+      }
     } else if (p.style === 'trail') {
       const count = Math.min(vals.length, 80);
       const upper: THREE.Vector3[] = [], lower: THREE.Vector3[] = [];
@@ -290,7 +385,80 @@ export function show3D(plots: OakPlot3D[]): void {
         g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
         g.setIndex(idx); g.computeVertexNormals();
         r.scene.add(new THREE.Mesh(g, new THREE.MeshPhongMaterial({ color: new THREE.Color(p.color), transparent: true, opacity: 0.4 + (Math.abs(vals[Math.min(i, vals.length - 1)]) / maxV) * 0.2, side: THREE.DoubleSide, shininess: 30 })));
+      } // end inner loop
+    } // end else-if chain (trail)
+    } // end for gi (within group)
+  } // end for groups
+
+  // ── Render 3D labels (label3d) — billboard text sprites ──
+  if (shapePlots) {
+    let labelBudget = 40; // hard cap so an unconditional label3d can't stamp 500 sprites
+    for (let li = shapePlots.length - 1; li >= 0 && labelBudget > 0; li--) {
+      const sp = shapePlots[li];
+      if (sp.type !== 'plot3d_label' || !sp.text) continue;
+      labelBudget--;
+      const xFrac = barCount > 1 ? (sp.barIdx ?? 0) / (barCount - 1) : 0.5;
+      const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
+      sprite.position.set(
+        xFrac * 10 - 5,
+        ((sp.price ?? 0) - min) / range * 4 + 0.35,
+        zOffsets.get(sp.z_level ?? 0) ?? 0,
+      );
+      r.scene.add(sprite);
+    }
+  }
+
+  // ── Render 3D shapes (plotshape_3d) ──
+  if (shapePlots) {
+    for (const sp of shapePlots) {
+      if (sp.type !== 'plot3d_shape') continue;
+      let geometry: THREE.BufferGeometry;
+      const s = sp.size ?? 1;
+      switch (sp.shape3d) {
+        case 'cube':
+          geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3);
+          break;
+        case 'sphere':
+          geometry = new THREE.SphereGeometry(s * 0.2, 8, 6);
+          break;
+        case 'pyramid':
+          geometry = new THREE.ConeGeometry(s * 0.25, s * 0.35, 4);
+          break;
+        case 'torus':
+          geometry = new THREE.TorusGeometry(s * 0.2, s * 0.07, 6, 8);
+          break;
+        case 'diamond':
+          geometry = new THREE.OctahedronGeometry(s * 0.25);
+          break;
+        case 'coneup':
+        case 'conedown':
+          geometry = new THREE.ConeGeometry(s * 0.22, s * 0.5, 12);
+          break;
+        default:
+          geometry = new THREE.BoxGeometry(s * 0.25, s * 0.25, s * 0.25);
       }
+      const col = new THREE.Color(sp.color ?? '#b48cff');
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+        color: col, emissive: col.clone().multiplyScalar(0.2),
+        specular: 0x222244, shininess: 60,
+      }));
+      // Position: map barIdx to X (using barCount), price to Y (using min/range), z_level to Z (using zOffsets)
+      const xFrac = barCount > 1 ? (sp.barIdx ?? 0) / (barCount - 1) : 0.5;
+      const x = xFrac * 10 - 5;
+      const y = ((sp.price ?? 0) - min) / range * 4;
+      const z = zOffsets.get(sp.z_level ?? 0) ?? 0;
+      // Signal cones: offset from the bar (gap scales with size) with the tip
+      // pointing AT the price — coneup sits below, conedown flips and sits above.
+      let yOff = 0;
+      let baseRotZ = 0;
+      if (sp.shape3d === 'coneup') { yOff = -(0.15 + 0.25) * s; }
+      else if (sp.shape3d === 'conedown') { yOff = (0.15 + 0.25) * s; baseRotZ = Math.PI; }
+      // User rotation in degrees, applied on top of the built-in orientation.
+      const d2r = Math.PI / 180;
+      mesh.rotation.set((sp.rx ?? 0) * d2r, (sp.ry ?? 0) * d2r, baseRotZ + (sp.rz ?? 0) * d2r);
+      mesh.position.set(x, y + yOff, z);
+      mesh.castShadow = true;
+      r.scene.add(mesh);
     }
   }
 
@@ -309,8 +477,36 @@ export function show3D(plots: OakPlot3D[]): void {
   _rafId = requestAnimationFrame(loop);
 }
 
+/** Billboard text sprite drawn to a canvas texture — used by label3d(). */
+export function makeTextSprite(text: string, color: string, size: number): THREE.Sprite {
+  const cv = document.createElement('canvas');
+  const fontPx = 44;
+  const g = cv.getContext('2d')!;
+  g.font = `700 ${fontPx}px ui-monospace, Menlo, monospace`;
+  const tw = Math.ceil(g.measureText(text).width);
+  cv.width = Math.max(2, tw + 24);
+  cv.height = fontPx + 20;
+  const g2 = cv.getContext('2d')!;
+  g2.font = `700 ${fontPx}px ui-monospace, Menlo, monospace`;
+  g2.textBaseline = 'middle';
+  // pill backing so labels stay readable over bright geometry
+  g2.fillStyle = 'rgba(6,6,18,0.65)';
+  g2.beginPath();
+  (g2 as any).roundRect ? (g2 as any).roundRect(0, 0, cv.width, cv.height, 12) : g2.rect(0, 0, cv.width, cv.height);
+  g2.fill();
+  g2.fillStyle = color;
+  g2.fillText(text, 12, cv.height / 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  const s = 0.45 * Math.max(0.2, Math.min(3, size));
+  sprite.scale.set((cv.width / cv.height) * s, s, 1);
+  return sprite;
+}
+
 function dispose(obj: THREE.Object3D): void {
   if (obj instanceof THREE.Mesh || obj instanceof THREE.Line || obj instanceof THREE.LineSegments) { obj.geometry?.dispose(); const m = obj.material; if (Array.isArray(m)) m.forEach(x => x.dispose()); else m?.dispose(); }
+  if (obj instanceof THREE.Sprite) { obj.material.map?.dispose(); obj.material.dispose(); }
   if (obj instanceof THREE.Group) obj.children.forEach(c => dispose(c));
 }
 

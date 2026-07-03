@@ -777,17 +777,68 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       }
 
       case 'plot3d': {
-        // plot3d(source, name, style, color, pane)
-        // source is the AST node — pass to buildSeries for full array reconstruction
+        // plot3d(source, name, style, color, pane, z_level?)
+        // z_level: number — Z-axis position. Positive = forward, negative = back.
+        // Use same level value to stack visuals together; different levels to space them.
         const name = typeof args[1] === 'string' ? args[1] : '3D Plot';
         const style = typeof args[2] === 'string' ? args[2] : 'surface';
         const col = typeof args[3] === 'string' ? args[3] : '#b48cff';
         const pane = typeof args[4] === 'string' ? args[4] : 'main';
+        const z_level = typeof args[5] === 'number' ? args[5] : undefined;
         if (ctx.barIndex === ctx.bars.close.length - 1) {
           const series = buildSeries(expr.args[0], ctx);
           ctx.plots.push({
             type: 'plot3d', name, series,
-            style: style as any, color: col, pane,
+            style: style as any, color: col, pane, z_level,
+          } as any);
+        }
+        return true;
+      }
+
+      case 'plotshape_3d': {
+        // plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?)
+        // shape: "cube" | "sphere" | "pyramid" | "torus" | "diamond" | "coneup" | "conedown"
+        // coneup/conedown auto-offset from the bar (gap scales with size) with the
+        // tip pointing AT the price — the standard buy/sell markers.
+        // rx/ry/rz: optional rotation in DEGREES, applied on top of any built-in
+        // orientation, so any shape can be posed for custom scenes.
+        const barIdx = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const price = typeof args[1] === 'number' ? args[1] : 0;
+        const title = typeof args[2] === 'string' ? args[2] : '';
+        const shape3d = typeof args[3] === 'string' ? args[3] : 'cube';
+        const col = typeof args[4] === 'string' ? args[4] : '#b48cff';
+        const size = typeof args[5] === 'number' ? args[5] : 1;
+        const z_level = typeof args[6] === 'number' ? args[6] : 0;
+        const pane = (args[7] === '3d' || args[7] === 'main' ? args[7] : 'separate') as 'main' | 'separate' | '3d';
+        const rx = typeof args[8] === 'number' ? args[8] : 0;
+        const ry = typeof args[9] === 'number' ? args[9] : 0;
+        const rz = typeof args[10] === 'number' ? args[10] : 0;
+        ctx.plots.push({
+          type: 'plot3d_shape', name: title,
+          barIdx, price, color: col,
+          shape3d: shape3d as any,
+          size, z_level,
+          pane, rx, ry, rz,
+        });
+        return true;
+      }
+
+      case 'label3d': {
+        // label3d(bar_index, price, text, color?, size?, z_level?, pane?)
+        // Billboard text sprite at exact bar/price/Z coordinates in a 3D scene.
+        // Pairs with plot3d/plotshape_3d — names peaks, levels, and signals the
+        // way the reference visuals label BTC/ETH nodes or planet spheres.
+        const barIdx = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const price = typeof args[1] === 'number' ? args[1] : 0;
+        const text = args[2] != null ? String(args[2]) : '';
+        const col = typeof args[3] === 'string' ? args[3] : '#ffffff';
+        const size = typeof args[4] === 'number' ? args[4] : 1;
+        const z_level = typeof args[5] === 'number' ? args[5] : 0;
+        const pane = typeof args[6] === 'string' ? args[6] : 'separate';
+        if (text) {
+          ctx.plots.push({
+            type: 'plot3d_label', name: text, text,
+            barIdx, price, color: col, size, z_level, pane,
           } as any);
         }
         return true;

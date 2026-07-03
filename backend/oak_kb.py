@@ -135,17 +135,59 @@ SECTIONS: list[dict] = [
     {
         "title": "3D Plotting — plot3d() Complete Reference",
         "content": (
-            "plot3d(series, name, style, color, pane?)\n"
-            "Styles: \"surface\" (volumetric mesh), \"ribbon\" (glowing tube), "
-            "\"bars3d\" (columns), \"scatter\" (point cloud), \"line3d\" (thin ribbon), "
-            "\"wireframe\" (x-ray), \"mesh\" (solid).\n"
-            "\"separate\" pane: 3D lower panel, replaces 2D secondary. "
-            "\"main\" pane: floats above price chart.\n"
-            "2D and 3D separate panes CANNOT coexist."
+            "plot3d(series, name, style, color, pane?, z_level?)\n"
+            "ALL 15 STYLES (QUOTED strings):\n"
+            "\"surface\" volumetric mesh terrain (HSL green→red by height) | "
+            "\"ribbon\" glowing spline tube (MACD/MAs/centerlines) | "
+            "\"bars3d\" extruded columns (volume/histograms) | "
+            "\"scatter\" HSL point cloud sized by volume (clusters/divergence) | "
+            "\"line3d\" thin ribbon (secondary series) | "
+            "\"wireframe\" x-ray surface | \"mesh\" solid opaque surface | "
+            "\"helix\" double-helix DNA strands + rungs (cyclic data) | "
+            "\"vortex\" 6-arm converging spiral tornado (momentum/volatility cones) | "
+            "\"manifold\" multi-spline wireframe sheet (topology/volume-weighted) | "
+            "\"nebula\" glowing particle cloud, bull/bear colored (order flow) | "
+            "\"constellation\" stars + connecting lines (sparse signals/patterns) | "
+            "\"torus\" tunnel of rings scaled by magnitude (cyclic/volume rings) | "
+            "\"trail\" streaming ribbon, width breathes with magnitude (live feeds) | "
+            "\"ridgeline\" temporal distribution joyplot: series sliced into 4-16 time "
+            "windows, each window's value histogram stacked in depth, cool→hot color "
+            "ramp (price/volume profiles over time, market memory — needs 24+ bars).\n"
+            "z_level (number, optional): stacks multiple plot3d calls in depth — same "
+            "value = same Z layer, different values = spaced 2.4 units apart; omit for "
+            "auto-spacing.\n"
+            "PANES: pane=\"3d\" = flagship exclusive full-chart takeover, geometry "
+            "renders unified WITH the 3D price bars (orbit camera); while active NO 2D "
+            "plots or separate-pane 3D render from ANY indicator; only one pane=\"3d\" "
+            "indicator at a time. pane=\"separate\" = lower 3D pane (multiple calls "
+            "stack; replaces the 2D secondary pane; also one at a time). "
+            "Default \"main\" is a lighter legacy overlay — prefer \"3d\" or \"separate\".\n\n"
+            "plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?)\n"
+            "3D geometric marker at exact (bar, price, Z). Shapes: \"cube\", \"sphere\", "
+            "\"pyramid\", \"torus\", \"diamond\", \"coneup\", \"conedown\". Size 0.2-3.0. "
+            "pane \"separate\" (default) or \"3d\". Call INSIDE a signal condition. "
+            "STANDARD SIGNAL MARKERS: buy = \"coneup\" green (#22cc88) at low — it "
+            "auto-offsets BELOW the bar with a size-scaled gap, tip pointing up at it; "
+            "sell = \"conedown\" red (#ff4477) at high — flipped upside down, "
+            "auto-offsets ABOVE the bar, tip pointing down. Pass a strength-derived "
+            "size (e.g. spread/ATR clamped to 0.6-2.2) so cone size is proportional "
+            "to signal quality. rx/ry/rz (optional, DEGREES) rotate any shape on top "
+            "of its built-in orientation for custom scenes. ALWAYS pair with at least "
+            "one plot3d of the same pane so the scene has geometry context.\n\n"
+            "label3d(bar_index, price, text, color?, size?, z_level?, pane?)\n"
+            "Billboard TEXT label at exact (bar, price, Z) — names peaks, levels, zones, "
+            "signals (\"POC\", \"BTC\", \"Breakout\"). Keep text SHORT. Call INSIDE a "
+            "condition (engine renders only the 40 most recent). Labels face the camera "
+            "and draw on top. Pair with plotshape_3d for labeled markers.\n\n"
+            "CRITICAL: when the chart is in 3D mode, 2D plot()/plotshape() do NOT "
+            "render — only plot3d/plotshape_3d/label3d execute."
         ),
         "keywords": [
-            "plot3d", "3d", "threejs", "webgl", "surface", "ribbon",
-            "bars3d", "scatter", "line3d", "wireframe", "mesh",
+            "plot3d", "plotshape_3d", "label3d", "3d", "threejs", "webgl",
+            "surface", "ribbon", "bars3d", "scatter", "line3d", "wireframe", "mesh",
+            "helix", "vortex", "manifold", "nebula", "constellation", "torus", "trail",
+            "ridgeline", "joyplot", "profile", "z_level", "pane", "shape", "sphere",
+            "cube", "pyramid", "diamond", "text", "label", "style", "styles",
         ],
     },
     {
@@ -304,10 +346,18 @@ SECTIONS: list[dict] = [
             "inside a conditional that skips bars) for its historical series to "
             "reconstruct correctly — plot3d itself only fires once, on the final "
             "bar, but it needs the full per-bar history of its source expression to "
-            "have been tracked all along the way."
+            "have been tracked all along the way.\n"
+            "18. 3D signal markers invisible → pane mismatch. When any plot3d uses "
+            "pane=\"3d\" (exclusive main-chart takeover), the lower 3D pane is hidden — "
+            "a plotshape_3d/label3d that omits its pane argument defaults to "
+            "\"separate\" and renders NOWHERE. Every plotshape_3d/label3d in a "
+            "pane=\"3d\" script must pass \"3d\" as its final argument: "
+            "plotshape_3d(bar_index, low, \"Buy\", \"sphere\", \"#22cc88\", 1.4, 0, \"3d\"). "
+            "The validator flags this as MISMATCHED_3D_PANE."
         ),
         "keywords": ["pitfall", "troubleshoot", "error", "bug", "fix", "common mistake", "gotcha",
-                     "performance", "slow", "undefined variable", "sparse scan"],
+                     "performance", "slow", "undefined variable", "sparse scan",
+                     "3d", "pane", "marker", "invisible", "signal", "plotshape_3d", "label3d"],
     },
     {
         "title": "User-Defined Functions",
@@ -510,7 +560,9 @@ FUNCTIONS: list[dict] = [
     {"name": "plotarrow", "signature": "plotarrow(bar_index, price, title, direction, color?, pane?)", "desc": "Directional arrow marker", "category": "plotting_2d"},
     {"name": "plotchar", "signature": "plotchar(bar_index, price, char, color?, pane?)", "desc": "Character/emoji marker", "category": "plotting_2d"},
     {"name": "label.new", "signature": "label.new(x, y, text, color)", "desc": "Text label at position", "category": "plotting_2d"},
-    {"name": "plot3d", "signature": "plot3d(series, name, style, color, pane?)", "desc": "3D visualization (surface/ribbon/bars3d/scatter/wireframe/mesh)", "category": "plotting_3d"},
+    {"name": "plot3d", "signature": "plot3d(series, name, style, color, pane?, z_level?)", "desc": "3D visualization — 15 styles: surface/ribbon/bars3d/scatter/line3d/wireframe/mesh/helix/vortex/manifold/nebula/constellation/torus/trail/ridgeline; pane \"3d\"|\"separate\"|\"main\"; z_level stacks layers in depth", "category": "plotting_3d"},
+    {"name": "plotshape_3d", "signature": "plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?)", "desc": "3D marker at (bar, price, Z) — shapes cube/sphere/pyramid/torus/diamond/coneup/conedown; buy=coneup green below bar, sell=conedown red above bar (auto-offset, tip at price); size 0.2-3.0 (scale with signal strength); rx/ry/rz rotate in degrees; call inside a condition; pair with a plot3d of the same pane", "category": "plotting_3d"},
+    {"name": "label3d", "signature": "label3d(bar_index, price, text, color?, size?, z_level?, pane?)", "desc": "Billboard text label at (bar, price, Z) in a 3D scene — short text, call inside a condition (40 most recent render)", "category": "plotting_3d"},
     {"name": "input", "signature": "input(default, title, min?, max?, step?)", "desc": "UI-adjustable parameter", "category": "input"},
     {"name": "color.new", "signature": "color.new(baseColor, transp)", "desc": "Add transparency to hex color", "category": "color"},
     {"name": "color.rgb", "signature": "color.rgb(r, g, b, transp?)", "desc": "Create color from RGB channels", "category": "color"},
@@ -658,6 +710,34 @@ EXAMPLES: list[dict] = [
         "keywords": ["macd", "dashboard", "ribbon", "crossover"],
     },
     {
+        "name": "3D Showcase — Ridgeline Memory + Labeled Signals",
+        # The canonical full-3D script: exclusive pane="3d" takeover, ridgeline
+        # distribution, layered ribbon at its own z_level, shape+text markers.
+        "code": (
+            'pocLen = input(50, "POC Length")\n'
+            'rsiLen = input(14, "RSI Length")\n\n'
+            "poc = median(close, pocLen)\n"
+            "r = rsi(close, rsiLen)\n"
+            "dev = stdev(close, 20)\n\n"
+            "reclaim = crossover(close, poc)\n"
+            "loss = crossunder(close, poc)\n"
+            "strength = min(abs(close - poc) / max(dev, 0.0001) + 0.6, 2.2)\n\n"
+            "if reclaim {\n"
+            '    plotshape_3d(bar_index, low, "Reclaim", "coneup", "#22cc88", strength, 0, "3d")\n'
+            '    label3d(bar_index, low, "POC RECLAIM", "#22cc88", 1.1, 0, "3d")\n'
+            "}\n"
+            "if loss {\n"
+            '    plotshape_3d(bar_index, high, "Loss", "conedown", "#ff4477", strength, 0, "3d")\n'
+            '    label3d(bar_index, high, "POC LOSS", "#ff4477", 1.1, 0, "3d")\n'
+            "}\n\n"
+            'plot3d(close, "Price Memory", "ridgeline", "#b48cff", "3d", 0)\n'
+            'plot3d(r, "RSI Ribbon", "ribbon", "#22aaff", "3d", 1)\n'
+            'plot3d(dev, "Volatility Bars", "bars3d", "#ffd43b", "3d", 2)'
+        ),
+        "keywords": ["3d", "ridgeline", "label3d", "plotshape_3d", "showcase",
+                     "profile", "joyplot", "z_level", "pane", "flagship"],
+    },
+    {
         "name": "Bollinger Bands + Volume Terrain",
         "code": (
             'len = input(20, "Length")\n'
@@ -739,7 +819,17 @@ SYNONYMS: dict[str, list[str]] = {
     "cloud": ["fill", "area", "color"], "ribbon": ["plot3d", "ema"],
     "marker": ["plotshape", "plotchar", "plotarrow"], "arrow": ["plotarrow", "plotshape"],
     "label": ["label.new", "plotchar"], "background": ["bgcolor", "color"],
-    "3d": ["plot3d", "surface", "ribbon"], "surface": ["plot3d"], "mesh": ["plot3d"],
+    "3d": ["plot3d", "plotshape_3d", "label3d", "surface", "ribbon"],
+    "surface": ["plot3d"], "mesh": ["plot3d"],
+    "helix": ["plot3d"], "vortex": ["plot3d"], "manifold": ["plot3d"],
+    "nebula": ["plot3d"], "constellation": ["plot3d"], "torus": ["plot3d"],
+    "trail": ["plot3d"], "ridgeline": ["plot3d", "profile"],
+    "joyplot": ["ridgeline", "plot3d"], "distribution": ["ridgeline", "plot3d"],
+    "profile": ["ridgeline", "plot3d", "volume"],
+    "text": ["label3d", "label.new"], "annotate": ["label3d", "label.new"],
+    "name": ["label3d"], "planet": ["plotshape_3d", "label3d"],
+    "sphere": ["plotshape_3d"], "landscape": ["surface", "ridgeline", "plot3d"],
+    "terrain": ["surface", "bars3d", "plot3d"],
     "dashboard": ["plot3d", "combine", "layer"], "layer": ["combine", "plot3d", "fill"],
     "alert": ["alertcondition"], "notify": ["alert", "alertcondition"],
     "divergence": ["rsi", "crossover", "crossunder"], "color": ["color.new", "color.rgb"],
@@ -767,6 +857,19 @@ SYNTAX_RULES = (
     "number under 3 different style names. pane=\"3d\" is an exclusive main-chart "
     "takeover (no 2D or separate-pane 3D renders alongside it) and only one pane=\"3d\" "
     "plus one pane=\"separate\" 3D indicator can be active at a time. "
+    "3D toolkit: plot3d(series, name, style, color, pane?, z_level?) — 15 styles: "
+    "surface, ribbon, bars3d, scatter, line3d, wireframe, mesh, helix, vortex, "
+    "manifold, nebula, constellation, torus, trail, ridgeline (temporal distribution "
+    "joyplot). plotshape_3d(bar_index, price, title, shape, color, size, z_level?, "
+    "pane?, rx?, ry?, rz?) with shapes cube/sphere/pyramid/torus/diamond/coneup/"
+    "conedown — buy signals: \"coneup\" green at low (auto-offset below the bar, tip "
+    "up); sell signals: \"conedown\" red at high (flipped, auto-offset above, tip "
+    "down); size from signal strength; rx/ry/rz rotate in degrees — and label3d(bar_index, "
+    "price, text, color?, size?, z_level?, pane?) billboard text labels — both go "
+    "INSIDE signal conditions and need a plot3d of the same pane for scene context; "
+    "in a pane=\"3d\" script BOTH must pass \"3d\" as their final argument or they "
+    "default to the (hidden) separate pane and render nowhere. "
+    "In 3D mode, 2D plot()/plotshape() do NOT render. "
     "STRUCTURE (top-to-bottom, once per bar): 1) input() declarations 2) calculations "
     "(assign every variable before use) 3) var persistent state 4) boolean signal "
     "conditions 5) plotshape markers INSIDE if-blocks (buy at low/triangleup, sell at "

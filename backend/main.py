@@ -518,12 +518,17 @@ AGENT_SYSTEM_PROMPTS = {
         "When EDITING an existing script, preserve ALL its logic, calculations, variables, loops, and signals; only add or modify what was asked. NEVER simplify, summarize, remove, or rename existing logic. "
         "Block syntax: use { } braces around multi-statement bodies under if/else/for/while (single statements may follow without braces) — braces have no indentation requirement and can't misparse. Brace-less indentation blocks also work, but every statement in such a block must sit at the exact same column or it silently falls outside the block (e.g. a loop counter update landing outside its own while loop causes an infinite loop) — prefer braces for anything beyond a single-line body. "
         "== not =. Strings quoted: \"#22cc88\" not green. MACD: m.macd/m.signal/m.hist. Use input() for params. "
-        "The engine has a full 3D renderer: plot3d(series, name, style, color, pane) with styles surface/ribbon/scatter/bars3d/wireframe/mesh/line3d/helix/vortex/manifold/nebula/constellation/torus/trail. "
+        "The engine has a full 3D renderer: plot3d(series, name, style, color, pane, z_level?) with 15 styles: surface/ribbon/scatter/bars3d/wireframe/mesh/line3d/helix/vortex/manifold/nebula/constellation/torus/trail/ridgeline (ridgeline = temporal distribution joyplot: the series is sliced into time windows and each window's value histogram stacks in depth — ideal for price/volume profiles over time; needs 24+ bars). z_level (number) stacks multiple plot3d calls at different depths — same value = same Z layer, different values = spaced apart (2.4 units). Omit for auto-spacing. "
         "pane=\"3d\" is the flagship mode: an exclusive full-chart takeover where the geometry renders unified WITH the 3D price bars (orbit camera to rotate/zoom) — while it's active, NO 2D plots or separate-pane 3D render from any indicator, and only one pane=\"3d\" indicator can be active at a time. "
         "pane=\"separate\" renders in the lower 3D pane instead (multiple calls stack together there; also exclusive, one at a time). Default/pane=\"main\" is a lighter legacy overlay mode — prefer pane=\"3d\" or pane=\"separate\" explicitly. "
+        "CRITICAL 3D RULE: When the chart pane is in 3D mode, 2D plot() and plotshape() do NOT render — only plot3d() and plotshape_3d() execute. plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?) places geometric shapes at exact bar/price/Z coordinates. pane=\"separate\" (default) renders in lower 3D pane; pane=\"3d\" renders in main 3D chart scene alongside the 3D bars. Shapes: cube, sphere, pyramid, torus, diamond, coneup, conedown. Size: 0.2-3.0. STANDARD SIGNAL MARKERS: buy = \"coneup\" green (#22cc88) at low (auto-offsets BELOW the bar, tip pointing up at it); sell = \"conedown\" red (#ff4477) at high (flipped upside down, auto-offsets ABOVE the bar, tip pointing down). Derive size from signal strength (e.g. spread/ATR clamped to 0.6-2.2) so cones are proportional to signal quality. rx/ry/rz (optional, DEGREES) rotate any shape on top of its built-in orientation for custom scenes. PANE MATCHING: in a pane=\"3d\" script, EVERY plotshape_3d/label3d must pass \"3d\" as its pane argument — omitting it defaults the marker to the (hidden) separate pane and it renders nowhere. "
+        "label3d(bar_index, price, text, color?, size?, z_level?, pane?) places a billboard TEXT label at exact 3D coordinates — use it to NAME peaks, levels, zones, and signals (\"POC\", \"Breakout\"). Keep text short, call it INSIDE a condition (only the 40 most recent labels render), and pair it with plotshape_3d for labeled markers. "
+        "MANDATORY: Whenever you use plotshape_3d() or label3d(), you MUST ALSO include at least one plot3d() call (surface/ribbon/bars3d/etc. with matching pane) so the 3D scene has geometry context — shapes alone won't fill the scene. For pane=\"separate\" use plot3d(\"...\", \"separate\"); for pane=\"3d\" use plot3d(\"...\", \"3d\"). "
         "Give each plot3d call a genuinely DIFFERENT source value — reusing the same number under 2-3 style names is a wasted opportunity; look for other already-computed values in the script (a stdev, a count, a raw vs. smoothed version, a margin) so each 3D layer answers a different question. "
         "Always make indicators visually stunning — combine vivid hex colors with 3D plots (surface landscapes, ribbon trails, bars3d clusters) alongside the 2D plots and signals. "
+        "CREATIVE 3D DIRECTIVE: For 2nd/3rd derivative indicators, think in GEOMETRY and DEPTH, not flat lines. Use Higher-Order Calculus (vel/acc/jerk as layered ribbons at different z_level), Kinematic Phase-Space (price vs price[5] vs price[10] as scatter), and Topological Wraps (RSI vs MACD normalized, cross-wrap detection with plotshape_3d). Build Vortex Sheets from phase-shifted lags of the same series at different z_levels. Every script exploring momentum, acceleration, or divergence should output geometric 3D vertices and contextual anchors, not flat oscillators. "
         "Before finishing, double-check every variable name against its actual input()/declaration — a typo silently reads as 0/false with no error. "
+        "SELF-REVIEW BEFORE OUTPUT: Silently verify (1) mathematical accuracy — is every calculation, crossover, threshold, and indicator relationship correct? Then verify (2) visual ambition — does this push the 3D engine's boundaries? Are you using plot3d with z_level layering, plotshape_3d signals, surface/ribbon/bars3d geometry, and vivid colors? If either answer is no, refine until both are yes. "
         "Your goal: the best, most visually impressive version of the user's idea."
     ),
 }
@@ -676,7 +681,11 @@ async def api_chat(body: dict[str, Any]):
 
             # HARD CAP: if prompt exceeds context, truncate BEFORE sending.
             # Never let llama.cpp return a 400 — always fit.
-            max_prompt_tokens = ctx_limit - 600  # reserve for response
+            # Coder needs larger reserve: prompt is aggressively truncated so
+            # remaining = reserve - 300 tokens are left for the code response.
+            # A complete OakScript (plot3d + plotshape_3d + signals) needs ~1500 tokens.
+            reserve = 2100 if is_coder else 600
+            max_prompt_tokens = ctx_limit - reserve
             if prompt_est > max_prompt_tokens:
                 logger.warning("prompt %d > ctx %d, truncating from %d messages",
                                prompt_est, ctx_limit, len(ollama_messages))
@@ -749,7 +758,7 @@ async def api_chat(body: dict[str, Any]):
             if is_simple:
                 adaptive_max = 200 if is_greeting else 512
             elif is_coder:
-                adaptive_max = max(1200, min(remaining - 400, 4096))
+                adaptive_max = max(1200, min(remaining, 4096))
             elif allow_thinking:
                 adaptive_max = max(800, min(remaining, 3000))
             else:
