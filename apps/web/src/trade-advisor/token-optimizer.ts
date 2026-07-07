@@ -366,7 +366,14 @@ export function injectTokenBudget(
   // Max budget: scale with context — small models get a floor, large models get proportional room.
   // Cap at roughly 50% of available context so the model always has headroom for reasoning.
   const cap = Math.max(800, Math.round(available * 0.5));
-  const maxBudget = Math.max(500, cap - estimatedTokens);
+  let maxBudget = Math.max(500, cap - estimatedTokens);
+  // The coder must emit a COMPLETE script — a response budget that collapses
+  // toward the 500 floor truncates it mid-fence (the "No code block found"
+  // failure). Guarantee the coder a real response window even when the prompt
+  // is large; the prompt side is what gets trimmed, never the script output.
+  if (agentType === 'oakscript_coder') {
+    maxBudget = Math.max(maxBudget, Math.min(2048, Math.round(available * 0.4)));
+  }
 
   adjustCompression(budget, estimatedTokens + maxBudget);
 

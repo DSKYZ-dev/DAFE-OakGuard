@@ -925,14 +925,24 @@ function buildSurfaceFromSeries(series: number[], view: ViewState, width: number
   return new THREE.Mesh(g, new THREE.MeshPhongMaterial({ vertexColors: true, side: THREE.DoubleSide, transparent: true, opacity: 0.8, shininess: 25 }));
 }
 
-function buildRibbonFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Mesh | null {
+function buildRibbonFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number, straight = false): THREE.Mesh | null {
   const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
   if (vals.length < 3) return null;
   const step = Math.max(1, Math.floor(vals.length / 150));
   const pts: THREE.Vector3[] = [];
   for (let i = 0; i < vals.length; i += step)
     pts.push(new THREE.Vector3(seriesX(i, vals.length, view, width, visibleCount), seriesY(vals[i], sMin, sRange), 0));
-  return new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), pts.length * 2, 0.06, 6, false),
+  // straight (line3d): exact segments — Catmull-Rom smoothing turns
+  // step-shaped level series (fibs/pivots) into spike blades.
+  let curve: THREE.Curve<THREE.Vector3>;
+  if (straight) {
+    const path = new THREE.CurvePath<THREE.Vector3>();
+    for (let i = 0; i < pts.length - 1; i++) path.add(new THREE.LineCurve3(pts[i], pts[i + 1]));
+    curve = path as unknown as THREE.Curve<THREE.Vector3>;
+  } else {
+    curve = new THREE.CatmullRomCurve3(pts);
+  }
+  return new THREE.Mesh(new THREE.TubeGeometry(curve, pts.length * 2, straight ? 0.03 : 0.06, 6, false),
     new THREE.MeshPhongMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color).multiplyScalar(0.15), shininess: 50 }));
 }
 
@@ -1230,39 +1240,56 @@ export function renderMain3DScene(
     const { start, end } = getVisibleRange(view, width, bars.length);
     const visibleCount = end - start + 1;
 
-    // Build indicator geometry
-    for (const p of plots) {
-      if (p.pane !== '3d') continue;
+    // Build indicator geometry. z_level controls DEPTH separation so parallel
+    // level-lines (fibs/pivots) stay cleanly spaced instead of overlapping
+    // into a rope: layers on different z_levels render on parallel Z planes,
+    // and when NO z_level is given each layer auto-gets its own plane. Every
+    // build function returns geometry centered at z=0, so we just offset the
+    // returned object's position.z. (Previously z_level was silently ignored
+    // here — every layer piled onto z=0.)
+    const p3dLayers = plots.filter(p =>
+      p.pane === '3d' && p.series.filter(v => isFinite(v) && !isNaN(v)).length >= 2);
+    const anyLevel = p3dLayers.some(p => p.z_level !== undefined);
+    const zKeys = anyLevel
+      ? [...new Set(p3dLayers.map(p => p.z_level ?? 0))].sort((a, b) => a - b)
+      : p3dLayers.map((_, i) => i);
+    const Z_SPACING = 2.0;
+    const zCenter = ((zKeys.length - 1) / 2) * Z_SPACING; // center the stack around z=0
+    for (let pi = 0; pi < p3dLayers.length; pi++) {
+      const p = p3dLayers[pi];
       const series = p.series.filter(v => isFinite(v) && !isNaN(v));
-      if (series.length < 2) continue;
       const col = typeof p.color === 'string' ? p.color : '#b48cff';
+      const zKey = anyLevel ? (p.z_level ?? 0) : pi;
+      const zPlane = zKeys.indexOf(zKey) * Z_SPACING - zCenter;
 
+      let obj: THREE.Object3D | null = null;
       switch (p.style) {
         case 'surface': case 'wireframe': case 'mesh':
-          { const m = buildSurfaceFromSeries(series, view, width, col, visibleCount); if (m) _scene.add(m); break; }
+          obj = buildSurfaceFromSeries(series, view, width, col, visibleCount); break;
         case 'ribbon': case 'line3d':
-          { const m = buildRibbonFromSeries(series, view, width, col, visibleCount); if (m) _scene.add(m); break; }
+          obj = buildRibbonFromSeries(series, view, width, col, visibleCount, p.style === 'line3d'); break;
         case 'bars3d':
-          { const g = buildBarsFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildBarsFromSeries(series, view, width, col, visibleCount); break;
         case 'scatter':
-          { const g = buildScatterFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildScatterFromSeries(series, view, width, col, visibleCount); break;
         case 'helix':
-          { const g = buildHelixFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildHelixFromSeries(series, view, width, col, visibleCount); break;
         case 'manifold':
-          { const g = buildManifoldFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildManifoldFromSeries(series, view, width, col, visibleCount); break;
         case 'trail':
-          { const g = buildTrailFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildTrailFromSeries(series, view, width, col, visibleCount); break;
         case 'vortex':
-          { const g = buildVortexFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildVortexFromSeries(series, view, width, col, visibleCount); break;
         case 'nebula':
-          { const g = buildNebulaFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildNebulaFromSeries(series, view, width, col, visibleCount); break;
         case 'constellation':
-          { const g = buildConstellationFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildConstellationFromSeries(series, view, width, col, visibleCount); break;
         case 'torus':
-          { const g = buildTorusFromSeries(series, view, width, col, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildTorusFromSeries(series, view, width, col, visibleCount); break;
         case 'ridgeline':
-          { const g = buildRidgelineFromSeries(series, view, width, visibleCount); if (g) _scene.add(g); break; }
+          obj = buildRidgelineFromSeries(series, view, width, visibleCount); break;
       }
+      if (obj) { obj.position.z += zPlane; _scene.add(obj); }
     }
 
     // ── Render 3D shapes (plotshape_3d with pane="3d") ──
@@ -1273,19 +1300,23 @@ export function renderMain3DScene(
         const halfW = width * 0.5;
         const total = visible.length;
         let labelBudget = 40;
+        // Declutter: skip same-text labels that would land on top of an
+        // already-placed one (newest wins) — dense signal runs otherwise
+        // stack "BULL FIB" dozens of times into unreadable towers.
+        const placedLabels: Array<{ text: string; x: number; y: number }> = [];
         for (let li = shapes.length - 1; li >= 0 && labelBudget > 0; li--) {
           const sp = shapes[li];
           if (sp.type !== 'plot3d_label' || sp.pane !== '3d' || !sp.text) continue;
-          labelBudget--;
           const vi = (sp.barIdx ?? 0) - start;
           if (vi < 0 || vi >= total) continue;
           const px = barX(vi, total, width, view.barSpacing, view.scrollX);
+          const x = ((px - halfW) / halfW) * 5;
+          const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3 + 0.4;
+          if (placedLabels.some(pl => pl.text === sp.text && Math.abs(pl.x - x) < 1.0 && Math.abs(pl.y - y) < 0.6)) continue;
+          placedLabels.push({ text: sp.text, x, y });
+          labelBudget--;
           const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
-          sprite.position.set(
-            ((px - halfW) / halfW) * 5,
-            ((sp.price ?? minP) - minP) / pRange * 6 - 3 + 0.4,
-            (sp.z_level ?? 0) * 0.3,
-          );
+          sprite.position.set(x, y, (sp.z_level ?? 0) * 0.3);
           _scene.add(sprite);
         }
         for (const sp of shapes) {

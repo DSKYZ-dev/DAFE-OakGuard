@@ -135,6 +135,38 @@ rsiVal = rsi(close, rsiLen)
 plot3d(rsiVal, "RSI Scatter", "scatter", "#ff6b6b", "separate")`,
   },
   {
+    name: 'Fibonacci Levels 3D',
+    description: 'Three straight Fibonacci retracement levels on cleanly separated depth planes (line3d + distinct z_levels), with reclaim/loss cone signals — the correct way to render level lines in 3D',
+    category: '3D Visualizations',
+    source: `// Fibonacci Levels 3D — separated level planes + reclaim/loss cones
+// Each level uses "line3d" (exact straight segments) at a DISTINCT z_level
+// (0/1/2) so the lines stay clean and parallel instead of roping together.
+lookback = input(40, "Swing Lookback", 10, 200)
+markerSize = input(1.2, "Marker Size", 0.2, 3.0, 0.1)
+
+swingHigh = highest(high, lookback)
+swingLow = lowest(low, lookback)
+rng = swingHigh - swingLow
+
+fib236 = swingLow + rng * 0.236
+fib382 = swingLow + rng * 0.382
+fib618 = swingLow + rng * 0.618
+
+buySig = crossover(close, fib618)
+sellSig = crossunder(close, fib382)
+
+if buySig {
+    plotshape_3d(bar_index, low, "Reclaim 61.8", "coneup", "#22cc88", markerSize, 0, "3d")
+}
+if sellSig {
+    plotshape_3d(bar_index, high, "Lost 38.2", "conedown", "#ff4477", markerSize, 0, "3d")
+}
+
+plot3d(fib236, "Fib 23.6", "line3d", "#00ccff", "3d", 0)
+plot3d(fib382, "Fib 38.2", "line3d", "#ffcc00", "3d", 1)
+plot3d(fib618, "Fib 61.8", "line3d", "#ff8800", "3d", 2)`,
+  },
+  {
     name: 'EMA Spread Line3D',
     description: 'Fast/slow EMA spread as a thin 3D line — a minimal trend-strength trace ("line3d" style)',
     category: '3D Visualizations',

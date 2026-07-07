@@ -36,14 +36,16 @@ export const OAKSCRIPT_CODER_PROMPT =
   'pane="3d" is the flagship mode: an exclusive full-chart takeover where the geometry renders unified WITH the 3D price bars — while active, NO 2D plots or separate-pane 3D render from any indicator, and only one pane="3d" indicator can be active at a time. ' +
   'pane="separate" renders in the lower 3D pane instead (multiple calls stack together there; also exclusive, one at a time). Default/pane="main" is a lighter legacy overlay mode — prefer pane="3d" or pane="separate" explicitly. ' +
   'CRITICAL 3D RULE: When the chart pane is in 3D mode, 2D plot() and plotshape() do NOT render — only plot3d() and plotshape_3d() execute. plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?) places geometric shapes at exact bar/price/Z coordinates. pane="separate" (default) renders in lower 3D pane; pane="3d" renders in the main 3D chart scene alongside the 3D bars. Shapes: cube, sphere, pyramid, torus, diamond, coneup, conedown. Size: 0.2-3.0. STANDARD SIGNAL MARKERS: buy = "coneup" green (#22cc88) at low (auto-offsets BELOW the bar, tip pointing up at it); sell = "conedown" red (#ff4477) at high (flipped upside down, auto-offsets ABOVE the bar, tip pointing down). Derive size from signal strength (e.g. spread/ATR clamped to 0.6-2.2) so cones are proportional to signal quality. rx/ry/rz (optional, DEGREES) rotate any shape on top of its built-in orientation — pose shapes freely for custom scenes. PANE MATCHING: in a pane="3d" script, EVERY plotshape_3d/label3d must pass "3d" as its pane argument — omitting it defaults the marker to the (hidden) separate pane and it renders nowhere. ' +
-  'label3d(bar_index, price, text, color?, size?, z_level?, pane?) places a billboard TEXT label at exact 3D coordinates — use it to NAME peaks, levels, zones, and signals ("POC", "Breakout"). Keep text short, call it INSIDE a condition (only the 40 most recent labels render), and pair it with plotshape_3d for labeled markers. ' +
+  'label3d(bar_index, price, text, color?, size?, z_level?, pane?) places a billboard TEXT label at exact 3D coordinates — use it to NAME peaks, levels, zones, and signals ("POC", "Breakout"). Keep text short and use it for RARE, meaningful moments only — never label every signal bar (dense repeats stack into unreadable towers); the cones already mark the signals, a label should call out at most the standout events. ' +
+  'Price LEVELS in 3D (fibs, pivots, S/R): use style "line3d" — it draws exact straight segments. NEVER render a level series with "ribbon"/"surface": their spline smoothing turns the steps into spike blades that look nothing like level lines. Give EACH level line a DISTINCT z_level (0, 1, 2, …) so they render as cleanly separated parallel planes — putting multiple level lines on the SAME z_level overlaps them into a twisted rope. ' +
   'MANDATORY: Whenever you use plotshape_3d() or label3d(), you MUST ALSO include at least one plot3d() call (surface/ribbon/bars3d/etc. style, with matching pane) so the 3D scene has actual geometry for context — shapes alone won\'t fill the scene. For pane="separate" use a plot3d("separate"); for pane="3d" use a plot3d("3d"). ' +
   'Give each plot3d call a genuinely DIFFERENT source value — look for other already-computed values in the script (a stdev, a count, a raw vs. smoothed version, a margin) so each 3D layer answers a different question. ' +
-  'Always make indicators visually stunning — combine vivid hex colors with 3D plots alongside the 2D plots and signals. ' +
-  'CREATIVE 3D DIRECTIVE: For 2nd/3rd derivative indicators, think in GEOMETRY and DEPTH, not flat lines. Use Higher-Order Calculus (vel/acc/jerk as layered ribbons at different z_level), Kinematic Phase-Space (price vs price[5] vs price[10] as scatter), and Topological Wraps (RSI vs MACD normalized, cross-wrap detection with plotshape_3d). Build Vortex Sheets from phase-shifted lags of the same series at different z_levels. Every script exploring momentum, acceleration, or divergence should output geometric 3D vertices and contextual anchors, not flat oscillators. ' +
+  'VISUAL FOCUS (this outranks every other visual instruction): render ONLY what the request needs. Maximum 2-3 plot3d layers per script, and EVERY visual element — each plot3d, plotshape_3d, label3d — must trace directly back to something the user asked for. NO decorative extras, NO bonus derivative layers, NO piling on styles to show off. One excellent, readable visual beats five cluttered ones. A request for "an RSI indicator that signals extremes" needs the RSI and its extreme signals — not velocity, acceleration, jerk, and a vortex. ' +
+  'When EDITING an existing script, do NOT add any new visual the user did not ask for in THIS request; when the user asks to remove or simplify visuals, removing them IS the task. ' +
+  'When emitting 3D cone signals, expose markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1) and multiply the cone size by it so users can tune marker scale. ' +
   'Before finishing, double-check every variable name against its actual input()/declaration — a typo silently reads as 0/false with no error. ' +
-  'SELF-REVIEW BEFORE OUTPUT: Silently verify (1) mathematical accuracy — is every calculation, crossover, threshold, and indicator relationship correct? Then verify (2) visual ambition — does this push the 3D engine\'s boundaries? Are you using plot3d with z_level layering, plotshape_3d signals, surface/ribbon/bars3d geometry, and vivid colors? If either answer is no, refine until both are yes. ' +
-  'Your goal: the best, most visually impressive version of the user\'s idea.';
+  'SELF-REVIEW BEFORE OUTPUT: Silently verify (1) mathematical accuracy — is every calculation, crossover, threshold, and indicator relationship correct? (2) visual focus — does every plot/shape/label trace back to the user\'s request? Remove anything they didn\'t ask for. If either check fails, fix it before answering. ' +
+  'Your goal: the most accurate, focused, and polished version of exactly what the user asked for.';
 
 // Minimal inline reference — fallback if doc search fails.
 // The agent should call /api/oak/search for detailed docs.
@@ -165,9 +167,18 @@ export class TradeAdvisorAgent {
     // Coder keeps only the last couple of turns (the current request + its source);
     // a long advisor chat history isn't relevant to editing the script.
     const msgCharLimit = Math.max(400, Math.round(ctxChars * 0.06)); // per-message cap ~6% of context
-    const recentMsgs = this.conversationHistory.slice(isCoder ? -2 : -6).map(m => ({
-      role: m.role, content: m.content.length > msgCharLimit ? m.content.slice(0, msgCharLimit) : m.content,
-    }));
+    // The coder's FINAL message embeds the full editor script + edit rules —
+    // capping it at 6% chopped the script mid-fence, so the model never saw
+    // the code it was told to edit and regurgitated a stale/invented draft
+    // (observed: identical truncated replies to different edit requests, then
+    // "No code block found"). Give that one message a large budget (~50% of
+    // context) and drop OLDER turns to pay for it instead.
+    const coderFinalLimit = Math.max(4000, Math.round(ctxChars * 0.5));
+    const recentSlice = this.conversationHistory.slice(isCoder ? -2 : -6);
+    const recentMsgs = recentSlice.map((m, i) => {
+      const cap = isCoder && i === recentSlice.length - 1 ? coderFinalLimit : msgCharLimit;
+      return { role: m.role, content: m.content.length > cap ? m.content.slice(0, cap) : m.content };
+    });
 
     // Chart bars are for the advisor only.
     const chartBars = isCoder ? undefined : chartSnapshot?.recentBars?.map(b => ({
@@ -325,7 +336,7 @@ export class TradeAdvisorAgent {
     description: string,
     chartSnapshot?: ChartSnapshot,
   ): Promise<AgentResponse> {
-    const prompt = `Generate a complete OakScript indicator: "${description}".\n\nRequirements:\n- Include input() declarations with sensible defaults.\n- Use distinct hex colors (#22cc88, #ff4477, #b48cff, #22aaff, #ffd43b, #ff6b6b).\n- Add plotshape() markers for signals.\n- Use { } braces for multi-statement if/else/for/while blocks — they have no indentation requirement and can't misparse (brace-less indentation blocks also work but every statement in the block must share the exact same column or it silently falls outside the block).\n- MACD: access .macd, .signal, .hist from result.\n- Add plot3d() calls with appropriate styles (surface, ribbon, bars3d, scatter, wireframe, mesh, line3d, helix, vortex, manifold, nebula, constellation, torus, trail, ridgeline) for stunning 3D visuals — pane="3d" for the full-chart 3D takeover, pane="separate" for the lower 3D pane.
+    const prompt = `Generate a complete OakScript indicator: "${description}".\n\nRequirements:\n- Include input() declarations with sensible defaults.\n- Use distinct hex colors (#22cc88, #ff4477, #b48cff, #22aaff, #ffd43b, #ff6b6b).\n- Add plotshape() markers for signals.\n- Use { } braces for multi-statement if/else/for/while blocks — they have no indentation requirement and can't misparse (brace-less indentation blocks also work but every statement in the block must share the exact same column or it silently falls outside the block).\n- MACD: access .macd, .signal, .hist from result.\n- Add 1-3 plot3d() calls that DIRECTLY visualize the requested indicator (choose the style that fits the data: surface, ribbon, bars3d, scatter, wireframe, mesh, line3d, helix, vortex, manifold, nebula, constellation, torus, trail, ridgeline) — pane="3d" for the full-chart 3D takeover, pane="separate" for the lower 3D pane. No decorative extra layers.
 - Where a named level or signal matters, add label3d()/plotshape_3d() inside the signal conditions.\n- Output COMPLETE code inside \`\`\`oakscript fences.`;
 
     return await this.sendMessage(prompt, chartSnapshot, undefined, 'oakscript_coder');

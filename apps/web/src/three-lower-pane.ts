@@ -168,8 +168,19 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
       for (let i = 0; i < vals.length; i += step)
         pts.push(new THREE.Vector3((i / (vals.length - 1)) * 10 - 5, ((vals[i] - min) / range) * 4, z));
       if (pts.length < 2) continue;
-      const curve = new THREE.CatmullRomCurve3(pts);
-      r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve, pts.length * 2, 0.06, 6, false),
+      // line3d renders EXACT straight segments — Catmull-Rom smoothing turns
+      // step-shaped series (fib/pivot levels) into spike blades that look
+      // nothing like level lines. Ribbon keeps the smooth spline for flowing
+      // oscillator/MA traces.
+      let curve: THREE.Curve<THREE.Vector3>;
+      if (p.style === 'line3d') {
+        const path = new THREE.CurvePath<THREE.Vector3>();
+        for (let i = 0; i < pts.length - 1; i++) path.add(new THREE.LineCurve3(pts[i], pts[i + 1]));
+        curve = path as unknown as THREE.Curve<THREE.Vector3>;
+      } else {
+        curve = new THREE.CatmullRomCurve3(pts);
+      }
+      r.scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve, pts.length * 2, p.style === 'line3d' ? 0.03 : 0.06, 6, false),
         new THREE.MeshPhongMaterial({ color: new THREE.Color(p.color), emissive: new THREE.Color(p.color).multiplyScalar(0.2), shininess: 50 })));
     } else if (p.style === 'bars3d') {
       const count = Math.min(vals.length, 80), bw = 10 / count * 0.6;
@@ -393,17 +404,21 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
   // ── Render 3D labels (label3d) — billboard text sprites ──
   if (shapePlots) {
     let labelBudget = 40; // hard cap so an unconditional label3d can't stamp 500 sprites
+    // Declutter: signals that fire on many nearby bars stamp the SAME text
+    // dozens of times, stacking into unreadable towers. Walk newest→oldest
+    // and skip a label when one with the same text already landed nearby.
+    const placed: Array<{ text: string; x: number; y: number }> = [];
     for (let li = shapePlots.length - 1; li >= 0 && labelBudget > 0; li--) {
       const sp = shapePlots[li];
       if (sp.type !== 'plot3d_label' || !sp.text) continue;
-      labelBudget--;
       const xFrac = barCount > 1 ? (sp.barIdx ?? 0) / (barCount - 1) : 0.5;
+      const x = xFrac * 10 - 5;
+      const y = ((sp.price ?? 0) - min) / range * 4 + 0.35;
+      if (placed.some(pl => pl.text === sp.text && Math.abs(pl.x - x) < 0.9 && Math.abs(pl.y - y) < 0.5)) continue;
+      placed.push({ text: sp.text, x, y });
+      labelBudget--;
       const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
-      sprite.position.set(
-        xFrac * 10 - 5,
-        ((sp.price ?? 0) - min) / range * 4 + 0.35,
-        zOffsets.get(sp.z_level ?? 0) ?? 0,
-      );
+      sprite.position.set(x, y, zOffsets.get(sp.z_level ?? 0) ?? 0);
       r.scene.add(sprite);
     }
   }

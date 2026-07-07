@@ -680,11 +680,15 @@ TIPS:
   - style:  string — must be one of the 15 styles below (QUOTED)
   - color:  hex string
   - pane:   "main" (overlays price chart) or "separate" (lower pane)
-  - z_level: number (optional) — Z-axis stacking position. Same level = stacked
-    together at the same depth; different levels = spaced apart (ascending, 2.4 units).
-    Omit for auto-spacing. Example: plot3d(r, "RSI", "surface", "#b48cff", "separate", 0)
-    stacks RSI and MACD at level 0, while plot3d(volume, "Vol", "bars3d", "#ffd43b", "separate", 1)
-    places volume bars at a separate depth.
+  - z_level: number (optional) — depth plane. Same value = same plane (layers
+    coincide); different values = separated onto parallel planes in depth.
+    Omit and each layer auto-gets its own plane. Works in BOTH "3d" and "separate".
+    CRITICAL for level lines: give each fib/pivot/S-R line a DISTINCT z_level
+    (0, 1, 2, …) or they overlap into a twisted rope. Example:
+      plot3d(fib236, "Fib 23.6", "line3d", "#00ccff", "3d", 0)
+      plot3d(fib382, "Fib 38.2", "line3d", "#ffcc00", "3d", 1)
+      plot3d(fib618, "Fib 61.8", "line3d", "#ff8800", "3d", 2)
+    → three clean, straight, separated parallel level lines.
 
 plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?)
   Places a 3D geometric shape at a specific (bar, price, z) coordinate.
@@ -779,10 +783,12 @@ label3d(bar_index, price, text, color?, size?, z_level?, pane?)
   - Requires: 5+ bars (up to 120 points rendered)
   - Pane: both "main" and "separate"
 
-"line3d" — Thin Ribbon Alias
-  Same geometry as "ribbon" but rendered at half thickness.
-  - Best for: secondary indicators that shouldn't dominate the scene
-  - Identical to ribbon in behavior, just thinner
+"line3d" — Exact Straight-Segment Line
+  A thin tube drawn through the EXACT data points with straight segments —
+  no spline smoothing. This is the style for anything step-shaped or
+  level-like: ribbon's Catmull-Rom smoothing overshoots steps into spikes.
+  - Best for: fib levels, pivots, S/R lines, steplike series, secondary traces
+  - Half the thickness of ribbon; renders values exactly as computed
 
 "wireframe" — X-Ray Surface
   The surface mesh rendered in wireframe mode with reduced opacity.
