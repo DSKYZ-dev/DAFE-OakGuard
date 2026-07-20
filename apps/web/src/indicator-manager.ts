@@ -24,6 +24,12 @@ export interface IndicatorInstance {
   // the universal dashboard. Injected by the manager for EVERY script (not
   // declared in source), persisted per indicator name.
   showInDashboard: boolean;
+  // Blast-Radius Isolation: set when the circuit breaker below turned this
+  // OFF itself (repeated runtime failures, or repeated slow-enough-to-
+  // freeze-the-UI executions) — distinct from the user unchecking it, so
+  // the UI can show *why* it's off instead of looking identical to a
+  // manual disable.
+  autoDisabledReason: string | null;
 }
 
 // Dashboard visibility persistence — set of indicator NAMES the user hid.
@@ -104,6 +110,7 @@ export function addIndicator(indDef: IndicatorDef): IndicatorInstance {
     overrides: new Map<string, any>(),
     enabled: true,
     showInDashboard: !loadDashHidden().has(indDef.name),
+    autoDisabledReason: null,
   };
   instances.set(id, instance);
   instanceOrder.push(id);
@@ -125,6 +132,7 @@ export function removeIndicator(id: string): void {
   instances.delete(id);
   instanceOrder = instanceOrder.filter(i => i !== id);
   lastForwardedAlertCount.delete(id);
+  circuitState.delete(id);
 }
 
 /** Update an instance's source AND re-detect its inputs. Editing a script
@@ -135,6 +143,10 @@ export function updateInstanceSource(id: string, source: string): IndicatorInsta
   if (!inst) return undefined;
   inst.source = source;
   inst.inputs = detectInputsFromSource(source);
+  // A different script deserves a fresh circuit-breaker verdict, not one
+  // carried over from whatever the PREVIOUS version of this source did.
+  circuitState.delete(id);
+  inst.autoDisabledReason = null;
   return inst;
 }
 
@@ -153,8 +165,41 @@ export function setInstanceOverrides(id: string, overrides: Map<string, any>): v
 
 export function setInstanceEnabled(id: string, enabled: boolean): void {
   const inst = instances.get(id);
-  if (inst) inst.enabled = enabled;
+  if (!inst) return;
+  inst.enabled = enabled;
+  // A user re-enabling a previously auto-disabled instance is explicitly
+  // asking to give it another chance — don't count last time's strikes
+  // against it immediately, or it would just trip again on frame one with
+  // no opportunity to actually run.
+  if (enabled) {
+    circuitState.delete(id);
+    inst.autoDisabledReason = null;
+  }
 }
+
+// ─── Blast-Radius Isolation ─────────────────────────────────────────
+// One indicator's script is user-authored and can be arbitrarily broken or
+// slow; runAllInstances()'s existing per-instance try/catch already stops a
+// thrown error from corrupting OTHER instances' state, but nothing
+// previously stopped a script that fails or runs slowly EVERY frame from
+// doing so forever, burning CPU and — for a slow-but-not-throwing script —
+// blocking the main render loop repeatedly. This circuit breaker auto-
+// disables an instance after a short run of consecutive strikes, rather
+// than a full per-indicator Worker sandbox (a much larger rendering-
+// pipeline change this pass's "verify it to 100%" bar doesn't support).
+const MAX_CONSECUTIVE_RUNTIME_FAILURES = 3;
+const MAX_CONSECUTIVE_SLOW_RUNS = 3;
+// Already well past disruptive for a script re-run every render frame —
+// deliberately far below the interpreter's own MAX_EXECUTION_WALL_MS
+// (20s) hard-abort, which exists to bound worst-case runaway time, not to
+// define "fine for a per-frame loop."
+const SLOW_EXECUTION_MS = 500;
+
+interface CircuitState {
+  consecutiveRuntimeFailures: number;
+  consecutiveSlowRuns: number;
+}
+const circuitState = new Map<string, CircuitState>();
 
 // executeScript() re-runs the FULL bar range every call (this function runs
 // every render frame), so result.alerts is the complete list from bar 0
@@ -177,6 +222,13 @@ const lastForwardedAlertCount = new Map<string, number>();
 // since the user started watching this instance) get the full sendAlert()
 // side effects.
 
+function tripCircuitBreaker(inst: IndicatorInstance, reason: string): void {
+  inst.enabled = false;
+  inst.autoDisabledReason = reason;
+  inst.errors = [reason];
+  inst.plots = [];
+}
+
 export function runAllInstances(barData: {
   close: number[]; open: number[]; high: number[];
   low: number[]; volume: number[]; time: number[];
@@ -184,6 +236,9 @@ export function runAllInstances(barData: {
   for (const id of instanceOrder) {
     const inst = instances.get(id);
     if (!inst || !inst.enabled) continue;
+    const state = circuitState.get(id) ?? { consecutiveRuntimeFailures: 0, consecutiveSlowRuns: 0 };
+
+    const startedAt = performance.now();
     try {
       const ast = parse(inst.source);
       const persist = new Map<string, any>();
@@ -207,10 +262,61 @@ export function runAllInstances(barData: {
         for (let i = prevCount; i < result.alerts.length; i++) sendAlert(result.alerts[i]);
       }
       lastForwardedAlertCount.set(id, result.alerts.length);
+
+      // executeScript() has its OWN per-bar try/catch (see interpreter.ts)
+      // that recovers from most runtime errors — including hitting
+      // MAX_LOOP_STEPS_PER_BAR, the most likely "blast radius" case — by
+      // recording them into result.errors and continuing to the next bar,
+      // rather than throwing. Only a parse failure or the rarer 20s wall-
+      // clock backstop actually reach this function's catch block below, so
+      // a non-empty result.errors on an otherwise-successful return counts
+      // as a strike here too, or the circuit breaker would never see the
+      // most common failure shape at all.
+      let tripped = false;
+      if (result.errors.length > 0) {
+        state.consecutiveRuntimeFailures++;
+        if (state.consecutiveRuntimeFailures >= MAX_CONSECUTIVE_RUNTIME_FAILURES) {
+          tripCircuitBreaker(inst, `Auto-disabled after ${state.consecutiveRuntimeFailures} consecutive runs with errors: ${result.errors[0]}`);
+          tripped = true;
+        }
+      } else {
+        state.consecutiveRuntimeFailures = 0;
+      }
+
+      // Slowness is tracked independently of success/failure: a script can
+      // throw (or error-and-recover) fast, or succeed cleanly but slowly —
+      // both matter, but for different reasons, so neither resets the other.
+      // Skipped once already tripped above so its (less specific) message
+      // can't overwrite the real reason for the same frame's trip.
+      const elapsedMs = performance.now() - startedAt;
+      if (elapsedMs > SLOW_EXECUTION_MS) {
+        state.consecutiveSlowRuns++;
+        if (!tripped && state.consecutiveSlowRuns >= MAX_CONSECUTIVE_SLOW_RUNS) {
+          tripCircuitBreaker(inst, `Auto-disabled: took over ${SLOW_EXECUTION_MS}ms to run ${state.consecutiveSlowRuns} times in a row, which would keep blocking the chart's render loop.`);
+        }
+      } else {
+        state.consecutiveSlowRuns = 0;
+      }
     } catch (e: any) {
-      inst.errors = [e instanceof ParseError ? e.message : String(e)];
+      const isParseError = e instanceof ParseError;
+      const msg = isParseError ? e.message : String(e?.message ?? e);
+      inst.errors = [msg];
       inst.plots = [];
+      // A parse error means the SOURCE TEXT is malformed — cheap to detect
+      // (fails before any script logic runs) and won't resolve itself by
+      // retrying, only by the user editing the script (which already resets
+      // this state via updateInstanceSource). Not a "blast radius" concern
+      // the same way a runtime failure or a slow-but-valid script is, so it
+      // doesn't count toward the trip threshold.
+      if (!isParseError) {
+        state.consecutiveRuntimeFailures++;
+        state.consecutiveSlowRuns = 0;
+        if (state.consecutiveRuntimeFailures >= MAX_CONSECUTIVE_RUNTIME_FAILURES) {
+          tripCircuitBreaker(inst, `Auto-disabled after ${state.consecutiveRuntimeFailures} consecutive execution failures: ${msg}`);
+        }
+      }
     }
+    circuitState.set(id, state);
   }
 }
 

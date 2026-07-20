@@ -287,6 +287,11 @@ export interface RuntimeContext {
   userFuncs: Map<string, FunctionDecl>;
   // Recursion guard for user-function calls.
   callDepth: number;
+  // Consensus Gate: named boolean votes registered via consensus.vote(...)
+  // on THIS bar. Deliberately per-bar, not per-execution — ctx itself is
+  // rebuilt fresh for every bar (see the bar loop below), so this resets
+  // automatically each bar with no separate cleanup needed.
+  consensusVotes: Map<string, boolean>;
 }
 
 // Per-bar cap on while/for loop iterations. A buggy or pathological script
@@ -374,6 +379,7 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
       imageAssets,
       userFuncs,
       callDepth: 0,
+      consensusVotes: new Map(),
     };
 
     // Set built-in variables
@@ -1538,6 +1544,34 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         }
         return condition;
       }
+
+      // ── Consensus Gate: deterministic multi-condition quorum ───────────
+      // "Multi-agent" rescoped to "multi-condition" — named boolean votes
+      // the script itself registers and tallies, not LLM personas debating.
+      // Same reasoning as Explain This Signal: deterministic and
+      // reproducible beats a generated judgment call that can't be tested.
+      case 'consensus.vote': {
+        const name = String(args[0] ?? '');
+        const condition = isTruthy(args[1], ctx);
+        if (name) ctx.consensusVotes.set(name, condition);
+        return condition;
+      }
+
+      case 'consensus.ratio': {
+        if (ctx.consensusVotes.size === 0) return 0;
+        let trueCount = 0;
+        for (const v of ctx.consensusVotes.values()) if (v) trueCount++;
+        return trueCount / ctx.consensusVotes.size;
+      }
+
+      case 'consensus.count': {
+        let trueCount = 0;
+        for (const v of ctx.consensusVotes.values()) if (v) trueCount++;
+        return trueCount;
+      }
+
+      case 'consensus.total':
+        return ctx.consensusVotes.size;
 
       case 'strategy.entry': {
         // strategy.entry(direction, id?, qty?) — position-level (not id-level):

@@ -11,6 +11,7 @@ import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, typ
 import { getImageCacheStats, clearImageCache } from '../image-cache';
 import { runBacktest, runBacktestOnBars, BacktestCancelledError } from '../backtest/engine';
 import { playTone } from '../accessibility';
+import { addStoryboardEntry } from '../storyboard';
 import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
 import { renderEquityCurve } from '../backtest/chart';
@@ -324,6 +325,8 @@ export function sendAlert(alert: OakAlert, notify: boolean = true): void {
   if (!notify) return;
 
   playTone('alert');
+  const symbol = onGetChartContext ? onGetChartContext().symbol : 'unknown';
+  addStoryboardEntry(symbol, alert.type === 'ALERT' ? 'Alert' : 'Condition met', alert.message, 'alert');
 
   if (Notification.permission === 'granted') {
     new Notification('OakScript Alert: ' + alert.type, {

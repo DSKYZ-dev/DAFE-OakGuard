@@ -1366,6 +1366,35 @@ to any configured webhook URL.`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {
+      title: 'Consensus Gate',
+      content: `Deterministic multi-condition confirmation for a signal — require
+several independent conditions to agree on the SAME bar before you
+alert on it, instead of firing on any single condition alone.
+
+consensus.vote(name, condition)
+  Registers a named boolean vote for the current bar and returns
+  condition unchanged, so it composes inline with your own logic:
+    trendUp = consensus.vote("trend", close > sma(close, 50))
+    momentumUp = consensus.vote("momentum", rsi(close, 14) > 50)
+    volumeConfirms = consensus.vote("volume", volume > sma(volume, 20))
+
+consensus.ratio()
+  Fraction (0-1) of this bar's registered votes that were true.
+consensus.count()
+  Count of this bar's registered votes that were true.
+consensus.total()
+  Total votes registered on this bar (true + false).
+
+  if consensus.ratio() >= 0.66
+      alert("Confirmed: " + tostring(consensus.count()) + "/" + tostring(consensus.total()) + " conditions agree")
+
+Votes reset every bar automatically — nothing to clear yourself.
+There is no cross-script or LLM-based voting here: every "vote" is a
+plain boolean condition the SAME script evaluates, so the gate is
+fully deterministic and reproducible from the same script and bars.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
       title: 'Common Pitfalls & Solutions',
       content: `1. "plot3d emits no geometry"
    → Check that your series has enough values (≥3 bars).

@@ -27,7 +27,7 @@ export interface BuiltinStyleCheck {
 export interface BuiltinDef {
   /** Dotted or bare builtin name, e.g. 'line.new', 'plotimage', 'sma'. */
   name: string;
-  category: 'drawing_2d' | 'drawing_analyst' | 'image' | 'backtest' | 'mtf' | 'existing';
+  category: 'drawing_2d' | 'drawing_analyst' | 'image' | 'backtest' | 'mtf' | 'consensus' | 'existing';
   minArgs: number;
   maxArgs: number;
   /** Positional argument names, in order (optional args are suffixed '?'). */
@@ -143,6 +143,16 @@ export const BUILTIN_REGISTRY: BuiltinDef[] = [
   { name: 'input', category: 'existing', minArgs: 1, maxArgs: 5, argDescriptions: ['default', 'title', 'min', 'max', 'step'], summary: 'Declares a user-configurable script input.' },
   { name: 'alert', category: 'existing', minArgs: 1, maxArgs: 1, argDescriptions: ['message'], summary: 'Fires a one-shot alert message.' },
   { name: 'alertcondition', category: 'existing', minArgs: 2, maxArgs: 3, argDescriptions: ['condition', 'title', 'message'], summary: 'Declares a named alert condition.' },
+  // ── New — Consensus Gate: deterministic multi-condition quorum ─────────
+  // Rescoped from "multi-agent" to "multi-condition": no LLM personas
+  // voting, just named boolean conditions the script itself registers,
+  // gated on how many agree on the SAME bar. Same "keep-with-major-scope-
+  // cut" pattern as Explain This Signal (deterministic, reproducible,
+  // testable — not a generated judgment call).
+  { name: 'consensus.vote', category: 'consensus', minArgs: 2, maxArgs: 2, argDescriptions: ['name', 'condition'], summary: 'Registers a named boolean vote for this bar toward the consensus gate; returns the condition unchanged so it composes inline.' },
+  { name: 'consensus.ratio', category: 'consensus', minArgs: 0, maxArgs: 0, argDescriptions: [], summary: "Fraction (0-1) of this bar's registered votes that were true." },
+  { name: 'consensus.count', category: 'consensus', minArgs: 0, maxArgs: 0, argDescriptions: [], summary: "Count of this bar's registered votes that were true." },
+  { name: 'consensus.total', category: 'consensus', minArgs: 0, maxArgs: 0, argDescriptions: [], summary: 'Total number of votes registered on this bar (true + false).' },
   { name: 'abs', category: 'existing', minArgs: 1, maxArgs: 1, argDescriptions: ['x'], summary: 'Absolute value.' },
   { name: 'min', category: 'existing', minArgs: 2, maxArgs: 2, argDescriptions: ['a', 'b'], summary: 'Minimum of two numbers.' },
   { name: 'max', category: 'existing', minArgs: 2, maxArgs: 2, argDescriptions: ['a', 'b'], summary: 'Maximum of two numbers.' },

@@ -60,6 +60,7 @@ import { registerWidget, initWidgetMenu } from './widget-registry';
 import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
 import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
 import { appendLedgerEntry, showLedgerModal } from './ledger';
+import { showStoryboardModal } from './storyboard';
 import {
   signalColors, playTone,
   isAccessiblePaletteEnabled, setAccessiblePaletteEnabled,
@@ -1240,8 +1241,34 @@ function buildIndicatorList() {
       }
     }
 
-    // Error count
-    if (inst.errors.length > 0) {
+    // Blast-Radius Isolation: the circuit breaker in indicator-manager.ts
+    // already disabled this instance (inst.enabled === false) — surface
+    // *why*, distinctly from a plain per-bar error, with the only way to
+    // bring it back (there was previously no "re-enable" control at all
+    // once something set enabled=false).
+    if (inst.autoDisabledReason) {
+      const disabledDiv = document.createElement('div');
+      Object.assign(disabledDiv.style, {
+        display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap',
+        color: '#ff4477', fontSize: '9px', padding: '2px 0 0 10px',
+      });
+      const msg = document.createElement('span');
+      msg.textContent = `⛔ Auto-disabled: ${inst.autoDisabledReason}`;
+      disabledDiv.appendChild(msg);
+      const reEnableBtn = document.createElement('button');
+      reEnableBtn.textContent = '↻ Re-enable';
+      Object.assign(reEnableBtn.style, {
+        background: 'none', border: '1px solid rgba(255,68,119,0.3)', color: '#ff4477',
+        cursor: 'pointer', borderRadius: '3px', fontSize: '9px', padding: '1px 4px',
+      });
+      reEnableBtn.onclick = () => {
+        setInstanceEnabled(inst.id, true);
+        runAllIndicators();
+        updateUI();
+      };
+      disabledDiv.appendChild(reEnableBtn);
+      section.appendChild(disabledDiv);
+    } else if (inst.errors.length > 0) {
       const errDiv = document.createElement('div');
       errDiv.textContent = `⚠ ${inst.errors.length} error${inst.errors.length > 1 ? 's' : ''}`;
       errDiv.style.cssText = 'color:#ff4477;font-size:9px;padding:1px 0 0 10px;';
@@ -2202,6 +2229,11 @@ CRITICAL RULES:
   document.getElementById('set-open-ledger')?.addEventListener('click', () => {
     settingsPanel?.classList.remove('active');
     showLedgerModal();
+  });
+
+  document.getElementById('set-open-storyboard')?.addEventListener('click', () => {
+    settingsPanel?.classList.remove('active');
+    showStoryboardModal(() => currentSymbol);
   });
 
   const paletteEl = document.getElementById('set-accessible-palette') as HTMLInputElement | null;
