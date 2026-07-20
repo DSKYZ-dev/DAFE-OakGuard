@@ -746,6 +746,12 @@ export function cycleVizType(): VizType {
 
 let _chart3DMode = false;
 let _barGroup: THREE.Group | null = null;
+// Visible-range signature (start|end|barCount) as of the last bar-group
+// build. Compared every render call so panning/zooming — which only ever
+// changes view.scrollX/barSpacing, never the plot3d series data that
+// mark3DSceneDirty() watches — still forces a rebuild instead of leaving
+// the candles frozen at whatever window was in view when 3D mode opened.
+let _lastVisibleRangeKey: string | null = null;
 let _orbitEnabled = false;
 let _orbitDragging = false, _orbitLX = 0, _orbitLY = 0;
 let _orbitTheta = 0, _orbitPhi = 1.0, _orbitDist = 18;
@@ -1204,8 +1210,9 @@ let _rebuildNeeded = true;
 export function mark3DSceneDirty(): void { _rebuildNeeded = true; }
 
 /**
- * Render the unified 3D scene every frame. Rebuilds geometry only
- * when mark3DSceneDirty() was called (i.e., indicator data changed).
+ * Render the unified 3D scene every frame. Rebuilds geometry when
+ * mark3DSceneDirty() was called (indicator data changed) or the visible
+ * bar range moved (pan/zoom).
  */
 export function renderMain3DScene(
   bars: BaseBar[],
@@ -1229,6 +1236,19 @@ export function renderMain3DScene(
     _camera.updateProjectionMatrix();
   }
 
+  // Pan/zoom changes which bars getVisibleRange() considers "in view" even
+  // though it touches neither the plot3d series data nor its length/last
+  // value — the only signal mark3DSceneDirty()'s caller watches. Without
+  // this, scrolling in 3D mode moves the camera around the same frozen set
+  // of candles forever instead of swapping in the newly-scrolled-to bars.
+  const { start, end } = getVisibleRange(view, width, bars.length);
+  const visibleRangeKey = `${start}|${end}|${bars.length}`;
+  if (visibleRangeKey !== _lastVisibleRangeKey) {
+    _lastVisibleRangeKey = visibleRangeKey;
+    _rebuildNeeded = true;
+    if (_barGroup) { _scene.remove(_barGroup); disposeMesh(_barGroup); _barGroup = null; }
+  }
+
   if (_rebuildNeeded) {
     _rebuildNeeded = false;
     clearViz();
@@ -1238,7 +1258,6 @@ export function renderMain3DScene(
       if (bg) { _barGroup = bg; _scene.add(_barGroup); }
     }
 
-    const { start, end } = getVisibleRange(view, width, bars.length);
     const visibleCount = end - start + 1;
 
     // Build indicator geometry. z_level controls DEPTH separation so parallel
@@ -1384,6 +1403,7 @@ export function dispose3DScene(): void {
   _chart3DMode = false;
   _rebuildNeeded = true;
   _barGroup = null;
+  _lastVisibleRangeKey = null;
   _orbitTheta = 0; _orbitPhi = 1.0; _orbitDist = 18;
   _orbitTarget.set(0, 0, 0);
   disableOrbitMain();

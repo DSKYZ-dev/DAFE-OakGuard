@@ -729,6 +729,21 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
   if (typing) return;
   if (e.key === 'Escape') { setDrawTool('none'); }
   if (e.key === 'Delete' || e.key === 'Backspace') { draw.undoDrawing(); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    // The only way to change which bars are in view while chart 3D mode is
+    // active (pane="3d" indicators like ChronoSphere) — its canvas claims
+    // mouse drag/wheel entirely for orbit-camera controls (see
+    // enableOrbitMain in three-indicators.ts), so view.scrollX otherwise
+    // never moves once that mode is entered and the 3D bar geometry has
+    // nothing to resync to. Bound on window like the numpad hotkeys above,
+    // so it isn't gated behind canvas focus/z-order either.
+    e.preventDefault();
+    const step = Math.max(5, Math.round(getBarsThatFit() * 0.2));
+    view.scrollX += e.key === 'ArrowLeft' ? step : -step;
+    const maxScrollPast = -Math.floor(getBarsThatFit() * 0.8);
+    view.scrollX = Math.max(maxScrollPast, Math.min(bars.length - 1, view.scrollX));
+    visualAdapter.logAction('pan', `Pan ${e.key === 'ArrowLeft' ? 'back' : 'forward'} ${step} bars`);
+  }
 });
 
 function setDrawTool(t: DrawTool): void {
