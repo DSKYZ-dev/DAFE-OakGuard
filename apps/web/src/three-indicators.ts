@@ -50,6 +50,22 @@ function getCanvas(): HTMLCanvasElement {
   return c;
 }
 
+// All scene geometry is normalized to a fixed world-space span (buildBarGroup
+// etc. map bar index to roughly x in [-5, 5]) regardless of container size.
+// A plain fixed vertical FOV only widens the HORIZONTAL frame as the
+// container gets wider relative to its height — which this chart's layout
+// always is — so that fixed-size content was stranded in a narrow strip
+// down the middle instead of filling the width, the wider the window the
+// worse it got. Solving for the vertical FOV that keeps the HORIZONTAL FOV
+// pinned at BASE_FOV_DEG (its value at aspect 1:1, where horizontal and
+// vertical FOV are the same) makes the framing aspect-independent instead.
+const BASE_FOV_DEG = 45;
+function fovForAspect(aspect: number): number {
+  const targetHalfHFovRad = (BASE_FOV_DEG * Math.PI / 180) / 2;
+  const vHalfRad = Math.atan(Math.tan(targetHalfHFovRad) / Math.max(aspect, 0.001));
+  return vHalfRad * 2 * 180 / Math.PI;
+}
+
 function init(): void {
   if (_initialized) return;
   const canvas = getCanvas();
@@ -67,7 +83,7 @@ function init(): void {
   _scene = new THREE.Scene();
   _scene.background = null;
 
-  _camera = new THREE.PerspectiveCamera(45, w / Math.max(h, 1), 0.1, 1000);
+  _camera = new THREE.PerspectiveCamera(fovForAspect(w / Math.max(h, 1)), w / Math.max(h, 1), 0.1, 1000);
   _camera.position.set(0, 6, 18);
   _camera.lookAt(0, 0, 0);
 
@@ -717,7 +733,9 @@ export function render3DViz(bars: BaseBar[], view: ViewState, width: number, hei
   const canvas = getCanvas();
   if (canvas.width !== width || canvas.height !== height) {
     _renderer.setSize(width, height, false);
-    _camera.aspect = width / Math.max(height, 1);
+    const aspect = width / Math.max(height, 1);
+    _camera.aspect = aspect;
+    _camera.fov = fovForAspect(aspect);
     _camera.updateProjectionMatrix();
   }
   _renderTime = performance.now();
@@ -1232,7 +1250,9 @@ export function renderMain3DScene(
   const canvas = getCanvas();
   if (canvas.width !== width || canvas.height !== height) {
     _renderer.setSize(width, height, false);
-    _camera.aspect = width / Math.max(height, 1);
+    const aspect = width / Math.max(height, 1);
+    _camera.aspect = aspect;
+    _camera.fov = fovForAspect(aspect);
     _camera.updateProjectionMatrix();
   }
 

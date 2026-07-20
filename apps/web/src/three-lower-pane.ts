@@ -14,6 +14,21 @@ let _renderer: THREE.WebGLRenderer | null = null;
 let _scene: THREE.Scene | null = null;
 let _camera: THREE.PerspectiveCamera | null = null;
 
+// Plot geometry is normalized to a fixed world-space span (e.g. the
+// point-mapping below uses roughly x in [-5, 5]) regardless of container
+// size. A plain fixed vertical FOV only widens the HORIZONTAL frame as the
+// container gets wider relative to its height, which this pane always is,
+// stranding that fixed-size content in a narrow strip instead of filling
+// the width. Solving for the vertical FOV that keeps the HORIZONTAL FOV
+// pinned at BASE_FOV_DEG (its value at aspect 1:1) makes framing
+// aspect-independent instead.
+const BASE_FOV_DEG = 35;
+function fovForAspect(aspect: number): number {
+  const targetHalfHFovRad = (BASE_FOV_DEG * Math.PI / 180) / 2;
+  const vHalfRad = Math.atan(Math.tan(targetHalfHFovRad) / Math.max(aspect, 0.001));
+  return vHalfRad * 2 * 180 / Math.PI;
+}
+
 function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera; canvas: HTMLCanvasElement } | null {
   const h = (window as any).__dafeLowerHeight || 220;
   let c = document.getElementById(ID) as HTMLCanvasElement;
@@ -28,9 +43,10 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   // If we already have cached resources, just resize and return
   if (_renderer && _scene && _camera) {
     const pw = c.parentElement?.clientWidth || 1200;
+    const aspect = pw / h;
     _renderer.setSize(pw, h, false);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    _camera.aspect = pw / h; _camera.updateProjectionMatrix();
+    _camera.aspect = aspect; _camera.fov = fovForAspect(aspect); _camera.updateProjectionMatrix();
     return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   }
   try {
@@ -43,7 +59,8 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     const d = new THREE.DirectionalLight(0xffffff, 0.7);
     d.position.set(3, 6, 5); _scene.add(d);
     _scene.add(new THREE.GridHelper(16, 12, 0x222244, 0x111122));
-    _camera = new THREE.PerspectiveCamera(35, (c.parentElement?.clientWidth || 1200) / h, 0.1, 100);
+    const initAspect = (c.parentElement?.clientWidth || 1200) / h;
+    _camera = new THREE.PerspectiveCamera(fovForAspect(initAspect), initAspect, 0.1, 100);
     _camera.position.set(0, 3.5, 10);
     _camera.lookAt(0, 1.8, 0);
     enableOrbit(c, _camera);
