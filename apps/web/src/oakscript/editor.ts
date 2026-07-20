@@ -4,6 +4,8 @@ import type { OakPlot, OakAlert } from './runtime';
 import type { Program, Assignment, CallExpr, Identifier, ASTNode } from './ast';
 import { getIndicators, getCategories, type IndicatorDef, saveUserIndicator, getUserIndicators, removeUserIndicator } from './indicators';
 import { getDocumentation, type DocSection } from './docs';
+import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
+import { getImageCacheStats, clearImageCache } from '../image-cache';
 
 export interface OakscriptResult {
   plots: OakPlot[];
@@ -38,6 +40,7 @@ let editorPanel: HTMLDivElement | null = null;
 let textarea: HTMLTextAreaElement | null = null;
 let errorListDiv: HTMLDivElement | null = null;
 let docPanel: HTMLDivElement | null = null;
+let imagesPanel: HTMLDivElement | null = null;
 let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
@@ -147,7 +150,7 @@ export function parseErrorMessage(msg: string): ParsedError {
 export function runScript(source: string, barData: {
   close: number[]; open: number[]; high: number[]; low: number[];
   volume: number[]; time: number[];
-}, inputOverrides?: Map<string, any>): OakscriptResult {
+}, inputOverrides?: Map<string, any>, imageAssets?: Map<string, string>): OakscriptResult {
   currentSource = source;
   const persist = loadPersist();
   const alerts: OakAlert[] = [];
@@ -160,7 +163,7 @@ export function runScript(source: string, barData: {
       close: barData.close, open: barData.open, high: barData.high,
       low: barData.low, volume: barData.volume, time: barData.time,
       count: barCount,
-    }, persist, inputOverrides);
+    }, persist, inputOverrides, imageAssets);
 
     for (const alert of result.alerts) {
       alerts.push(alert);
@@ -233,6 +236,7 @@ let onSendErrorsToAdvisor: ((errors: string[], source: string) => void) | null =
 let onAgentAction: ((action: string, data?: string) => void) | null = null;
 let agentChatCallback: ((message: string) => void) | null = null;
 let onToggleVisibility: (() => void) | null = null;
+let onImageAssetsChanged: (() => void) | null = null;
 
 export function setSendErrorsCallback(cb: (errors: string[], source: string) => void): void {
   onSendErrorsToAdvisor = cb;
@@ -248,6 +252,13 @@ export function setAgentChatCallback(cb: (message: string) => void): void {
 
 export function setToggleVisibilityCallback(cb: () => void): void {
   onToggleVisibility = cb;
+}
+
+// Fired whenever the Images panel adds or deletes a saved asset, so callers
+// (main.ts) can refresh their own cached name->dataUrl map that gets threaded
+// into executeScript. Mirrors the setXCallback pattern used above.
+export function setImageAssetsChangedCallback(cb: () => void): void {
+  onImageAssetsChanged = cb;
 }
 
 export function createEditor(container: HTMLElement, onRun: (source: string) => void): { panel: HTMLDivElement; textarea: HTMLTextAreaElement } {
@@ -637,11 +648,18 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(docsBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   docsBtn.onclick = () => toggleDocs();
 
+  const imagesBtn = document.createElement('button');
+  imagesBtn.textContent = '🖼️ Images';
+  imagesBtn.title = 'Image Assets';
+  Object.assign(imagesBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
+  imagesBtn.onclick = () => toggleImages();
+
   controls.appendChild(viewBtn);
   controls.appendChild(saveBtn);
   controls.appendChild(manageBtn);
   controls.appendChild(indSelect);
   controls.appendChild(docsBtn);
+  controls.appendChild(imagesBtn);
 
   const applyBtn = document.createElement('button');
   applyBtn.textContent = '▶ Apply';
@@ -738,6 +756,16 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     flexShrink: '0',
   });
   editorPanel.appendChild(docPanel);
+
+  // ── Image Assets Panel ───────────────────────────────────────────
+  imagesPanel = document.createElement('div');
+  imagesPanel.id = 'oakscript-images';
+  Object.assign(imagesPanel.style, {
+    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '300px',
+    borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
+    flexShrink: '0',
+  });
+  editorPanel.appendChild(imagesPanel);
 
   // ── Agent Chat Box ────────────────────────────────────────────
   const agentChat = document.createElement('div');
@@ -1158,6 +1186,220 @@ function renderDocs(): void {
 
     docPanel.appendChild(sec);
   }
+}
+
+function toggleImages(): void {
+  if (!imagesPanel) return;
+  const isVisible = imagesPanel.style.display !== 'none';
+  imagesPanel.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) {
+    renderImages().catch((e) => {
+      if (!imagesPanel) return;
+      imagesPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load image assets: ${e}</div>`;
+      imagesPanel.style.display = 'block';
+    });
+  }
+}
+
+async function renderImages(): Promise<void> {
+  if (!imagesPanel) return;
+  imagesPanel.innerHTML = '';
+
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
+    zIndex: '1',
+  });
+
+  const headerTitle = document.createElement('div');
+  headerTitle.textContent = '🖼️ Image Assets';
+  Object.assign(headerTitle.style, {
+    color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '4px',
+  });
+  header.appendChild(headerTitle);
+
+  // ── Add form ──
+  const form = document.createElement('div');
+  Object.assign(form.style, {
+    display: 'flex', flexWrap: 'wrap', gap: '4px', alignItems: 'center',
+  });
+
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'image/png,image/jpeg';
+  Object.assign(fileInput.style, {
+    fontSize: '9px', color: 'rgba(255,255,255,0.5)', maxWidth: '150px',
+  });
+  form.appendChild(fileInput);
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'asset name';
+  Object.assign(nameInput.style, {
+    flex: '1', minWidth: '80px', padding: '3px 5px',
+    border: '1px solid rgba(180, 140, 255, 0.15)', borderRadius: '4px',
+    background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.7)',
+    fontSize: '10px', outline: 'none',
+  });
+  form.appendChild(nameInput);
+
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '+ Add';
+  Object.assign(addBtn.style, {
+    padding: '3px 9px', border: '1px solid rgba(34,204,136,0.4)',
+    borderRadius: '4px', background: 'rgba(34,204,136,0.15)',
+    color: '#22cc88', cursor: 'pointer', fontSize: '10px', fontWeight: '600',
+  });
+  form.appendChild(addBtn);
+
+  header.appendChild(form);
+
+  const statusMsg = document.createElement('div');
+  Object.assign(statusMsg.style, {
+    fontSize: '9px', marginTop: '3px', minHeight: '11px',
+  });
+  header.appendChild(statusMsg);
+
+  addBtn.onclick = async () => {
+    const file = fileInput.files && fileInput.files[0];
+    const name = nameInput.value.trim();
+    statusMsg.style.color = '#ff6688';
+    if (!file) { statusMsg.textContent = 'Choose a PNG or JPEG file first.'; return; }
+    if (!name) { statusMsg.textContent = 'Enter a name for the asset.'; return; }
+    addBtn.disabled = true;
+    addBtn.textContent = 'Adding...';
+    try {
+      await saveImageAsset(name, file);
+      if (onImageAssetsChanged) onImageAssetsChanged();
+      await renderImages();
+    } catch (e: any) {
+      statusMsg.textContent = `Failed to add: ${e?.message || e}`;
+      addBtn.disabled = false;
+      addBtn.textContent = '+ Add';
+    }
+  };
+
+  imagesPanel.appendChild(header);
+
+  // ── Asset list ──
+  const listDiv = document.createElement('div');
+  Object.assign(listDiv.style, { padding: '4px 0' });
+
+  const assets: AssetRecord[] = await listImageAssets();
+  if (assets.length === 0) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No saved image assets yet.';
+    Object.assign(empty.style, {
+      padding: '8px 10px', color: 'rgba(255,255,255,0.3)', fontSize: '10px',
+    });
+    listDiv.appendChild(empty);
+  } else {
+    for (const asset of assets) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex', alignItems: 'center', gap: '6px',
+        padding: '4px 10px', borderBottom: '1px solid rgba(180,140,255,0.05)',
+      });
+
+      const thumb = document.createElement('img');
+      thumb.src = asset.dataUrl;
+      Object.assign(thumb.style, {
+        width: '28px', height: '28px', objectFit: 'contain',
+        background: 'rgba(255,255,255,0.05)', borderRadius: '3px', flexShrink: '0',
+      });
+      row.appendChild(thumb);
+
+      const nameBtn = document.createElement('button');
+      nameBtn.textContent = asset.name;
+      nameBtn.title = 'Click to copy an image.new(...) snippet using this asset';
+      Object.assign(nameBtn.style, {
+        flex: '1', textAlign: 'left', border: 'none', background: 'transparent',
+        color: 'rgba(255,255,255,0.7)', cursor: 'pointer', fontSize: '10px',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      });
+      nameBtn.onclick = () => {
+        const snippet = `image.new(bar_index, close, "${asset.name}", 48, 48)`;
+        navigator.clipboard.writeText(snippet).then(() => {
+          const prev = nameBtn.textContent;
+          nameBtn.textContent = '✓ Copied snippet';
+          setTimeout(() => { nameBtn.textContent = prev; }, 1200);
+        }).catch(() => {});
+      };
+      row.appendChild(nameBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '🗑';
+      delBtn.title = 'Delete asset';
+      Object.assign(delBtn.style, {
+        border: '1px solid rgba(255,68,119,0.2)', borderRadius: '3px',
+        background: 'transparent', color: 'rgba(255,68,119,0.6)',
+        cursor: 'pointer', fontSize: '9px', padding: '2px 6px', flexShrink: '0',
+      });
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        try {
+          await deleteImageAsset(asset.name);
+          if (onImageAssetsChanged) onImageAssetsChanged();
+          await renderImages();
+        } catch {
+          delBtn.disabled = false;
+        }
+      };
+      row.appendChild(delBtn);
+
+      listDiv.appendChild(row);
+    }
+  }
+
+  imagesPanel.appendChild(listDiv);
+
+  // ── Resource monitor: saved-library disk usage + decoded-image memory
+  // cache usage, with a one-click flush for the (purely derived, safe to
+  // drop at any time) decode cache. The saved library itself is user
+  // content and is never auto-deleted — see image-assets.ts's soft cap. ──
+  const statsRow = document.createElement('div');
+  Object.assign(statsRow.style, {
+    display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap',
+    padding: '6px 10px', borderTop: '1px solid rgba(180,140,255,0.08)',
+    fontSize: '9px', color: 'rgba(255,255,255,0.35)',
+  });
+
+  const statsText = document.createElement('span');
+  statsText.style.flex = '1';
+  statsRow.appendChild(statsText);
+
+  const flushBtn = document.createElement('button');
+  flushBtn.textContent = '🧹 Flush image cache';
+  flushBtn.title = 'Release decoded images from memory — safe anytime, they redecode on next use';
+  Object.assign(flushBtn.style, {
+    border: '1px solid rgba(180,140,255,0.2)', borderRadius: '3px',
+    background: 'transparent', color: 'rgba(180,140,255,0.7)',
+    cursor: 'pointer', fontSize: '9px', padding: '2px 6px', flexShrink: '0',
+  });
+  flushBtn.onclick = () => {
+    clearImageCache();
+    refreshStatsText();
+  };
+  statsRow.appendChild(flushBtn);
+
+  imagesPanel.appendChild(statsRow);
+
+  function refreshStatsText(): void {
+    const cacheStats = getImageCacheStats();
+    statsText.textContent =
+      `Library: ${libraryStats.count} saved (${formatBytes(libraryStats.totalBytes)}) · ` +
+      `Decode cache: ${cacheStats.entries} in memory (~${formatBytes(cacheStats.approxBytes)})`;
+  }
+
+  const libraryStats = await getLibraryStats();
+  refreshStatsText();
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 export function showResults(errors: string[], _inputs: InputDef[]): void {

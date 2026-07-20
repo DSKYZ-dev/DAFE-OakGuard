@@ -3,8 +3,9 @@
  * BEFORE code hits the interpreter. Returns human-readable warnings
  * and errors the agent can use to self-correct.
  */
-import { tokenize } from './lexer';
+import { tokenize, type Token } from './lexer';
 import { parse } from './parser';
+import { BUILTIN_REGISTRY, buildSignatureMap, type BuiltinStyleCheck } from './builtins';
 
 export interface ValidationIssue {
   line: number;
@@ -39,100 +40,10 @@ const ALL_KEYWORDS = new Set([
   'trueRange', 'log', 'oakring', 'matrix',
 ]);
 
-const BUILTIN_FN_SIGNATURES: Record<string, { minArgs: number; maxArgs: number; argDescriptions: string[] }> = {
-  sma:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  ema:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  rsi:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  macd:      { minArgs: 4, maxArgs: 4, argDescriptions: ['source', 'fast', 'slow', 'signal'] },
-  highest:   { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  lowest:    { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  stdev:     { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  roc:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  cum:       { minArgs: 1, maxArgs: 1, argDescriptions: ['source'] },
-  change:    { minArgs: 1, maxArgs: 1, argDescriptions: ['source'] },
-  barssince: { minArgs: 1, maxArgs: 1, argDescriptions: ['condition'] },
-  vwap:      { minArgs: 2, maxArgs: 2, argDescriptions: ['close', 'volume'] },
-  linreg:    { minArgs: 3, maxArgs: 3, argDescriptions: ['source', 'length', 'offset'] },
-  correlation: { minArgs: 3, maxArgs: 3, argDescriptions: ['a', 'b', 'length'] },
-  cci:       { minArgs: 4, maxArgs: 4, argDescriptions: ['high', 'low', 'close', 'length'] },
-  atr:       { minArgs: 4, maxArgs: 4, argDescriptions: ['high', 'low', 'close', 'length'] },
-  adx:       { minArgs: 4, maxArgs: 4, argDescriptions: ['high', 'low', 'close', 'length'] },
-  trueRange: { minArgs: 3, maxArgs: 3, argDescriptions: ['high', 'low', 'close'] },
-  crossover: { minArgs: 2, maxArgs: 2, argDescriptions: ['seriesA', 'seriesB'] },
-  crossunder: { minArgs: 2, maxArgs: 2, argDescriptions: ['seriesA', 'seriesB'] },
-  wma:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  hma:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  rma:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  vwma:      { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  mom:       { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  median:    { minArgs: 2, maxArgs: 2, argDescriptions: ['source', 'length'] },
-  pivothigh: { minArgs: 3, maxArgs: 3, argDescriptions: ['source', 'leftBars', 'rightBars'] },
-  pivotlow:  { minArgs: 3, maxArgs: 3, argDescriptions: ['source', 'leftBars', 'rightBars'] },
-  stoch:     { minArgs: 4, maxArgs: 4, argDescriptions: ['high', 'low', 'close', 'length'] },
-  mfi:       { minArgs: 5, maxArgs: 5, argDescriptions: ['high', 'low', 'close', 'volume', 'length'] },
-  obv:       { minArgs: 2, maxArgs: 2, argDescriptions: ['close', 'volume'] },
-  cmf:       { minArgs: 5, maxArgs: 5, argDescriptions: ['high', 'low', 'close', 'volume', 'length'] },
-  pow:       { minArgs: 2, maxArgs: 2, argDescriptions: ['base', 'exponent'] },
-  sign:      { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  log10:     { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  avg:       { minArgs: 2, maxArgs: 8, argDescriptions: ['a', 'b', '...'] },
-  'color.from_gradient': { minArgs: 5, maxArgs: 5, argDescriptions: ['value', 'bottomValue', 'topValue', 'bottomColor', 'topColor'] },
-  plotshape_3d: { minArgs: 2, maxArgs: 11, argDescriptions: ['bar_index', 'price', 'title', 'shape', 'color', 'size', 'z_level', 'pane', 'rx_deg', 'ry_deg', 'rz_deg'] },
-  label3d:   { minArgs: 3, maxArgs: 7, argDescriptions: ['bar_index', 'price', 'text', 'color', 'size', 'z_level', 'pane'] },
-  plot:      { minArgs: 1, maxArgs: 6, argDescriptions: ['value', 'title', 'color', 'linewidth', 'style|pane', 'pane'] },
-  plotshape: { minArgs: 2, maxArgs: 6, argDescriptions: ['bar_index', 'price', 'title', 'style', 'color', 'pane'] },
-  plotarrow: { minArgs: 2, maxArgs: 6, argDescriptions: ['bar_index', 'price', 'title', 'direction', 'color', 'pane'] },
-  plotchar:  { minArgs: 2, maxArgs: 5, argDescriptions: ['bar_index', 'price', 'char', 'color', 'pane'] },
-  plot3d:    { minArgs: 2, maxArgs: 6, argDescriptions: ['series', 'name', 'style', 'color', 'pane', 'z_level'] },
-  hline:     { minArgs: 1, maxArgs: 3, argDescriptions: ['price', 'color', 'pane'] },
-  fill:      { minArgs: 3, maxArgs: 3, argDescriptions: ['top', 'bottom', 'color'] },
-  bgcolor:   { minArgs: 1, maxArgs: 2, argDescriptions: ['color', 'pane'] },
-  input:     { minArgs: 1, maxArgs: 5, argDescriptions: ['default', 'title', 'min', 'max', 'step'] },
-  alert:     { minArgs: 1, maxArgs: 1, argDescriptions: ['message'] },
-  alertcondition: { minArgs: 2, maxArgs: 3, argDescriptions: ['condition', 'title', 'message'] },
-  abs:       { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  min:       { minArgs: 2, maxArgs: 2, argDescriptions: ['a', 'b'] },
-  max:       { minArgs: 2, maxArgs: 2, argDescriptions: ['a', 'b'] },
-  floor:     { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  ceil:      { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  round:     { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  sqrt:      { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  tostring:  { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  tonumber:  { minArgs: 1, maxArgs: 1, argDescriptions: ['x'] },
-  'label.new': { minArgs: 4, maxArgs: 4, argDescriptions: ['x', 'y', 'text', 'color'] },
-  'color.new': { minArgs: 2, maxArgs: 2, argDescriptions: ['color', 'transp'] },
-  'color.rgb': { minArgs: 3, maxArgs: 4, argDescriptions: ['r', 'g', 'b', 'transp'] },
-  'array.get': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'index'] },
-  'array.set': { minArgs: 3, maxArgs: 3, argDescriptions: ['array', 'index', 'value'] },
-  'array.push': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'value'] },
-  'array.pop': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.shift': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.unshift': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'value'] },
-  'array.remove': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'index'] },
-  'array.insert': { minArgs: 3, maxArgs: 3, argDescriptions: ['array', 'index', 'value'] },
-  'array.clear': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.size': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.includes': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'value'] },
-  'array.indexOf': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'value'] },
-  'array.slice': { minArgs: 2, maxArgs: 3, argDescriptions: ['array', 'from', 'to'] },
-  'array.join': { minArgs: 1, maxArgs: 2, argDescriptions: ['array', 'separator'] },
-  'array.copy': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.reverse': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.sort': { minArgs: 1, maxArgs: 2, argDescriptions: ['array', 'order'] },
-  'array.fill': { minArgs: 2, maxArgs: 4, argDescriptions: ['array', 'value', 'from', 'to'] },
-  'array.sum': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.avg': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.min': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.max': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.median': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.stdev': { minArgs: 1, maxArgs: 1, argDescriptions: ['array'] },
-  'array.percentile': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'percent'] },
-  'array.head': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'count'] },
-  'array.tail': { minArgs: 2, maxArgs: 2, argDescriptions: ['array', 'count'] },
-  'array.range': { minArgs: 2, maxArgs: 3, argDescriptions: ['start', 'end', 'step'] },
-  'oakring': { minArgs: 0, maxArgs: 1, argDescriptions: ['capacity'] },
-  'matrix': { minArgs: 2, maxArgs: 3, argDescriptions: ['rows', 'cols', 'initialValue'] },
-};
+// Derived from the central builtin registry (builtins.ts) instead of being
+// hand-written here — one source of truth for arg-count metadata, shared
+// with the style-enum checks below.
+const BUILTIN_FN_SIGNATURES: Record<string, { minArgs: number; maxArgs: number; argDescriptions: string[] }> = buildSignatureMap();
 
 // Identifiers that are valid roots but absent from ALL_KEYWORDS / the lexer
 // keyword set (e.g. `color.new(...)` — "color" alone is a plain identifier).
@@ -161,16 +72,151 @@ function stripStringsAndComments(line: string): string {
   return out;
 }
 
-const PLOTSHAPE_STYLES = new Set([
-  'triangleup', 'triangledown', 'circle', 'cross', 'xcross',
-  'square', 'diamond', 'arrowup', 'arrowdown',
-]);
+// PLOTSHAPE_STYLES/PLOT3D_STYLES now live in builtins.ts (imported above),
+// attached to the 'plotshape'/'plot3d' BuiltinDef.styleChecks so the same
+// STYLE_CHECKS machinery below drives both the pre-existing checks and the
+// new drawing-object ones.
 
-const PLOT3D_STYLES = new Set([
-  'surface', 'ribbon', 'bars3d', 'scatter', 'line3d', 'wireframe', 'mesh',
-  'helix', 'vortex', 'manifold', 'nebula', 'constellation', 'torus', 'trail',
-  'ridgeline',
-]);
+/**
+ * Resolved style-enum checks, one per (builtin, argIndex) pair, flattened
+ * from every BuiltinDef.styleChecks entry in the registry. Replaces the two
+ * hand-copied plotshape/plot3d blocks that used to live inline in the
+ * function-signature-check loop below.
+ */
+interface ResolvedStyleCheck extends BuiltinStyleCheck { fnName: string }
+const STYLE_CHECKS: ResolvedStyleCheck[] = BUILTIN_REGISTRY.flatMap((def) =>
+  (def.styleChecks || []).map((sc) => ({ fnName: def.name, ...sc }))
+);
+
+/**
+ * Walks tokens starting at `startIdx` (expected to be the '(' opening a
+ * call, or the token right after the function-name token) and returns the
+ * literal STRING/IDENTIFIER value of the Nth (0-indexed) positional
+ * argument, or '' if that argument isn't a simple literal/identifier (e.g.
+ * it's an expression) or doesn't exist. Same token-walking logic the
+ * plotshape/plot3d style checks already used, generalized to any argIndex.
+ */
+function findPositionalArgToken(tokens: Token[], startIdx: number, targetIdx: number): string {
+  let aIdx = 0;
+  let val = '';
+  for (let k = startIdx; k < tokens.length; k++) {
+    const nt = tokens[k];
+    if (nt.value === '(') continue;
+    if (nt.value === ')' || nt.value === ',') {
+      if (nt.value === ')') break;
+      aIdx++;
+      continue;
+    }
+    if (aIdx === targetIdx && (nt.type === 'STRING' || nt.type === 'IDENTIFIER')) {
+      val = nt.value;
+      break;
+    }
+    if (nt.type !== 'PUNCTUATION') {
+      // Skip past this arg's full token span (handles nested calls/arrays).
+      let parenInner = 0;
+      k++;
+      while (k < tokens.length && !(tokens[k].value === ',' && parenInner === 0) && !(tokens[k].value === ')' && parenInner === 0)) {
+        if (tokens[k].value === '(') parenInner++;
+        if (tokens[k].value === ')') parenInner--;
+        k++;
+      }
+      aIdx++;
+      if (k < tokens.length && tokens[k].value === ')') break;
+    }
+  }
+  return val;
+}
+
+/**
+ * Like findPositionalArgToken, but returns the literal value ONLY if that
+ * argument is specifically a plain STRING token (not an identifier or a
+ * multi-token expression) — used where treating an identifier/expression as
+ * a suspicious literal would false-positive (a color computed into a
+ * variable, e.g. `col = up ? "#22cc88" : "#ff4477"` then `hline(x, col)`, is
+ * not a mistake to flag; a bare string literal in that slot is checkable).
+ */
+function findPositionalStringLiteral(tokens: Token[], startIdx: number, targetIdx: number): string | null {
+  let aIdx = 0;
+  let depth = 0;
+  let k = startIdx;
+  // startIdx points at the call's own opening '(' — skip it WITHOUT counting
+  // toward depth (only parens/brackets NESTED inside argument expressions
+  // should count), matching findPositionalArgToken's convention.
+  if (tokens[k]?.value === '(') k++;
+  for (; k < tokens.length; k++) {
+    const nt = tokens[k];
+    if (nt.value === '(' || nt.value === '[') { depth++; continue; }
+    if (nt.value === ')' || nt.value === ']') {
+      if (depth === 0) break; // the call's own closing paren
+      depth--;
+      continue;
+    }
+    if (nt.value === ',' && depth === 0) { aIdx++; continue; }
+    if (aIdx === targetIdx && depth === 0) {
+      return nt.type === 'STRING' ? nt.value : null;
+    }
+  }
+  return null;
+}
+
+// ── Object-creation id-guard helpers (OBJECT_NO_ID_UNCONDITIONAL /
+// OBJECT_STATIC_ID_IN_CONDITIONAL below) ──────────────────────────────────
+// The 7 drawing-object primitives that take an optional trailing `id` and
+// route through the interpreter's upsertObject/autoId idiom (see
+// interpreter.ts). fibretracement.new/gannfan.new also take a trailing id
+// but are sugar that fans out into N sub-ids of their own and are
+// intentionally NOT part of this specific guard family.
+const OBJECT_CREATION_RE = /(?<![\w.])(line|box|polyline|circle|arrow|table|image)\.new\s*\(/;
+
+/**
+ * Given a line already run through stripStringsAndComments (so string
+ * contents are blanked but quote characters survive), a regex match for an
+ * object-creation call, and the match's start index, returns the raw
+ * substring between that call's outer '(' and its matching ')' — or null if
+ * the call isn't closed on this line (the existing idiom checks in this
+ * file are line-based and don't handle calls split across lines either).
+ */
+function extractCallArgSpan(s: string, matchIndex: number, matchLen: number): string | null {
+  const start = matchIndex + matchLen; // just past the opening '('
+  let depth = 1;
+  let i = start;
+  for (; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') { depth--; if (depth === 0) break; }
+  }
+  if (depth !== 0) return null;
+  return s.slice(start, i);
+}
+
+/** Splits a call's argument span on top-level commas (ignoring commas nested inside (), []). */
+function splitTopLevelArgs(argsStr: string): string[] {
+  const trimmed = argsStr.trim();
+  if (!trimmed) return [];
+  const parts: string[] = [];
+  let depth = 0, start = 0;
+  for (let i = 0; i < argsStr.length; i++) {
+    const ch = argsStr[i];
+    if (ch === '(' || ch === '[') depth++;
+    else if (ch === ')' || ch === ']') depth--;
+    else if (ch === ',' && depth === 0) { parts.push(argsStr.slice(start, i)); start = i + 1; }
+  }
+  parts.push(argsStr.slice(start));
+  return parts;
+}
+
+/**
+ * True if a (stripStringsAndComments'd) argument span is EXACTLY a quoted
+ * string literal — i.e. `"<blanked content>"` with nothing else around it
+ * (string contents were already replaced with spaces by
+ * stripStringsAndComments, so this is a cheap way to tell "plain string
+ * literal" apart from an expression like `"zone:" + tostring(bar_index)`
+ * without needing the original unstripped text).
+ */
+function isPlainStringLiteralArg(strippedArg: string): boolean {
+  const t = strippedArg.trim();
+  return /^"[ ]*"$/.test(t) || /^'[ ]*'$/.test(t);
+}
 
 /**
  * Run pre-flight validation on OakScript source code.
@@ -386,6 +432,40 @@ export function validate(source: string): ValidationResult {
           fix: 'Wrap it in a signal condition: if buySig { plotshape(bar_index, low, "Buy", "triangleup", "#22cc88") }',
         });
       }
+
+      // Drawing-object id guards: line.new/box.new/polyline.new/circle.new/
+      // arrow.new/table.new/image.new all take an optional trailing `id`
+      // that decides whether a repeat call MUTATES the same object
+      // (upsertObject) or creates a fresh one (autoId). Two opposite
+      // footguns share this call family, mirroring PLOT_IN_CONDITIONAL/
+      // PLOTSHAPE_UNCONDITIONAL's placement-aware pattern above.
+      {
+        const objMatch = OBJECT_CREATION_RE.exec(s);
+        if (objMatch) {
+          const objFnName = `${objMatch[1]}.new`;
+          const sig = BUILTIN_FN_SIGNATURES[objFnName];
+          const argsSpan = extractCallArgSpan(s, objMatch.index, objMatch[0].length);
+          if (sig && argsSpan !== null) {
+            const argList = splitTopLevelArgs(argsSpan);
+            const argCount = argList.length;
+            if (!inBlock && argCount === sig.minArgs) {
+              // The trailing optional id was omitted entirely.
+              issues.push({
+                line: lineNum, col: 1, severity: 'warning', code: 'OBJECT_NO_ID_UNCONDITIONAL',
+                message: `Unconditional ${objFnName}(...) with no id argument creates a NEW object every bar — once the rolling cap for this object type is exceeded, the oldest one is silently evicted.`,
+                fix: `Pass a stable literal id as the last argument, e.g. ${objFnName}(..., "myId"), so repeated calls update the SAME object instead of stacking new ones.`,
+              });
+            } else if (inBlock && argCount === sig.maxArgs && isPlainStringLiteralArg(argList[argList.length - 1])) {
+              // The trailing id IS present and is a fixed string literal, inside a conditional.
+              issues.push({
+                line: lineNum, col: 1, severity: 'warning', code: 'OBJECT_STATIC_ID_IN_CONDITIONAL',
+                message: `${objFnName}(...) inside a conditional block with a fixed string id — every firing collapses onto the SAME object instead of creating one per signal.`,
+                fix: `Either omit the id (one object per signal, auto-capped) or derive it from bar_index for a one-per-signal id, e.g. ${objFnName}(..., "id:" + tostring(bar_index)).`,
+              });
+            }
+          }
+        }
+      }
       for (const ch of s) {
         if (ch === '{') depth++;
         else if (ch === '}') depth = Math.max(0, depth - 1);
@@ -553,22 +633,43 @@ export function validate(source: string): ValidationResult {
     const t = tokens[i];
     if (t.type === 'IDENTIFIER' || (t.type === 'KEYWORD' && !KNOWN_BLOCK_KEYWORDS.has(t.value))) {
       // A dotted property (array.min, ring.avg, m.macd) is NOT the bare
-      // builtin of the same name — checking it against the builtin signature
-      // false-errored valid shipped indicators (array.min(x) flagged as
-      // "min() expects 2 args") and sent the agent's auto-fix loop chasing
-      // phantom issues.
+      // builtin of the same name — checking a SUFFIX token (the "min" in
+      // "array.min") against the bare builtin signature false-errored valid
+      // shipped indicators (array.min(x) flagged as "min() expects 2 args")
+      // and sent the agent's auto-fix loop chasing phantom issues. Still
+      // skip suffix tokens for that reason.
       if (tokens[i - 1]?.value === '.') continue;
-      const fnName = t.value;
+      // But namespaced builtins (table.new, line.new, array.push, ...) ARE
+      // real registry-keyed dotted names — the lexer tokenizes `table`,
+      // `.`, `new` as three separate tokens, so a bare `t.value` lookup can
+      // only ever match UNnamespaced builtins (sma, plotshape, ...). Fold
+      // `root` + '.' + `suffix` into one dotted name and prefer it — but
+      // ONLY when that combined name is actually in the registry, so every
+      // non-namespaced/unrecognized case falls through to the exact
+      // original bare-name behavior unchanged.
+      let fnName = t.value;
+      let nameEndIdx = i;
+      if (tokens[i + 1]?.value === '.' && (tokens[i + 2]?.type === 'IDENTIFIER' || tokens[i + 2]?.type === 'KEYWORD')) {
+        const dotted = `${t.value}.${tokens[i + 2].value}`;
+        if (BUILTIN_FN_SIGNATURES[dotted]) { fnName = dotted; nameEndIdx = i + 2; }
+      }
       const sig = BUILTIN_FN_SIGNATURES[fnName];
       if (!sig) continue;
 
       // Look for opening paren
-      let j = i + 1;
+      let j = nameEndIdx + 1;
       while (j < tokens.length && tokens[j].type === 'PUNCTUATION' && tokens[j].value !== '(') j++;
       if (j >= tokens.length || tokens[j].value !== '(') continue;
 
-      // Count arguments between ( and the matching )
+      // Count arguments between ( and the matching ). Must track [ ] depth
+      // too, not just ( ) — an array-literal argument (e.g. fibretracement.new's
+      // levels?: [0, 0.236, 0.5, ...]) contains its own top-level commas that
+      // are NOT argument separators; without bracketDepth every comma inside
+      // the literal inflated the count (a 7-element array turned a real
+      // 8-arg call into an apparent 14-arg one — a false FN_TOO_MANY_ARGS on
+      // entirely valid code).
       let pDepth = 0;
+      let bracketDepth = 0;
       let argCount = 0;
       let inArg = false;
       j++;
@@ -580,7 +681,9 @@ export function validate(source: string): ValidationResult {
           pDepth--;
           continue;
         }
-        if (nt.value === ',' && pDepth === 0) {
+        if (nt.value === '[') { bracketDepth++; continue; }
+        if (nt.value === ']') { bracketDepth = Math.max(0, bracketDepth - 1); continue; }
+        if (nt.value === ',' && pDepth === 0 && bracketDepth === 0) {
           argCount++;
           inArg = false;
           continue;
@@ -607,86 +710,51 @@ export function validate(source: string): ValidationResult {
         });
       }
 
-      // Check plotshape style argument
-      if (fnName === 'plotshape') {
-        // Find the 4th argument (index 3, since we 0-index) — it's a string literal
-        let aIdx = 0;
-        let styleStr = '';
-        for (let k = i + 1; k < tokens.length; k++) {
-          const nt = tokens[k];
-          if (nt.value === '(') continue;
-          if (nt.value === ')' || nt.value === ',') {
-            if (nt.value === ')') break;
-            aIdx++;
-            continue;
-          }
-          if (aIdx === 3 && nt.type === 'STRING') {
-            styleStr = nt.value;
-            break;
-          }
-          if (nt.type !== 'PUNCTUATION') {
-            if (aIdx === 3 && nt.type === 'IDENTIFIER') {
-              styleStr = nt.value;
-              break;
-            }
-            // skip the arg value
-            let parenInner = 0;
-            k++;
-            while (k < tokens.length && !(tokens[k].value === ',' && parenInner === 0) && !(tokens[k].value === ')' && parenInner === 0)) {
-              if (tokens[k].value === '(') parenInner++;
-              if (tokens[k].value === ')') parenInner--;
-              k++;
-            }
-            aIdx++;
-            if (k < tokens.length && tokens[k].value === ')') break;
-          }
-        }
-        if (styleStr && !PLOTSHAPE_STYLES.has(styleStr)) {
-          issues.push({
-            line: t.line, col: t.col,
-            severity: 'warning', code: 'UNKNOWN_SHAPE_STYLE',
-            message: `plotshape style "${styleStr}" may not be valid. Valid: ${[...PLOTSHAPE_STYLES].join(', ')}`,
-          });
-        }
+      // Style-enum checks: driven by builtins.ts's BuiltinDef.styleChecks —
+      // one shared token-walk (findPositionalArgToken) instead of the
+      // hand-copied per-builtin blocks this used to be. Behavior for the
+      // pre-existing plotshape/plot3d checks is unchanged (same trigger
+      // condition, same codes, same valid-value lists — just sourced from
+      // the registry now); the four new checks (line.new style/extend,
+      // table.new position, image.new anchor) share the exact same helper.
+      for (const check of STYLE_CHECKS) {
+        if (check.fnName !== fnName) continue;
+        const val = findPositionalArgToken(tokens, nameEndIdx + 1, check.argIndex);
+        if (!val || check.values.has(val)) continue;
+        // The two pre-existing checks keep their original exact wording;
+        // every new check uses a generic template built from its `label`.
+        const message = check.code === 'UNKNOWN_SHAPE_STYLE'
+          ? `plotshape style "${val}" may not be valid. Valid: ${[...check.values].join(', ')}`
+          : check.code === 'UNKNOWN_3D_STYLE'
+            ? `plot3d style "${val}" not recognized. Valid: ${[...check.values].join(', ')}`
+            : `${check.label} "${val}" not recognized. Valid: ${[...check.values].join(', ')}`;
+        issues.push({
+          line: t.line, col: t.col,
+          severity: 'warning', code: check.code,
+          message,
+        });
       }
 
-      // Check plot3d style argument
-      if (fnName === 'plot3d') {
-        let aIdx = 0;
-        let styleStr = '';
-        for (let k = i + 1; k < tokens.length; k++) {
-          const nt = tokens[k];
-          if (nt.value === '(') continue;
-          if (nt.value === ')' || nt.value === ',') {
-            if (nt.value === ')') break;
-            aIdx++;
-            continue;
-          }
-          if (aIdx === 2 && nt.type === 'STRING') {
-            styleStr = nt.value;
-            break;
-          }
-          if (aIdx === 2 && nt.type === 'IDENTIFIER') {
-            styleStr = nt.value;
-            break;
-          }
-          if (nt.type !== 'PUNCTUATION') {
-            let parenInner = 0;
-            k++;
-            while (k < tokens.length && !(tokens[k].value === ',' && parenInner === 0) && !(tokens[k].value === ')' && parenInner === 0)) {
-              if (tokens[k].value === '(') parenInner++;
-              if (tokens[k].value === ')') parenInner--;
-              k++;
-            }
-            aIdx++;
-            if (k < tokens.length && tokens[k].value === ')') break;
-          }
-        }
-        if (styleStr && !PLOT3D_STYLES.has(styleStr)) {
+      // hline()'s color argument is index 1. A residual Pine-idiom mistake
+      // (Pine's hline(price, title, color, linestyle, linewidth) has a title
+      // in that slot) has models pass a human-readable string here instead
+      // of the actual color, e.g. hline(70, "Overbought", "#ff4477") — 3
+      // args stays under maxArgs so FN_TOO_MANY_ARGS never fires, and the
+      // bogus color string just silently fails as a canvas color with no
+      // runtime error, so nothing else in this file catches it. Confirmed
+      // empirically against a real model that prompt wording alone doesn't
+      // reliably suppress this, so it's caught deterministically here
+      // instead — only for a plain string literal, never an identifier
+      // (a color computed into a variable is legitimate, see
+      // findPositionalStringLiteral's doc comment).
+      if (fnName === 'hline') {
+        const colorTok = findPositionalStringLiteral(tokens, nameEndIdx + 1, 1);
+        if (colorTok !== null && !/^#[0-9a-fA-F]{3,8}$/.test(colorTok) && !/^rgba?\(/i.test(colorTok)) {
           issues.push({
             line: t.line, col: t.col,
-            severity: 'warning', code: 'UNKNOWN_3D_STYLE',
-            message: `plot3d style "${styleStr}" not recognized. Valid: ${[...PLOT3D_STYLES].join(', ')}`,
+            severity: 'warning', code: 'HLINE_INVALID_COLOR',
+            message: `hline()'s 2nd argument "${colorTok}" doesn't look like a color — OakScript's hline(price, color?, pane?) has NO title slot (that's Pine's hline(price, title, color, linestyle, linewidth)).`,
+            fix: `Drop the title — hline(price, "#22cc88", pane?). For a label, use label.new()/text.new() near the line instead.`,
           });
         }
       }

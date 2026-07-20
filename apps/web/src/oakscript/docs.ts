@@ -1571,5 +1571,345 @@ When OFF, you review and choose to accept/decline.
 
 Keyboard: Ctrl+Alt+G = Generate | Ctrl+Alt+F = Fix | Ctrl+Alt+B = Brainstorm | Ctrl+Alt+M = Metrics`,
     },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Drawing Objects — Lines, Boxes, Polylines, Circles, Arrows',
+      content: `Persistent chart objects — unlike plot()/plotshape(), which add one point
+per bar to a running series, these calls create discrete objects (lines,
+boxes, polylines, circles, arrows) anchored at bar_index/price coordinates.
+Every object type below shares the SAME id-based lifecycle (see THE ID
+IDIOM further down).
+
+line.new(x1, y1, x2, y2, color?, width?, style?, extend?, id?)
+  - x1, x2: number — bar_index anchors (the two endpoints' bars)
+  - y1, y2: number — price anchors (the two endpoints' prices)
+  - color:  hex string (default "#b48cff")
+  - width:  number — pixels (default 1)
+  - style:  "solid" | "dashed" | "dotted" (default "solid")
+  - extend: "none" | "left" | "right" | "both" (default "none") — projects
+    a ray from the segment out to the edge of the pane
+  - id: string — omit for a fresh auto-id every call, or pass the SAME
+    string to update this exact line in place (see THE ID IDIOM below)
+  Returns: the id (string).
+
+line.delete(id)
+  Removes the line with that id. No-op (does not error) if not found.
+
+box.new(left, top, right, bottom, borderColor?, bgColor?, width?, id?)
+  - left, right: number — bar_index anchors
+  - top, bottom: number — price anchors
+  - borderColor: hex string (default "#b48cff")
+  - bgColor: fill color, typically rgba() for translucency
+    (default "rgba(180,140,255,0.15)")
+  - width: number — border pixels (default 1)
+  - id: same replace-in-place rule as line.new
+  Returns: the id.
+
+box.delete(id)
+  Removes the box with that id.
+
+circle.new(x1, y1, x2, y2, color?, bgColor?, width?, id?)
+  Draws an ellipse INSCRIBED inside the bounding box (x1,y1)-(x2,y2) — pass
+  the same point twice (x1==x2, y1==y2) for a small dot-style marker.
+  - color: stroke hex (default "#b48cff")
+  - bgColor: fill, e.g. "transparent" (default) or an rgba() string
+  - width: stroke pixels (default 1)
+  - id: same replace-in-place rule
+  Returns: the id.
+
+arrow.new(x1, y1, x2, y2, color?, width?, id?)
+  A freeform two-point arrow from (x1,y1) to (x2,y2) with the arrowhead at
+  the SECOND point — distinct from plotarrow(), which is a fixed up/down
+  buy/sell marker anchored to a single bar.
+  Returns: the id.
+
+polyline.new(points, color?, width?, closed?, id?)
+  - points: array of [bar_index, price] pairs, e.g.
+    [[10, 100], [15, 105], [20, 98], [25, 103]]
+  - color: hex (default "#b48cff")
+  - width: pixels (default 1)
+  - closed: boolean — true connects the last point back to the first,
+    forming a loop (default false)
+  - id: same replace-in-place rule
+  Returns: the id.
+
+linefill.new(lineId1, lineId2, color)
+  Fills the band between two EXISTING line.new lines, referenced by their
+  ids. Both lines must already exist (created this bar or an earlier one).
+  A mistyped or not-yet-created id simply renders nothing — it does not
+  error or crash the script.
+  - color: typically an rgba() string for translucency
+  Re-calling with the same two ids just updates the same fill in place, so
+  there's rarely a reason to keep its return value.
+
+THE ID IDIOM — this is the single most important thing to understand about
+every drawing object above. Your script re-runs from scratch every bar
+(see Execution Model), so a .new() call does NOT mean "create another
+one." It means "find the object with this id, or create it if it doesn't
+exist yet, then overwrite its fields." Two opposite idioms fall out of
+this:
+
+REPLACE-IN-PLACE — give the object a literal, STABLE id so repeated calls
+keep updating the SAME object instead of stacking duplicates. Use this for
+anything that should look like ONE thing moving or growing over time.
+
+  Worked example — a trendline that follows the latest 20-bar pivot high:
+    var pivotBar = 0
+    var pivotPrice = 0.0
+    if high == highest(high, 20) {
+        pivotBar := bar_index
+        pivotPrice := high
+    }
+    line.new(pivotBar, pivotPrice, bar_index, close, "#22aaff", 2, "solid", "right", "trend1")
+
+  Because the id "trend1" never changes, this stays ONE line whose right
+  endpoint keeps re-anchoring to the current bar/close — not a stack of
+  hundreds of overlapping lines.
+
+  Worked example — a consolidation zone that grows while price stays
+  tight, and resets when it breaks out:
+    var boxLeft = 0
+    var boxTop = 0.0
+    var boxBottom = 999999.0
+    tight = (high - low) < atr(high, low, close, 14) * 0.6
+    if tight {
+        boxTop := max(boxTop, high)
+        boxBottom := min(boxBottom, low)
+        box.new(boxLeft, boxTop, bar_index, boxBottom, "#ffcc00", "rgba(255,204,0,0.12)", 1, "zone1")
+    } else {
+        boxLeft := bar_index
+        boxTop := high
+        boxBottom := low
+    }
+
+  The id "zone1" pins this to ONE rectangle that widens right and expands
+  top/bottom as the range persists, instead of a new box every bar.
+
+OMITTED ID — leave the id off and every firing gets its own fresh object,
+which is exactly right for "mark every occurrence." An omitted id auto-
+expands to a name built from the object type and the firing bar (something
+like "line:auto:482"), and each object type has its own rolling cap (30
+for line/box/circle/arrow, 20 for polyline/linefill/image, 6 for table) —
+the oldest is silently evicted once the cap is hit, so "one per signal"
+indicators never need manual cleanup.
+
+  Worked example — mark every confirmed pivot with a small circle:
+    ph = pivothigh(high, 3, 3)
+    if ph > 0
+        circle.new(bar_index, ph, bar_index, ph, "#ff8800", "transparent", 2)
+
+    pl = pivotlow(low, 3, 3)
+    if pl > 0
+        circle.new(bar_index, pl, bar_index, pl, "#22aaff", "transparent", 2)
+
+barcolor(color, pane?)
+  Recolors the candle body/wick for the CURRENT bar directly — not a
+  drawing object (no id, nothing to replace-in-place; every bar that calls
+  it just overrides that bar's color). pane is accepted for signature
+  symmetry with the other builtins but only "main" is currently supported.
+
+    if close > open and close > sma(close, 50)
+        barcolor("#22cc88")
+    else if close < open and close < sma(close, 50)
+        barcolor("#ff4477")`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Tables & Dashboards',
+      content: `table.new(position, columns, rows, bgColor?, id?)
+  Creates a SCREEN-anchored panel (position is relative to the canvas
+  corner, not a bar/price — unlike every other drawing object) and returns
+  a live table handle.
+  - position: string, one of:
+      "top_left"     "top_right"     "top_center"
+      "middle_left"  "middle_center" "middle_right"
+      "bottom_left"  "bottom_right"  "bottom_center"
+  - columns, rows: number — grid size
+  - bgColor: panel background, typically rgba()
+    (default "rgba(20,20,30,0.85)")
+  - id: string — same replace-in-place idiom as line.new/box.new/etc.
+    ALWAYS give a dashboard table a stable literal id — omitting it means
+    a brand-new table (capped at 6 total) is created every single bar,
+    which is almost never what a dashboard wants.
+  Returns: a table handle. Call handle.cell(...) on it directly, or pass
+  it to the free-function form table.cell(...) below — both work
+  identically.
+
+table.cell(handle, col, row, text, bgColor?, textColor?)
+  Sets one cell's contents. col/row are 0-indexed.
+  - text: string — use tostring(x) to format numbers
+  - bgColor, textColor: optional per-cell hex/rgba overrides
+
+Because the whole script re-runs every bar, rebuild the table's cell text
+every bar — this is normal (the same idiom Pine's own table type uses for
+dashboards), not a workaround or a limitation.
+
+EXAMPLE: session stats corner dashboard
+    var dash = table.new("top_right", 2, 4, "rgba(10,10,20,0.9)", "stats")
+
+    r = rsi(close, 14)
+    atrv = atr(high, low, close, 14)
+    trendUp = close > sma(close, 50)
+
+    table.cell(dash, 0, 0, "RSI", "rgba(180,140,255,0.15)", "#ffffff")
+    table.cell(dash, 1, 0, tostring(r), "rgba(180,140,255,0.15)", "#ffffff")
+    table.cell(dash, 0, 1, "ATR", "", "#ffffff")
+    table.cell(dash, 1, 1, tostring(atrv), "", "#ffffff")
+    table.cell(dash, 0, 2, "Trend", "", "#ffffff")
+    table.cell(dash, 1, 2, trendUp ? "UP" : "DOWN", "", trendUp ? "#22cc88" : "#ff4477")
+    table.cell(dash, 0, 3, "Close", "", "#ffffff")
+    table.cell(dash, 1, 3, tostring(close), "", "#ffffff")
+
+  table.new() is called with a stable id ("stats") so it stays ONE panel
+  pinned to the top-right corner regardless of zoom/pan; the four
+  table.cell() calls below it just refresh that same panel's text and
+  colors every bar.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Images — Import & Signals',
+      content: `image.new(x, y, source, width?, height?, anchor?, opacity?, rotation?, id?)
+  Places a persistent image at a chart position (bar_index/price, like
+  line.new/box.new — NOT screen-space like table.new).
+  - x: number — bar_index anchor
+  - y: number — price anchor
+  - source: string — see SOURCE below
+  - width, height: number — PIXELS (default 48, 48)
+  - anchor: which point of the image sits at (x,y) — "center" (default),
+    "top_left", "top_right", "bottom_left", "bottom_right"
+  - opacity: number 0..1 (default 1)
+  - rotation: number — degrees (default 0); reuses the same rz field
+    plot3d shapes use for rotation
+  - id: same replace-in-place idiom as line.new/box.new/etc.
+  Returns: the id.
+
+plotimage(bar_index, price, source, width?, height?, pane?, id?)
+  A per-bar signal marker — the image equivalent of plotshape()/
+  plotarrow()/plotchar(). Fires a fresh marker every time its surrounding
+  condition is true.
+  - width, height: PIXELS (default 24, 24 — smaller than image.new's
+    default since this is meant as a marker, not a watermark)
+  - pane: "main" (default) or "separate"
+
+plotimage_3d(bar_index, price, source, size?, z_level?, pane?, rx?, ry?, rz?)
+  The 3D billboard version — same signal-marker role as plotimage, but for
+  plot3d scenes. Renders as a camera-facing sprite (not a rotatable mesh).
+  - size: scale factor, same convention as plotshape_3d's size (default 1)
+  - z_level: depth plane, same convention as plot3d's z_level (default 0)
+  - pane: "3d" (renders in the main 3D scene, alongside plot3d(..., "3d",
+    ...) calls) or "separate" (default — the lower 3D pane)
+  - rx, ry, rz: degrees (default 0) — accepted for signature symmetry with
+    plotshape_3d, but a billboard sprite always faces the camera regardless
+
+SOURCE — every image builtin resolves its source string the SAME way:
+1. Inline data URI — a self-contained string starting with "data:image/",
+   e.g. "data:image/png;base64,iVBORw0KG...". The image travels with the
+   script text itself, no external file needed.
+2. Saved asset name — any other string is looked up by EXACT NAME in your
+   local image library. Upload a PNG or JPEG (5MB cap) via the editor's
+   Images panel (the 🖼️ Image Assets toolbar button) and give it a name;
+   clicking that name in the panel copies a ready-to-paste image.new(...)
+   snippet using it to your clipboard.
+A source matching neither form resolves to nothing — the object is still
+created but renders no pixels; nothing crashes.
+
+PIXELS, NOT PRICE UNITS: width/height (image.new, plotimage) and size
+(plotimage_3d) are all screen-space values — exactly like label size and
+plotshape_3d's size — NOT chart price units. An image stays a constant
+on-screen size as you zoom/pan the price axis; it does not grow or shrink
+with the chart.
+
+EXAMPLE: logo watermark in the corner
+    // Upload your logo once via the Images panel, name it "logo"
+    image.new(bar_index, high, "logo", 64, 64, "top_right", 0.35, 0, "watermark")
+
+  Called unconditionally every bar with the SAME id ("watermark"), this
+  stays ONE image whose anchor keeps tracking the newest bar/high, sitting
+  at 35% opacity so it doesn't compete with the price data.
+
+EXAMPLE: custom icon buy/sell signal marker
+    fastMa = ema(close, 9)
+    slowMa = ema(close, 21)
+
+    if crossover(fastMa, slowMa)
+        plotimage(bar_index, low, "buy_icon", 20, 20)
+
+    if crossunder(fastMa, slowMa)
+        plotimage(bar_index, high, "sell_icon", 20, 20)
+
+  Upload "buy_icon"/"sell_icon" PNGs via the Images panel first (or swap in
+  inline data URIs for a fully self-contained script) — each crossover/
+  crossunder then drops its own small icon at that bar.`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'Analyst Overlay Tools — Fibonacci, Gann, Regression Channel',
+      content: `fibretracement.new(x1, y1, x2, y2, levels?, colorUp?, colorDown?, id?)
+  Draws a Fibonacci retracement as a set of dashed, right-extending level
+  lines — sugar built directly on line.new (each level is a real line
+  object under the hood), not a separate drawing primitive.
+  - x1, x2: number — bar_index anchors (levels ray rightward past x2)
+  - y1: number — the price that maps to the 0% level
+  - y2: number — the price that maps to the 100% level
+  - levels: array of ratios
+    (default [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1])
+  - colorUp: color for ratios <= 0.5 (default "#22cc88")
+  - colorDown: color for ratios > 0.5 (default "#ff4477")
+  - id: a BASE id — each level gets its own derived sub-id, so passing the
+    SAME base id next time updates every level line in place; omit it and
+    each call creates a fresh set (same replace-in-place idiom as
+    line.new, applied per level)
+  Returns: the base id.
+
+  EXAMPLE:
+    swingHigh = highest(high, 50)
+    swingLow = lowest(low, 50)
+    fibretracement.new(bar_index - 50, swingLow, bar_index, swingHigh, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1], "#22cc88", "#ff4477", "fib1")
+
+gannfan.new(x1, y1, angleUnit?, color?, id?)
+  Draws the 7 classic Gann angles (1x1, 1x2, 2x1, 1x4, 4x1, 1x8, 8x1) as
+  dotted, right-extending rays from a single origin — also sugar over
+  line.new.
+  - x1, y1: number — the origin bar_index/price (usually a swing pivot)
+  - angleUnit: number — price-per-bar scale for the 1x1 ("45 degree")
+    angle (default 1); tune this to the instrument's typical bar-to-bar
+    price movement or the fan won't look meaningful
+  - color: hex (default "#b48cff")
+  - id: base id, same per-line derivation/replace-in-place rule as
+    fibretracement.new
+  Returns: the base id.
+
+  EXAMPLE:
+    pl = pivotlow(low, 5, 5)
+    var originBar = 0
+    var originPrice = 0.0
+    if pl > 0 {
+        originBar := bar_index - 5
+        originPrice := pl
+    }
+    gannfan.new(originBar, originPrice, 0.5, "#ffcc00", "gann1")
+
+regression.channel(source, length, mult?) — a CALCULATION, not a drawing
+primitive. Unlike everything above, this does not draw anything by
+itself. It returns three number arrays for the current bar — same shape
+as macd() — and it is YOUR script's job to plot() and fill() them:
+  .mid   — the regression midline over the window (an SMA-based
+           approximation, the same one linreg() already uses internally —
+           not a from-scratch least-squares fit)
+  .upper — mid + mult * stdev(source, length)
+  .lower — mid - mult * stdev(source, length)
+
+EXAMPLE:
+    rc = regression.channel(close, 100, 2)
+    plot(rc.mid, "Mid", "#b48cff", 2)
+    plot(rc.upper, "Upper", "#22aaff", 1)
+    plot(rc.lower, "Lower", "#22aaff", 1)
+    fill(rc.upper, rc.lower, "rgba(34,170,255,0.08)")
+
+This is built from the exact same plot()/fill() primitives as any other
+band indicator (compare the "Gradient cloud" recipe earlier) —
+regression.channel just supplies the three series; there is no auto-drawn
+channel object to reach for instead.`,
+    },
   ];
 }

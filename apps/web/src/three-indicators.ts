@@ -9,6 +9,7 @@ import type { BaseBar } from '@dafe/types';
 import type { OakPlot, OakPlot3D } from './oakscript/runtime';
 import { makeTextSprite } from './three-lower-pane';
 import { type ViewState, getVisibleRange, barX, priceToY, chartRight, TOP_FRAC, BOT_FRAC } from './chart-renderer';
+import { resolveImage } from './image-cache';
 
 export type VizType = 'surface' | 'ribbon' | 'scatter' | 'wireframe' | 'bars3d' | 'line3d' | 'mesh'
   | 'helix' | 'vortex' | 'manifold' | 'nebula' | 'constellation' | 'torus' | 'trail';
@@ -1329,6 +1330,21 @@ export function renderMain3DScene(
           const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
           const z = (sp.z_level ?? 0) * 0.3;
           const s = sp.size ?? 1;
+          // 3D image billboard (plotimage_3d) — resolved from the shared
+          // sync-read image decode cache; skip the geometry switch entirely.
+          if (sp.shape3d === 'image') {
+            const img = resolveImage(sp.imageRef ?? '');
+            if (img) {
+              const tex = new THREE.Texture(img);
+              tex.needsUpdate = true;
+              const aspect = img.width && img.height ? img.width / img.height : 1;
+              const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+              sprite.scale.set(s * 0.6 * aspect, s * 0.6, 1);
+              sprite.position.set(x, y, z);
+              _scene.add(sprite);
+            }
+            continue;
+          }
           let geometry: THREE.BufferGeometry;
           switch (sp.shape3d) {
             case 'cube': geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3); break;

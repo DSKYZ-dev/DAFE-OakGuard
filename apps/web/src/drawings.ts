@@ -11,6 +11,18 @@ interface Drawing { type: Exclude<DrawTool, 'none'>; a: Point; b?: Point; color:
 
 const PALETTE = ['#b48cff', '#22cc88', '#ff4477', '#ffd166', '#4cc9f0'];
 
+// Manual drawings are user-driven and long-lived (never rebuilt fresh like
+// an OakScript indicator's per-execution plots), so unlike that system
+// nothing here self-cleans — a session of casual clicking could otherwise
+// accumulate an unbounded array forever. Cap by RENDER COST, not raw count:
+// a fib draws 7 levels + 7 labels every frame, a channel draws 2 lines + a
+// fill, while a single hline/text is nearly free — so a handful of fibs
+// should count for much more of the budget than the same number of hlines.
+const DRAWING_WEIGHT: Record<Drawing['type'], number> = {
+  hline: 1, text: 1, trend: 1, ray: 1, rect: 1, channel: 2, fib: 5,
+};
+const MAX_TOTAL_WEIGHT = 150;
+
 let drawings: Drawing[] = [];
 let tool: DrawTool = 'none';
 let pending: Point | null = null;
@@ -29,6 +41,27 @@ export function clearDrawings(): void { drawings = []; pending = null; }
 export function undoDrawing(): void { if (pending) { pending = null; } else { drawings.pop(); } }
 export function count(): number { return drawings.length; }
 
+/** Total render-cost weight currently on the chart (see DRAWING_WEIGHT). */
+export function totalWeight(): number {
+  let w = 0;
+  for (const d of drawings) w += DRAWING_WEIGHT[d.type];
+  return w;
+}
+
+/** Push a new drawing, then evict the OLDEST drawings (oldest-first, same
+ * eviction order as every OakScript object cap) until back under budget —
+ * so the toolbar never needs a manual "Clear All" just to stay performant. */
+function pushDrawing(d: Drawing): void {
+  drawings.push(d);
+  let w = totalWeight();
+  let i = 0;
+  while (w > MAX_TOTAL_WEIGHT && i < drawings.length) {
+    w -= DRAWING_WEIGHT[drawings[i].type];
+    i++;
+  }
+  if (i > 0) drawings = drawings.slice(i);
+}
+
 /** Convert a screen pixel to a data-anchored point. */
 export function screenToPoint(px: number, py: number, bars: BaseBar[], view: ViewState, width: number, height: number): Point {
   const { minP, pRange } = getPriceRange(bars, view, width);
@@ -43,18 +76,18 @@ export function onClick(px: number, py: number, bars: BaseBar[], view: ViewState
   const pt = screenToPoint(px, py, bars, view, width, height);
   const color = PALETTE[colorIdx % PALETTE.length];
   if (tool === 'hline') {
-    drawings.push({ type: 'hline', a: pt, color });
+    pushDrawing({ type: 'hline', a: pt, color });
     colorIdx++;
     return true;
   }
   if (tool === 'text') {
     const txt = prompt('Text label:');
-    if (txt) drawings.push({ type: 'text', a: pt, color, text: txt });
+    if (txt) pushDrawing({ type: 'text', a: pt, color, text: txt });
     colorIdx++;
     return true;
   }
   if (!pending) { pending = pt; return true; }
-  drawings.push({ type: tool, a: pending, b: pt, color });
+  pushDrawing({ type: tool, a: pending, b: pt, color });
   pending = null;
   colorIdx++;
   return true;

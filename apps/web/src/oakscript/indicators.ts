@@ -1621,6 +1621,601 @@ plot3d(distFromPOC, "POC Distance", "trail", "#b48cff", "separate")
 if not insideVA { bgcolor("rgba(255,136,0,0.04)") }
 if nearPOC { bgcolor("rgba(180,140,255,0.05)") }`,
   },
+  // ─── Showcase — every new drawing-layer builtin, working together ─
+  {
+    name: 'Structure Cartographer',
+    description: 'Live swing structure: trendline, supply/demand zones, auto-fib, break-of-structure arrows',
+    category: 'Showcase',
+    source: `// ═════════════════════════════════════════════════════════════════════
+// Structure Cartographer — Market Structure Mapper
+// Confirmed swing pivots, a live trendline through structure, supply/
+// demand zones at the freshest swings, an auto-fib across the dominant
+// leg, and break-of-structure arrows — the full 2D drawing-object
+// toolkit reading one real structural story, not decoration.
+// ═════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ──────────────────────────────────────────────────────
+pivotLen = input(5, "Pivot Lookback/Lookahead", 2, 15, 1)
+atrLen = input(14, "ATR Length", 5, 50, 1)
+showZone = input(true, "Show Supply/Demand Zones")
+showFib = input(true, "Show Fibonacci Retracement")
+
+// ─── Pivot detection + volatility scale ───────────────────────────
+ph = pivothigh(high, pivotLen, pivotLen)
+pl = pivotlow(low, pivotLen, pivotLen)
+atrVal = atr(high, low, close, atrLen)
+
+// ─── Track the two most recent confirmed swing highs/lows ────────
+var lastHighPrice = 0.0
+var lastHighBar = 0
+var prevHighPrice = 0.0
+var lastLowPrice = 0.0
+var lastLowBar = 0
+var prevLowPrice = 0.0
+
+if ph > 0 {
+    prevHighPrice := lastHighPrice
+    lastHighPrice := ph
+    lastHighBar := bar_index - pivotLen
+}
+if pl > 0 {
+    prevLowPrice := lastLowPrice
+    lastLowPrice := pl
+    lastLowBar := bar_index - pivotLen
+}
+
+// ─── Trend read from the swing sequence ───────────────────────────
+trendUp = lastLowPrice > prevLowPrice and lastLowPrice > 0 and prevLowPrice > 0
+trendDn = lastHighPrice < prevHighPrice and lastHighPrice > 0 and prevHighPrice > 0
+var trendState = 0
+if trendUp {
+    trendState := 1
+}
+if trendDn {
+    trendState := -1
+}
+
+// ─── Confirmed-pivot markers (auto-id, one per event, capped) ─────
+if ph > 0 {
+    phId = "ph" + tostring(bar_index)
+    circle.new(bar_index - pivotLen, ph - atrVal * 0.3, bar_index - pivotLen, ph + atrVal * 0.3, "#ff4477", "rgba(255,68,119,0.15)", 1, phId)
+}
+if pl > 0 {
+    plId = "pl" + tostring(bar_index)
+    circle.new(bar_index - pivotLen, pl - atrVal * 0.3, bar_index - pivotLen, pl + atrVal * 0.3, "#22cc88", "rgba(34,204,136,0.15)", 1, plId)
+}
+
+// ─── Live structure trendline — same id, moves as new swings confirm ─
+if trendState == 1 {
+    line.new(lastLowBar, lastLowPrice, bar_index, lastLowPrice, "#22cc88", 2, "solid", "right", "structline")
+}
+if trendState == -1 {
+    line.new(lastHighBar, lastHighPrice, bar_index, lastHighPrice, "#ff4477", 2, "solid", "right", "structline")
+}
+
+// ─── Supply/demand zones at the freshest swings ────────────────────
+if showZone and ph > 0 {
+    box.new(bar_index - pivotLen, ph + atrVal * 0.15, bar_index, ph - atrVal * 0.15, "#ff4477", "rgba(255,68,119,0.10)", 1, "zone_sup")
+    text.new(bar_index, ph + atrVal * 0.5, "Supply", "#ff4477", 11, "zonelabel_sup")
+}
+if showZone and pl > 0 {
+    box.new(bar_index - pivotLen, pl + atrVal * 0.15, bar_index, pl - atrVal * 0.15, "#22cc88", "rgba(34,204,136,0.10)", 1, "zone_dem")
+    text.new(bar_index, pl - atrVal * 0.5, "Demand", "#22cc88", 11, "zonelabel_dem")
+}
+
+// ─── Fibonacci retracement across the dominant recent leg ─────────
+if showFib and lastHighBar > 0 and lastLowBar > 0 {
+    if lastHighBar > lastLowBar {
+        fibretracement.new(lastLowBar, lastLowPrice, lastHighBar, lastHighPrice, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1], "#22cc88", "#ff4477", "fib")
+    } else {
+        fibretracement.new(lastHighBar, lastHighPrice, lastLowBar, lastLowPrice, [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1], "#ff4477", "#22cc88", "fib")
+    }
+}
+
+// ─── Break of structure ────────────────────────────────────────────
+var lastTrendState = 0
+if trendState != lastTrendState and trendState != 0 {
+    if trendState == 1 {
+        arrow.new(lastHighBar, lastHighPrice, bar_index, high, "#22cc88", 2)
+    } else {
+        arrow.new(lastLowBar, lastLowPrice, bar_index, low, "#ff4477", 2)
+    }
+    alertcondition(true, "Break of Structure", "Trend flipped")
+}
+lastTrendState := trendState
+
+// ─── Dashboard ──────────────────────────────────────────────────────
+dash = table.new("top_right", 2, 3, "rgba(8,8,20,0.88)", "dash")
+trendTxt = "Ranging"
+trendCol = "#ffd43b"
+if trendState == 1 {
+    trendTxt := "Bullish"
+    trendCol := "#22cc88"
+}
+if trendState == -1 {
+    trendTxt := "Bearish"
+    trendCol := "#ff4477"
+}
+table.cell(dash, 0, 0, "Structure", "", "#b48cff")
+table.cell(dash, 1, 0, trendTxt, "", trendCol)
+table.cell(dash, 0, 1, "ATR", "", "#b48cff")
+table.cell(dash, 1, 1, tostring(atrVal), "", "#ffffff")
+lpTxt = "-"
+if ph > 0 {
+    lpTxt := "High"
+}
+if pl > 0 {
+    lpTxt := "Low"
+}
+table.cell(dash, 0, 2, "Last Pivot", "", "#b48cff")
+table.cell(dash, 1, 2, lpTxt, "", "#ffffff")
+
+// ─── Candle tint by structure state ─────────────────────────────────
+if trendState == 1 {
+    barcolor("#22cc88")
+}
+if trendState == -1 {
+    barcolor("#ff4477")
+}
+
+// ─── Price + structure depth in 3D ──────────────────────────────────
+plot(close, "Price", "#ffffff", 1)
+swingDelta = lastHighPrice - lastLowPrice
+plot3d(swingDelta, "Structure Depth", "bars3d", "#b48cff", "separate")
+plot3d(trendState * 50 + 50, "Trend State", "ribbon", "#22aaff", "separate")`,
+  },
+  {
+    name: 'Nova Signal Engine',
+    description: 'Multi-oscillator confluence firing custom rocket/shield icon signals in 2D and as 3D billboards',
+    category: 'Showcase',
+    source: `// ═════════════════════════════════════════════════════════════════════
+// Nova Signal Engine — Multi-Oscillator Confluence, Custom Icon Signals
+// RSI + Stochastic + MFI + CMF vote on overbought/oversold; when they
+// agree, fire a hand-drawn rocket/shield ICON instead of a stock shape —
+// in both the 2D pane and as a real 3D billboard sprite. A Gann fan
+// projects from the trailing swing low, and an adaptive channel shows
+// where the range is tightening.
+// ═════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ──────────────────────────────────────────────────────
+rsiLen = input(14, "RSI Length", 5, 50, 1)
+stochLen = input(14, "Stochastic Length", 5, 50, 1)
+mfiLen = input(14, "MFI Length", 5, 50, 1)
+cmfLen = input(20, "CMF Length", 5, 50, 1)
+squeezeLen = input(20, "Squeeze Channel Length", 10, 80, 1)
+
+// ─── Custom icon assets (inline data URIs — no upload needed) ─────
+rocketIcon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADB0lEQVR4AdRXTWsUQRCtWc+egoIXwRUkgrdNjBjBk+LdgxJ/QXLIIQETf4GbQwJ6SPwFfvwBEb1GMWb35MEQcBURD4oH8Sa443s9szNd090zHVwIWbpmuqpevXo1szvDtuSQP0dLwJndtWvtXne93Vvbbve632F/c8PexNaJOchFjboCaDIP+5Ak6UuQL4mkszifgLGehr2JLRFDLGwe+cbF4iDobP9+p73bfQ3AJmwSFruI3WQtOeqKggJQeCtNk3eSyOU6gtocaslBrhDOK4AFKHyKIm8ecbNmjp8WmnHChxa5yOmDOA0A7KDgsQ9cjS2emhVaNe7zyUnuas4RkA6ThwA5ccTU4uSXcAVo3Kuk32nl3CqrGplvLu6bQgQce3J7H4BnYXCbHplnjkoAIouwxsWJOfkIyD1jI7/hrHoUAvIHCH8+DfXive/RV0FkMu9l+hQC8AC5YSINB07Kiaswxpirxn2+3asQIJLMSMSnbtK6nKYue1kC0nMa5HqckJO6mSzCHDGZV3cse1kCZKKuhLmYCWMw4Cp62QIQDy9OxgnDiCxDDLGZ13y0Bfysg0dOZigisEUvS0Cyb6o9B07EyezU1z+/ZG7/iVx9/0je/v5ip4RY1qigcspeloB0R2Esx57IbryDxvTveITYNRZVvi17FQLwsniRZ9WJk3AiNhpNzMYKBId5WwhrWIuUs+xehYBP0yuvgNyDqXVz4kJxqX2NFRiOLYQiEKquvbyXiRcCjCfCN2G+zU53Pz+XmMYZujxSyINv22Wg3KkeSsBganVLUnlTYse8A7fpYdEqAYwnrZRvqyH3Y7Zhzq1oHQEfO/f6eFnMKdQYHHKSu0rlCCAAwGcouI39OK7EkFzkBJ+zvAKIYgEKL/7XdwL3nBzkIqfPggIIRmF/ML3KPyEL8J2fKGKhRewCa8kRAjFeK4AAGr+5sPN4gFyHvyGS8M/KDxHhLaJhb2IbxBAL20K+cUUJGLHwAQLi5cHUyhWcT8KO5Ya9iS0TM8LHnA8kIIawimny/wEAAP//KrXSgAAAAAZJREFUAwBGsyJQA9w7EgAAAABJRU5ErkJggg=="
+shieldIcon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAC4UlEQVR4AdRXvW4UMRAebx4BwSOgowaBBOkuiegpQJR0SUEBEndvwB0SKSiSN0BQ0KPkrguRQFAT8QggHiFrvm/2z2t77T0aROTP65n5Zuazb28vW8g//vu/BNjpi127O3ttd+Zndmf2E7isgTV8jIGzyaGOOgE02Qe+izEnYuWZiL2HJlcB5hNYw8cYOOQC+4hnB5MHSXZvftNOZ59AOAImwNhB7hFzWSOVNCjATucPpbRfxMjdVIFkjLmoobUGiFEBmmDsO+RE4/CL3Lou8vJJBa7VGZ0KQS2tGQkXvk+PzNi3vr+12cxt7Nst0Vugptb23IEAubRvwAn9uUa5uEhR10b5bvQa6Z3Lz62Lb3LUVVZKCGprj4qpc08APE+B/niwXYnoe/MWhTA3ZPZ6tAJs9QCZBPwPZ4FrtCOeO6l7aZlWgBTmvnr86esPEcL352zmEDGe06sTYM2dGFd98Z1oaHBK5Ti9OgFi8cUeKMedEAPhwE0uEQQaR9fLESBXmnD0mtqRn5Dntr1cAX6Zvs0dEX1vaJFDhJGoxxXwO8pwnfmdiYzhiLS9HAEGt7vbLbLmzohISF2MEWqkpq5XJ8DYz6mUNpbaYSrWFsDC6dUJKO1HhPKDOyR8Jn2E74/ZTq9WgFm/OgX3AsiP2E5jvnili7qXRlsBaonwl7BeJi7cKdFQuCYaO33t9egJMKvlMf7nO0/n11F3x+66DkcvVs61hxPsCVD/luGvVanr1MQdu0hxq1gpVe3KqudAgDlZfBNrHtfx9IU7J9KsKoqaWruy2jkQwIhZL95DxCOs0yfRnACIiVGyltaMkKICyNOEwtwWfG60/wrMRQ2tNVBgUAD5PDKzXvIl5AD2uK8oiBjkHjCXNWAPjqSAJot3LnBDrN3De8KhiOHLyi8R4UdEYA2fkUNyyAWOEc+OUQKaKnyAmNPlc7NabJvV8hqwVQNr+BirHmhNSva6kYBstQgh5/oDAAD//5w/NJkAAAAGSURBVAMAW6IcUP2OZmoAAAAASUVORK5CYII="
+orbIcon = "data:image/png;base64,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"
+
+// ─── Oscillator confluence ─────────────────────────────────────────
+r = rsi(close, rsiLen)
+st = stoch(high, low, close, stochLen)
+mf = mfi(high, low, close, volume, mfiLen)
+cm = cmf(high, low, close, volume, cmfLen)
+
+bullVotes = 0
+if r < 30 {
+    bullVotes := bullVotes + 1
+}
+if st < 20 {
+    bullVotes := bullVotes + 1
+}
+if mf < 20 {
+    bullVotes := bullVotes + 1
+}
+if cm > 0.1 {
+    bullVotes := bullVotes + 1
+}
+
+bearVotes = 0
+if r > 70 {
+    bearVotes := bearVotes + 1
+}
+if st > 80 {
+    bearVotes := bearVotes + 1
+}
+if mf > 80 {
+    bearVotes := bearVotes + 1
+}
+if cm < -0.1 {
+    bearVotes := bearVotes + 1
+}
+
+confluence = bullVotes - bearVotes
+
+// ─── Rocket / shield icon signals — extreme agreement only ─────────
+if bullVotes >= 3 {
+    plotimage(bar_index, low, rocketIcon, 28, 28)
+}
+if bearVotes >= 3 {
+    plotimage(bar_index, high, shieldIcon, 28, 28)
+}
+
+// ─── The SAME confluence, as a 3D billboard sprite (lower 3D pane) ──
+plot3d(confluence * 25 + 50, "Confluence Terrain", "surface", "#b48cff", "separate")
+if bullVotes >= 3 {
+    plotimage_3d(bar_index, low, rocketIcon, 1.4, 0, "separate")
+    label3d(bar_index, low, "MAX BULL", "#22cc88", 1, 1, "separate")
+}
+if bearVotes >= 3 {
+    plotimage_3d(bar_index, high, shieldIcon, 1.4, 0, "separate")
+    label3d(bar_index, high, "MAX BEAR", "#ff4477", 1, 1, "separate")
+}
+
+// ─── Adaptive squeeze channel — two live lines + a linefill bridge ──
+hiBand = highest(high, squeezeLen)
+loBand = lowest(low, squeezeLen)
+line.new(bar_index - squeezeLen, hiBand, bar_index, hiBand, "#4cc9f0", 1, "dotted", "none", "squeezehi")
+line.new(bar_index - squeezeLen, loBand, bar_index, loBand, "#4cc9f0", 1, "dotted", "none", "squeezelo")
+linefill.new("squeezehi", "squeezelo", "rgba(76,201,240,0.06)")
+
+// ─── Gann fan re-anchored to the trailing 40-bar low ────────────────
+gannLow = lowest(low, 40)
+gannUnit = atr(high, low, close, 14) * 0.5
+gannfan.new(bar_index - 40, gannLow, gannUnit, "#b48cff", "gann")
+
+// ─── Watermark logo, tracking near the top of the squeeze band ─────
+image.new(bar_index - 45, hiBand, orbIcon, 22, 22, "center", 0.85, 0, "logo")
+
+// ─── Confluence dashboard ────────────────────────────────────────────
+dash = table.new("bottom_right", 2, 5, "rgba(8,8,20,0.88)", "dash")
+table.cell(dash, 0, 0, "RSI", "", "#b48cff")
+table.cell(dash, 1, 0, tostring(r), "", "#ffffff")
+table.cell(dash, 0, 1, "Stoch", "", "#b48cff")
+table.cell(dash, 1, 1, tostring(st), "", "#ffffff")
+table.cell(dash, 0, 2, "MFI", "", "#b48cff")
+table.cell(dash, 1, 2, tostring(mf), "", "#ffffff")
+table.cell(dash, 0, 3, "CMF", "", "#b48cff")
+table.cell(dash, 1, 3, tostring(cm), "", "#ffffff")
+confCol = color.from_gradient(confluence, -4, 4, "#ff4477", "#22cc88")
+table.cell(dash, 0, 4, "Confluence", "", "#b48cff")
+table.cell(dash, 1, 4, tostring(confluence), "", confCol)
+
+// ─── Base plots ───────────────────────────────────────────────────
+plot(close, "Price", "#ffffff", 1)
+plot(r, "RSI", "#22aaff", 1, "separate")
+hline(70, "#ff4477", "separate")
+hline(30, "#22cc88", "separate")`,
+  },
+  {
+    name: 'Regression Nebula',
+    description: 'Native regression channel rendered five ways: band, projected cone, faceted echo, breach markers',
+    category: 'Showcase',
+    source: `// ═════════════════════════════════════════════════════════════════════
+// Regression Nebula — Linear Regression Channel, Projected Cone & Echo
+// The engine's native regression.channel() drives everything: the
+// historical band (plot+fill), a forward-projected cone built from two
+// live line.new rays + linefill.new, a faceted polyline echo of the
+// spine, and breach/re-entry markers — one real statistical read,
+// rendered five different ways.
+// ═════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ──────────────────────────────────────────────────────
+rcLen = input(30, "Regression Length", 10, 100, 1)
+rcMult = input(2.0, "Channel Width (stdev mult)", 0.5, 4.0, 0.1)
+echoStep = input(8, "Echo Facet Spacing (bars)", 4, 20, 1)
+
+// ─── The channel itself ─────────────────────────────────────────
+rc = regression.channel(close, rcLen, rcMult)
+width = rc.upper - rc.lower
+posInChannel = 0.0
+if width > 0 {
+    posInChannel := (close - rc.lower) / width
+}
+
+// ─── Historical band ────────────────────────────────────────────
+plot(rc.mid, "Regression Mid", "#b48cff", 2)
+plot(rc.upper, "Upper", "#22aaff", 1)
+plot(rc.lower, "Lower", "#ff9900", 1)
+fill(rc.upper, rc.lower, "rgba(180,140,255,0.06)")
+
+// ─── Forward-projected cone: two rays + a linefill bridge ─────────
+line.new(bar_index - rcLen, rc.upper, bar_index, rc.upper, "#22aaff", 1, "dashed", "right", "conehi")
+line.new(bar_index - rcLen, rc.lower, bar_index, rc.lower, "#ff9900", 1, "dashed", "right", "conelo")
+linefill.new("conehi", "conelo", "rgba(34,170,255,0.05)")
+
+// ─── Faceted polyline echo of the spine, sampled every echoStep bars ─
+var echoPts = array()
+if bar_index % echoStep == 0 {
+    array.push(echoPts, bar_index)
+    array.push(echoPts, rc.mid)
+    if array.size(echoPts) > 24 {
+        array.remove(echoPts, 0)
+        array.remove(echoPts, 0)
+    }
+}
+echoPath = array()
+i = 0
+while i < array.size(echoPts) {
+    pt = array()
+    array.push(pt, array.get(echoPts, i))
+    array.push(pt, array.get(echoPts, i + 1))
+    array.push(echoPath, pt)
+    i := i + 2
+}
+polyline.new(echoPath, "#e0aaff", 2, false, "echo")
+
+// ─── Breach + re-entry ──────────────────────────────────────────
+var wasOutside = false
+outside = close > rc.upper or close < rc.lower
+if outside and not wasOutside {
+    breachCol = "#ff4477"
+    if close > rc.upper {
+        breachCol := "#22cc88"
+    }
+    circle.new(bar_index - 1, close, bar_index + 1, close, breachCol, "rgba(255,255,255,0.08)", 1)
+}
+if not outside and wasOutside {
+    arrow.new(bar_index - 2, close, bar_index, close, "#ffd43b", 2)
+}
+wasOutside := outside
+
+// ─── Dashboard ────────────────────────────────────────────────────
+dash = table.new("top_left", 2, 3, "rgba(8,8,20,0.88)", "dash")
+table.cell(dash, 0, 0, "Channel Width", "", "#b48cff")
+table.cell(dash, 1, 0, tostring(width), "", "#ffffff")
+posCol = color.from_gradient(posInChannel, 0, 1, "#ff9900", "#22aaff")
+table.cell(dash, 0, 1, "Position", "", "#b48cff")
+table.cell(dash, 1, 1, tostring(round(posInChannel * 100)), "", posCol)
+outsideTxt = "Inside"
+if outside {
+    outsideTxt := "Outside"
+}
+table.cell(dash, 0, 2, "State", "", "#b48cff")
+table.cell(dash, 1, 2, outsideTxt, "", "#ffffff")
+
+// ─── 3D — volatility terrain + dispersion cloud ───────────────────
+plot3d(width, "Channel Width Terrain", "ribbon", "#b48cff", "separate")
+dispersion = (close - rc.mid) / (width + 0.0001) * 100
+plot3d(dispersion, "Dispersion Cloud", "scatter", "#e0aaff", "separate")`,
+  },
+  {
+    name: 'Liquidity Matrix',
+    description: 'OakRing volume percentiles feed a real trend×volume Matrix, rendered live as a color-graded heatmap table',
+    category: 'Showcase',
+    source: `// ═════════════════════════════════════════════════════════════════════
+// Liquidity Matrix — OakRing Percentiles, a Real Regime Matrix, Heatmap
+// A rolling OakRing tracks volume percentiles to flag genuine spikes; a
+// 3×3 Matrix tallies trend×volume regime frequency and renders straight
+// into a color-graded table.new heatmap; a polyline traces the
+// liquidity trail; and the matrix's own live cell feeds a 3D layer.
+// ═════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ──────────────────────────────────────────────────────
+ringLen = input(50, "Volume Percentile Window", 20, 200, 1)
+spikePct = input(85, "Spike Percentile Threshold", 50, 99, 1)
+emaLen = input(20, "Trend EMA Length", 5, 100, 1)
+
+// ─── Custom spike icon ──────────────────────────────────────────
+boltIcon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAADPklEQVR4AdRWv29TMRA+p4jCUBIELUMnGBBIdEJKqpYNgZAaWIGuTDBA1W78D62AAf4DBCukEgJ1o1UTiQEViYoBZtoiEiKE+NGY++z3XPs9+/2YEJEvz7777u7Lne2XCv3jz/9F4Mp690Kz3Vu83Om9bra7Wyy7kWxpXW8RmDJFLVSBmU73ZrPTez8Q9JJIzksppznJKAv8IaNaJ+eBARY+bM8dcA6CZta7Z5vtr6tC0kOS8lQIOHFon2tiLHzgixiu0V0FCTQ73atCUIdITFHGZ2y4QneOHwwgxBRiIFYAQF4CykHSE3by2llvxhwn3/o5MGvPpEIcS8X0GhNKVTJJjxNq73J2/ACh/O/6u167o+SYKrajpHQFhJAPGJP7y5H4+vgwQwuPShTbcXAS6Z0rMnsO72TfN/p/oC4gYkrn2IM6BASJ23um8Ax9P8abL4wIW5I5DAF1gfDxCbtqy/mj+1Xf9Up/b3wrWgHGcw6Vi6cYhsBAiEtQZAlKP3cifeSe16vkEx8W8e1chgCf1waMWYLSZ9lt22c+mvc+/rBVZm7nMgT4Kj1pEJ5JfOQ8Jq/q/id/coDtXIYAG46weEfZI4dfnrMvTC6bgDc5+h6+atMuKzu/CJK2+DU2gS8+CPpe9Mhl9T0R2+QyBIQQHxIgtby7+Z34Xe/Ijbd9ZUt+ZfXdxtq5DAEpqW2Dsua+ihTouwlp5zIEKlK+MIicycSI+/5HzyE5bsZs5zIEnk3WXpEQmwaVMTkzMmSsJfqufTiHyqVX7ttQknoTRqbwA8cythbte4xP5jAVAGC5XnvE//nWMA8JjmVsK9N37SPXdA69wrdDAAop1Rsx+Bcn3oDoOQQ+BWUQxXbgKQLLk7U3JGjWQVkLbMDSfYc/x1SxMbckRQC2Vr32lElc43mqEtiAJfs+QCwVkwMmh5cAQHCQkurJPbGy85ty7nm4RyLXEAOxIkXqESQAJErWahyeloJuER8f6Fb4rsczUxgLH/giRhY2k0DsiJ3bqldPVyRdJBJLfJWuEtE2yyCSba0TS8AACx+25Y5CBOIouEBajeoC//s512rUxliGIhnTuuoCMDG+yLMUgSIBk5i89V8AAAD//0EjwHkAAAAGSURBVAMAHtNHUF04SJ0AAAAASUVORK5CYII="
+
+// ─── Rolling volume percentile via OakRing ─────────────────────────
+var volRing = oakring(ringLen)
+volRing.push(volume)
+volThreshold = volRing.percentile(spikePct)
+isSpike = volume > volThreshold and volThreshold > 0
+
+// ─── Trend regime ───────────────────────────────────────────────
+trendEma = ema(close, emaLen)
+regimeUp = close > trendEma
+volLevel = 1
+if isSpike {
+    volLevel := 2
+}
+if volume < volRing.percentile(30) {
+    volLevel := 0
+}
+
+// ─── 3×3 regime matrix: rows = trend {down,flat,up}, cols = volume {lo,mid,spike} ─
+var regimeMatrix = matrix(3, 3, 0)
+trendRow = 1
+if regimeUp {
+    trendRow := 2
+}
+if close < trendEma {
+    trendRow := 0
+}
+regimeMatrix.set(trendRow, volLevel, regimeMatrix.get(trendRow, volLevel) + 1)
+matrixMax = 1.0
+r = 0
+while r < 3 {
+    c = 0
+    while c < 3 {
+        v = regimeMatrix.get(r, c)
+        if v > matrixMax {
+            matrixMax := v
+        }
+        c := c + 1
+    }
+    r := r + 1
+}
+
+// ─── Heatmap table straight from the matrix ─────────────────────────
+heat = table.new("bottom_left", 4, 4, "rgba(8,8,20,0.9)", "heat")
+table.cell(heat, 0, 0, "", "", "#ffffff")
+table.cell(heat, 1, 0, "Lo Vol", "", "#b48cff")
+table.cell(heat, 2, 0, "Mid Vol", "", "#b48cff")
+table.cell(heat, 3, 0, "Spike", "", "#b48cff")
+rowNames = array()
+array.push(rowNames, "Down")
+array.push(rowNames, "Flat")
+array.push(rowNames, "Up")
+rr = 0
+while rr < 3 {
+    table.cell(heat, 0, rr + 1, array.get(rowNames, rr), "", "#b48cff")
+    cc = 0
+    while cc < 3 {
+        cellVal = regimeMatrix.get(rr, cc)
+        cellCol = color.from_gradient(cellVal, 0, matrixMax, "rgba(180,140,255,0.05)", "#b48cff")
+        table.cell(heat, cc + 1, rr + 1, tostring(cellVal), cellCol, "#ffffff")
+        cc := cc + 1
+    }
+    rr := rr + 1
+}
+
+// ─── Liquidity trail — polyline through spike points ────────────────
+var trailPts = array()
+if isSpike {
+    array.push(trailPts, bar_index)
+    array.push(trailPts, close)
+    if array.size(trailPts) > 40 {
+        array.remove(trailPts, 0)
+        array.remove(trailPts, 0)
+    }
+}
+trailPath = array()
+ti = 0
+while ti < array.size(trailPts) {
+    p = array()
+    array.push(p, array.get(trailPts, ti))
+    array.push(p, array.get(trailPts, ti + 1))
+    array.push(trailPath, p)
+    ti := ti + 2
+}
+polyline.new(trailPath, "#4cc9f0", 2, false, "trail")
+
+// ─── Spike icon + zone box around the freshest spike cluster ───────
+if isSpike {
+    plotimage(bar_index, high, boltIcon, 22, 22)
+}
+recentHigh = highest(high, 10)
+recentLow = lowest(low, 10)
+if isSpike {
+    box.new(bar_index - 10, recentHigh, bar_index, recentLow, "#4cc9f0", "rgba(76,201,240,0.08)", 1, "spikezone")
+}
+
+// ─── Candle tint on spikes ───────────────────────────────────────
+if isSpike {
+    barcolor("#4cc9f0")
+}
+
+// ─── Base + 3D ────────────────────────────────────────────────────
+plot(close, "Price", "#ffffff", 1)
+plot(trendEma, "Trend EMA", "#ffd43b", 2)
+regimeDensity = regimeMatrix.get(trendRow, volLevel) / matrixMax * 100
+plot3d(regimeDensity, "Regime Density", "manifold", "#b48cff", "separate")
+plot3d(volume, "Volume Terrain", "bars3d", "#4cc9f0", "separate")`,
+  },
+  {
+    name: 'Session Chronograph',
+    description: 'Per-session range box, open line, auto-fib and flag markers — one drawing object per session, not per bar',
+    category: 'Showcase',
+    source: `// ═════════════════════════════════════════════════════════════════════
+// Session Chronograph — Live Session Range, Auto-Fib, Time Terrain
+// A configurable bar-count "session" gets a growing range box, a
+// per-session open line, a flag-icon marker, and a fib across the PRIOR
+// session's completed range — all keyed off a session counter, the
+// most advanced form of the id idiom: one object PER SESSION, not per
+// bar. A ridgeline closes it out with the true temporal distribution.
+// ═════════════════════════════════════════════════════════════════════
+
+// ─── Inputs ──────────────────────────────────────────────────────
+sessionLen = input(30, "Bars per Session", 10, 100, 1)
+atrLen = input(14, "ATR Length", 5, 50, 1)
+
+// ─── Flag icon ───────────────────────────────────────────────────
+flagIcon = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABmUlEQVR4AeyWT07CUBDGv2ncoTtNhAto+KMbMZHiBhIXruQAcAG9ABwALoAXgAPgyoUJbKSYiBvlT/QCYKI7ZWcYX0NoSpMnD2mVRZtMOm/edL5fvvQ11fDP12oDcDd5boaXJkkdmAhzGeDyJPcGQwoAHm9ZkvbcKrqTyAHs8wmn/HR0xq8nAXvZjVwNABSHptXwPvrkrl7njp7nZ/3gDwFmpFIgFPGFtoAZcCdR4X4yy/3j4EyX4kLRAem0IIiyGHMF4/FAAN1zTy9yL5GSPuHYWBbAMQ5xMPJgqguYD+4la+YJ4kd9x9k4XbsNMJ2rfHcboA1CCcRpihobFGlmKNq8pH3jRUa0LMAQzFVolBOnJERR45AiRoEirYZM0Fn/DUADjALWEBeCIYq1chRuVil8O3QOV1krAnBbvOUZbAbWhWiaYkaJdo0HFYF5PWoAjGvau7ui7ZvRvIGL7qsBLDp1gX4fwHfAd8B3wHdghR0g7c36pNtzq+hOInWAxJ8MQBdmTHJ4ckkBTDVT2Awz9yp+BHBDdN6MbwAAAP//WgC0oQAAAAZJREFUAwAAVXlBIzM0jAAAAABJRU5ErkJggg=="
+
+// ─── Session boundaries via a bar-count counter (no fake calendar aware) ─
+var sessionCount = 0
+var sessionStartBar = 0
+var sessionOpen = 0.0
+var sessionHigh = 0.0
+var sessionLow = 999999999.0
+var prevSessionHigh = 0.0
+var prevSessionLow = 0.0
+
+isNewSession = bar_index % sessionLen == 0
+
+// Capture the outgoing session's completed range BEFORE resetting it.
+if isNewSession and sessionCount > 0 {
+    prevSessionHigh := sessionHigh
+    prevSessionLow := sessionLow
+}
+prevSessionRange = prevSessionHigh - prevSessionLow
+
+if isNewSession {
+    sessionCount := sessionCount + 1
+    sessionStartBar := bar_index
+    sessionOpen := open
+    sessionHigh := high
+    sessionLow := low
+}
+if not isNewSession {
+    if high > sessionHigh {
+        sessionHigh := high
+    }
+    if low < sessionLow {
+        sessionLow := low
+    }
+}
+sessionRange = sessionHigh - sessionLow
+barsElapsed = bar_index - sessionStartBar
+
+atrVal = atr(high, low, close, atrLen)
+rangeVsAvg = 0.0
+if atrVal > 0 {
+    rangeVsAvg := sessionRange / atrVal
+}
+
+// ─── Growing session box — same id all session, new id each session ──
+sessBoxId = "sbox" + tostring(sessionCount)
+box.new(sessionStartBar, sessionHigh, bar_index, sessionLow, "#b48cff", "rgba(180,140,255,0.05)", 1, sessBoxId)
+
+// ─── Session open line — one per session ────────────────────────────
+sessOpenId = "sopen" + tostring(sessionCount)
+line.new(sessionStartBar, sessionOpen, bar_index, sessionOpen, "#ffd43b", 1, "dotted", "right", sessOpenId)
+
+// ─── Session label + flag icon at the boundary ──────────────────────
+if isNewSession {
+    sessLabelId = "slabel" + tostring(sessionCount)
+    text.new(bar_index, sessionHigh, "Session " + tostring(sessionCount), "#b48cff", 10, sessLabelId)
+    image.new(bar_index, sessionHigh, flagIcon, 18, 18, "center", 1, 0, sessLabelId + "flag")
+}
+
+// ─── Fib across the PRIOR completed session's range ─────────────────
+if isNewSession and sessionCount > 1 and prevSessionRange > 0 {
+    fibretracement.new(sessionStartBar - sessionLen, prevSessionLow, sessionStartBar, prevSessionHigh, [0, 0.382, 0.5, 0.618, 1], "#22cc88", "#ff4477", "sfib")
+}
+
+// ─── Notable-session circle: flags an outsized COMPLETED session ────
+if isNewSession and sessionCount > 1 and prevSessionRange > 0 and atrVal > 0 {
+    prevRangeVsAvg = prevSessionRange / atrVal
+    if prevRangeVsAvg > 1.6 {
+        circle.new(sessionStartBar - sessionLen, prevSessionLow, sessionStartBar, prevSessionHigh, "#ffd43b", "rgba(255,212,59,0.06)", 1, "notable" + tostring(sessionCount))
+    }
+}
+
+// ─── Candle tint by half of session range ───────────────────────────
+midSession = (sessionHigh + sessionLow) / 2
+if close > midSession {
+    barcolor("#b48cff")
+}
+if close <= midSession {
+    barcolor("#4cc9f0")
+}
+
+// ─── Dashboard ─────────────────────────────────────────────────────
+dash = table.new("top_right", 2, 4, "rgba(8,8,20,0.88)", "dash")
+table.cell(dash, 0, 0, "Session #", "", "#b48cff")
+table.cell(dash, 1, 0, tostring(sessionCount), "", "#ffffff")
+table.cell(dash, 0, 1, "Bars Elapsed", "", "#b48cff")
+table.cell(dash, 1, 1, tostring(barsElapsed), "", "#ffffff")
+table.cell(dash, 0, 2, "Range", "", "#b48cff")
+table.cell(dash, 1, 2, tostring(sessionRange), "", "#ffffff")
+rangeCol = color.from_gradient(rangeVsAvg, 0, 2, "#4cc9f0", "#ff4477")
+table.cell(dash, 0, 3, "Range/ATR", "", "#b48cff")
+table.cell(dash, 1, 3, tostring(rangeVsAvg), "", rangeCol)
+
+// ─── Base + temporal 3D ─────────────────────────────────────────────
+plot(close, "Price", "#ffffff", 1)
+plot(sessionHigh, "Session High", "#ff4477", 1, "stepline")
+plot(sessionLow, "Session Low", "#22cc88", 1, "stepline")
+plot3d(sessionRange, "Range Ridgeline", "ridgeline", "#b48cff", "separate")
+plot3d(rangeVsAvg * 50, "Momentum Trail", "trail", "#4cc9f0", "separate")`,
+  },
 ];
 
 export function getIndicators(): IndicatorDef[] {
