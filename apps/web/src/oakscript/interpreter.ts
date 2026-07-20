@@ -100,6 +100,29 @@ function autoId(ctx: RuntimeContext, explicitArg: RuntimeValue, prefix: string):
   return `${prefix}:auto:${ctx.barIndex}`;
 }
 
+// "Explain This Signal" — a deterministic snapshot of the script's own
+// scalar variables at the bar an alert fires, so a fired alert carries its
+// own evidence (no LLM, no re-running the script to reconstruct it later).
+// Only number/string/boolean vars are captured — arrays (series/OakRing)
+// and plot/object values aren't meaningful in a compact "why did this fire"
+// readout and would bloat every single alert. Capped at the first
+// MAX_PROVENANCE_VARS in ctx.vars's Map iteration order (== declaration
+// order for this language), which tends to surface inputs/top-level
+// indicator values before deep helper-function locals.
+const MAX_PROVENANCE_VARS = 30;
+function captureProvenance(ctx: RuntimeContext): Record<string, number | string | boolean> {
+  const snapshot: Record<string, number | string | boolean> = {};
+  let count = 0;
+  for (const [name, value] of ctx.vars) {
+    if (count >= MAX_PROVENANCE_VARS) break;
+    if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') {
+      snapshot[name] = value;
+      count++;
+    }
+  }
+  return snapshot;
+}
+
 // ─── OakRing — fixed-size circular buffer ──────────────────────────
 function createOakRing(capacity: number): any {
   const data: number[] = [];
@@ -1494,6 +1517,7 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
           barIndex: ctx.barIndex,
           timestamp: ctx.bars.time[ctx.barIndex],
           price: ctx.bars.close[ctx.barIndex],
+          provenance: captureProvenance(ctx),
         });
         return null;
       }
@@ -1509,6 +1533,7 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
             barIndex: ctx.barIndex,
             timestamp: ctx.bars.time[ctx.barIndex],
             price: ctx.bars.close[ctx.barIndex],
+            provenance: captureProvenance(ctx),
           });
         }
         return condition;

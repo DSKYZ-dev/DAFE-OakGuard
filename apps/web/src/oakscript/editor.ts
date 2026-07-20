@@ -2,7 +2,10 @@ import { parse, ParseError } from './parser';
 import { executeScript } from './interpreter';
 import type { OakPlot, OakAlert } from './runtime';
 import type { Program, Assignment, CallExpr, Identifier, ASTNode } from './ast';
-import { getIndicators, getCategories, type IndicatorDef, saveUserIndicator, getUserIndicators, removeUserIndicator } from './indicators';
+import {
+  getIndicators, getCategories, type IndicatorDef, saveUserIndicator, getUserIndicators, removeUserIndicator,
+  buildCartridge, cartridgeFilename, parseCartridge,
+} from './indicators';
 import { getDocumentation, type DocSection } from './docs';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
@@ -47,6 +50,7 @@ let docPanel: HTMLDivElement | null = null;
 let imagesPanel: HTMLDivElement | null = null;
 let backtestPanel: HTMLDivElement | null = null;
 let strategyLabPanel: HTMLDivElement | null = null;
+let alertsPanel: HTMLDivElement | null = null;
 let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
@@ -303,9 +307,20 @@ export function runScript(source: string, barData: {
   }
 }
 
-export function sendAlert(alert: OakAlert): void {
+/**
+ * @param notify Skip the browser Notification and webhook POST when false —
+ * used to backfill Alert History with a script's pre-existing historical
+ * alerts (e.g. when it's first applied and executeScript() reports every
+ * bar back to bar 0 in one pass) without blasting the user with a
+ * notification/webhook per bar for signals that already happened in the
+ * past. History (the Explain This Signal panel) always gets every alert
+ * either way — only the two side effects are conditional.
+ */
+export function sendAlert(alert: OakAlert, notify: boolean = true): void {
   alertHistory.unshift(alert);
   if (alertHistory.length > 100) alertHistory = alertHistory.slice(0, 100);
+
+  if (!notify) return;
 
   if (Notification.permission === 'granted') {
     new Notification('OakScript Alert: ' + alert.type, {
@@ -684,6 +699,27 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
       name.style.fontSize = '11px';
       row.appendChild(name);
 
+      const exportBtn = document.createElement('button');
+      exportBtn.textContent = '⬇ Export';
+      exportBtn.title = 'Download as a portable OakCartridge file';
+      Object.assign(exportBtn.style, {
+        padding: '3px 10px', border: '1px solid rgba(34, 204, 136, 0.4)',
+        borderRadius: '4px', background: 'rgba(34, 204, 136, 0.1)',
+        color: '#22cc88', cursor: 'pointer', fontSize: '10px',
+      });
+      exportBtn.onclick = async () => {
+        exportBtn.disabled = true;
+        try {
+          const cartridge = await buildCartridge(ind);
+          downloadTextFile(cartridgeFilename(ind.name), JSON.stringify(cartridge, null, 2), 'application/json');
+        } catch (e: any) {
+          alert(`Export failed: ${e?.message || e}`);
+        } finally {
+          exportBtn.disabled = false;
+        }
+      };
+      row.appendChild(exportBtn);
+
       const delBtn = document.createElement('button');
       delBtn.textContent = 'Delete';
       Object.assign(delBtn.style, {
@@ -705,6 +741,13 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     }
     modal.appendChild(list);
 
+    // Backdrop
+    const backdrop = document.createElement('div');
+    Object.assign(backdrop.style, {
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', zIndex: '99999',
+    });
+    backdrop.onclick = () => { modal.remove(); backdrop.remove(); };
+
     const closeBtn = document.createElement('button');
     closeBtn.textContent = 'Close';
     Object.assign(closeBtn.style, {
@@ -712,17 +755,70 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
       borderRadius: '4px', background: 'rgba(180, 140, 255, 0.1)',
       color: '#b48cff', cursor: 'pointer', fontSize: '11px', width: '100%',
     });
-    closeBtn.onclick = () => modal.remove();
+    // Previously only removed `modal`, leaving the full-viewport backdrop
+    // div behind — invisible-ish (dark overlay) but still catching every
+    // click on the rest of the app until something else happened to also
+    // remove it (e.g. clicking the backdrop itself, missing the button).
+    closeBtn.onclick = () => { modal.remove(); backdrop.remove(); };
     modal.appendChild(closeBtn);
 
-    // Backdrop
-    const backdrop = document.createElement('div');
-    Object.assign(backdrop.style, {
-      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', zIndex: '99999',
-    });
-    backdrop.onclick = () => { modal.remove(); backdrop.remove(); };
     document.body.appendChild(backdrop);
     document.body.appendChild(modal);
+  };
+
+  // Import an OakCartridge (.oak.json) file — deliberately its own always-
+  // available button rather than living inside the Manage modal above,
+  // since that modal alert-and-returns when there are zero saved
+  // indicators yet, which is exactly when importing is most useful.
+  const importInput = document.createElement('input');
+  importInput.type = 'file';
+  importInput.accept = '.json,application/json';
+  importInput.style.display = 'none';
+
+  const importBtn = document.createElement('button');
+  importBtn.textContent = '⬆';
+  importBtn.title = 'Import an OakCartridge (.oak.json) file';
+  Object.assign(importBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
+  importBtn.onclick = () => importInput.click();
+
+  importInput.onchange = async () => {
+    const file = importInput.files?.[0];
+    importInput.value = ''; // reset so re-selecting the same file still fires onchange
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const { def, integrity } = await parseCartridge(text);
+
+      if (integrity === 'mismatch') {
+        const proceed = confirm(
+          `"${def.name}" — this file's content hash doesn't match its contents (edited or corrupted since export). Import anyway?`
+        );
+        if (!proceed) return;
+      }
+
+      try {
+        parse(def.source);
+      } catch (e: any) {
+        const msg = e?.message ? String(e.message) : String(e);
+        if (!confirm(`"${def.name}" has a script parse error: ${msg}\n\nImport anyway?`)) return;
+      }
+
+      let finalName = def.name;
+      if (getUserIndicators().some(i => i.name === finalName)) {
+        if (!confirm(`"${finalName}" already exists in your saved indicators. Overwrite it?`)) {
+          const renamed = prompt('Import under a different name:', `${finalName} (imported)`);
+          if (!renamed) return;
+          finalName = renamed;
+        }
+      }
+
+      saveUserIndicator(finalName, def.source);
+      refreshIndicatorDropdown();
+      alert(`Imported "${finalName}".`);
+    } catch (e: any) {
+      alert(`Import failed: ${e?.message || e}`);
+    }
   };
 
   // Indicator dropdown
@@ -795,14 +891,23 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(strategyLabBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   strategyLabBtn.onclick = () => toggleStrategyLab();
 
+  const alertsBtn = document.createElement('button');
+  alertsBtn.textContent = '🔔 Alerts';
+  alertsBtn.title = 'Alert History — Explain This Signal shows the script\'s own variable values at the moment each alert fired';
+  Object.assign(alertsBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
+  alertsBtn.onclick = () => toggleAlerts();
+
   controls.appendChild(viewBtn);
   controls.appendChild(saveBtn);
   controls.appendChild(manageBtn);
+  controls.appendChild(importBtn);
+  controls.appendChild(importInput);
   controls.appendChild(indSelect);
   controls.appendChild(docsBtn);
   controls.appendChild(imagesBtn);
   controls.appendChild(backtestBtn);
   controls.appendChild(strategyLabBtn);
+  controls.appendChild(alertsBtn);
 
   const applyBtn = document.createElement('button');
   applyBtn.textContent = '▶ Apply';
@@ -929,6 +1034,16 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     flexShrink: '0',
   });
   editorPanel.appendChild(strategyLabPanel);
+
+  // ── Alert History (Explain This Signal) Panel ──────────────────────
+  alertsPanel = document.createElement('div');
+  alertsPanel.id = 'oakscript-alerts';
+  Object.assign(alertsPanel.style, {
+    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '420px',
+    borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
+    flexShrink: '0',
+  });
+  editorPanel.appendChild(alertsPanel);
 
   // ── Agent Chat Box ────────────────────────────────────────────
   const agentChat = document.createElement('div');
@@ -1563,6 +1678,20 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** Standard client-side "save text as a file" trigger — a throwaway <a
+ * download> click, same technique regardless of what's being exported. */
+function downloadTextFile(filename: string, text: string, mimeType: string): void {
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ─── Backtest (Time Machine) Panel ───────────────────────────────────
@@ -2206,6 +2335,123 @@ function renderStrategyLab(): void {
   };
 
   if (lastStrategyLabRows) renderBatchResults(lastStrategyLabRows);
+}
+
+// ─── Alert History / Explain This Signal Panel ───────────────────────
+// Every fired alert already carries a deterministic snapshot of the
+// script's own variable values at that bar (captureProvenance() in
+// interpreter.ts) — this panel just displays it. No LLM, no re-running the
+// script: the same script + the same historical bar always reproduces the
+// same "why," which is the whole point for a trading tool (an explanation
+// that isn't reproducible isn't trustworthy).
+
+function toggleAlerts(): void {
+  if (!alertsPanel) return;
+  const isVisible = alertsPanel.style.display !== 'none';
+  alertsPanel.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) renderAlerts();
+}
+
+function renderAlerts(): void {
+  if (!alertsPanel) return;
+  alertsPanel.innerHTML = '';
+
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: '1',
+  });
+  const headerTitle = document.createElement('div');
+  headerTitle.textContent = '🔔 Alert History — Explain This Signal';
+  Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600' });
+  header.appendChild(headerTitle);
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.textContent = '🔄';
+  refreshBtn.title = 'Refresh (new alerts since this panel opened aren\'t shown automatically)';
+  Object.assign(refreshBtn.style, {
+    padding: '2px 6px', border: '1px solid rgba(180,140,255,0.2)', borderRadius: '4px',
+    background: 'transparent', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: '10px',
+  });
+  refreshBtn.onclick = () => renderAlerts();
+  header.appendChild(refreshBtn);
+  alertsPanel.appendChild(header);
+
+  const body = document.createElement('div');
+  Object.assign(body.style, { padding: '6px 10px' });
+
+  const history = getAlertHistory();
+  if (history.length === 0) {
+    const empty = document.createElement('div');
+    empty.textContent = 'No alerts fired yet. alert(...) and alertcondition(...) calls will appear here with the exact variable values that made them fire.';
+    Object.assign(empty.style, { color: 'rgba(255,255,255,0.4)', fontSize: '10px' });
+    body.appendChild(empty);
+  }
+
+  for (const a of history) {
+    const card = document.createElement('div');
+    Object.assign(card.style, {
+      border: '1px solid rgba(180,140,255,0.12)', borderRadius: '5px',
+      padding: '6px 8px', marginBottom: '5px', background: 'rgba(255,255,255,0.02)',
+    });
+
+    const top = document.createElement('div');
+    Object.assign(top.style, { display: 'flex', justifyContent: 'space-between', fontSize: '10px' });
+    const typeLabel = document.createElement('span');
+    typeLabel.textContent = a.type;
+    Object.assign(typeLabel.style, { color: '#b48cff', fontWeight: '700' });
+    const timeLabel = document.createElement('span');
+    timeLabel.textContent = new Date(a.timestamp).toLocaleString();
+    Object.assign(timeLabel.style, { color: 'rgba(255,255,255,0.35)' });
+    top.appendChild(typeLabel);
+    top.appendChild(timeLabel);
+    card.appendChild(top);
+
+    const msg = document.createElement('div');
+    msg.textContent = `${a.message} — bar ${a.barIndex}, price ${a.price}`;
+    Object.assign(msg.style, { fontSize: '10px', color: 'rgba(255,255,255,0.75)', marginTop: '2px' });
+    card.appendChild(msg);
+
+    const provEntries = a.provenance ? Object.entries(a.provenance) : [];
+    if (provEntries.length > 0) {
+      const whyToggle = document.createElement('div');
+      whyToggle.textContent = `Why? ▸ (${provEntries.length} variables)`;
+      Object.assign(whyToggle.style, { fontSize: '9px', color: '#22cc88', cursor: 'pointer', marginTop: '4px' });
+
+      const whyBody = document.createElement('div');
+      Object.assign(whyBody.style, {
+        display: 'none', marginTop: '4px', padding: '5px 6px', borderRadius: '4px',
+        background: 'rgba(34,204,136,0.06)', border: '1px solid rgba(34,204,136,0.15)',
+      });
+      for (const [name, value] of provEntries) {
+        const row = document.createElement('div');
+        Object.assign(row.style, { display: 'flex', justifyContent: 'space-between', fontSize: '9px', padding: '1px 0' });
+        const n = document.createElement('span');
+        n.textContent = name;
+        n.style.color = 'rgba(255,255,255,0.45)';
+        const v = document.createElement('span');
+        v.textContent = typeof value === 'string' ? `"${value}"` : String(value);
+        v.style.color = 'rgba(255,255,255,0.8)';
+        row.appendChild(n);
+        row.appendChild(v);
+        whyBody.appendChild(row);
+      }
+
+      let expanded = false;
+      whyToggle.onclick = () => {
+        expanded = !expanded;
+        whyToggle.textContent = `Why? ${expanded ? '▾' : '▸'} (${provEntries.length} variables)`;
+        whyBody.style.display = expanded ? 'block' : 'none';
+      };
+      card.appendChild(whyToggle);
+      card.appendChild(whyBody);
+    }
+
+    body.appendChild(card);
+  }
+
+  alertsPanel.appendChild(body);
 }
 
 export function showResults(errors: string[], _inputs: InputDef[]): void {

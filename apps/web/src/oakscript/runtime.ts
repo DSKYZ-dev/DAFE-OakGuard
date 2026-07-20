@@ -70,6 +70,11 @@ export interface OakAlert {
   barIndex: number;
   timestamp: number;
   price: number;
+  /** "Explain This Signal" — the script's own scalar variable bindings at
+   * the exact bar the alert fired, so the alert is self-explaining without
+   * an LLM: deterministic, reproducible from the same script + bar every
+   * time, not a generated guess at what the script "meant." */
+  provenance?: Record<string, number | string | boolean>;
 }
 
 export interface OakStrategyOrder {

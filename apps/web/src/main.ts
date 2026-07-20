@@ -59,6 +59,7 @@ import { createDashboard } from './dashboard-widget';
 import { registerWidget, initWidgetMenu } from './widget-registry';
 import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
 import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
+import { appendLedgerEntry, showLedgerModal } from './ledger';
 import { detectCurrency } from './trading/currency';
 import type { OrderType } from './trading/broker-port';
 import {
@@ -1429,6 +1430,13 @@ broker.onFill((fill) => {
   renderTradeAccount();
   renderTradePositions();
 });
+broker.onFill((fill) => {
+  void appendLedgerEntry('trade.fill', {
+    orderId: fill.orderId, symbol: fill.symbol, side: fill.side,
+    qty: fill.qty, price: fill.price, commission: fill.commission,
+    slippage: fill.slippage, timestamp: fill.timestamp,
+  });
+});
 broker.onOrderUpdate(() => renderTradeOrders());
 
 /** Flatten a position with a market order for the opposite side. */
@@ -2182,6 +2190,11 @@ CRITICAL RULES:
     oakScriptEnabled = vis2;
     settingsPanel?.classList.remove('active');
     updateUI();
+  });
+
+  document.getElementById('set-open-ledger')?.addEventListener('click', () => {
+    settingsPanel?.classList.remove('active');
+    showLedgerModal();
   });
 
   document.getElementById('perf-select')?.addEventListener('change', () => {

@@ -1,3 +1,6 @@
+import { sha256Hex } from '../crypto-utils';
+import { appendLedgerEntry } from '../ledger';
+
 export interface IndicatorDef {
   name: string;
   description: string;
@@ -2259,9 +2262,100 @@ export function saveUserIndicator(name: string, source: string): void {
     userInds.push(def);
   }
   localStorage.setItem(USER_INDICATORS_KEY, JSON.stringify(userInds));
+  // Fire-and-forget: every save (toolbar Save, Strategy Lab's Approve &
+  // Save, cartridge Import) goes through this one function, so hooking the
+  // ledger here — rather than at each UI call site — makes it impossible to
+  // add a new save path later that forgets to log it.
+  void appendLedgerEntry('indicator.save', { name, overwrite: existing >= 0, sourceLength: source.length });
 }
 
 export function removeUserIndicator(name: string): void {
   const userInds = getUserIndicators().filter(i => i.name !== name);
   localStorage.setItem(USER_INDICATORS_KEY, JSON.stringify(userInds));
+  void appendLedgerEntry('indicator.delete', { name });
+}
+
+// ─── OakCartridge (portable indicator export/import) ──────────────
+// A self-contained, shareable file for one indicator: plain JSON so it's
+// human-readable/diffable/hand-editable, with a content hash so a recipient
+// can tell whether the file changed since it was exported — an integrity
+// signal, not a security signature (no key involved, so it says "edited or
+// corrupted since export," never "genuinely came from someone in particular").
+
+export interface OakCartridge {
+  format: 'oakcartridge';
+  version: 1;
+  name: string;
+  description: string;
+  category: string;
+  source: string;
+  exportedAt: number;
+  contentHash: string;
+}
+
+export type CartridgeIntegrity = 'verified' | 'mismatch' | 'unsigned';
+
+export interface CartridgeParseResult {
+  def: IndicatorDef;
+  integrity: CartridgeIntegrity;
+}
+
+// Deliberately excludes exportedAt: the hash identifies the CONTENT, so
+// re-exporting the same unchanged indicator later reproduces the same hash.
+function cartridgeDigestInput(name: string, description: string, category: string, source: string): string {
+  return JSON.stringify({ name, description, category, source });
+}
+
+export async function buildCartridge(ind: IndicatorDef): Promise<OakCartridge> {
+  const contentHash = await sha256Hex(cartridgeDigestInput(ind.name, ind.description, ind.category, ind.source));
+  return {
+    format: 'oakcartridge',
+    version: 1,
+    name: ind.name,
+    description: ind.description,
+    category: ind.category,
+    source: ind.source,
+    exportedAt: Date.now(),
+    contentHash,
+  };
+}
+
+/** Filesystem-safe filename for a cartridge — strips anything that isn't
+ * alphanumeric/space/dash/underscore rather than trying to escape it. */
+export function cartridgeFilename(name: string): string {
+  const safe = name.trim().replace(/[^a-zA-Z0-9 _-]/g, '').replace(/\s+/g, '-').slice(0, 80);
+  return `${safe || 'indicator'}.oak.json`;
+}
+
+/**
+ * Parses and validates an imported cartridge file's text. Throws on
+ * structural problems (not JSON, wrong format, missing name/source) — those
+ * are refused outright, not warned-and-allowed, since there's nothing
+ * usable to import. A content-hash mismatch or absence is reported via
+ * `integrity` instead of thrown: unlike structural validity, that's the
+ * caller's/user's call on whether to proceed (a hand-edited cartridge is
+ * expected to mismatch and is still perfectly usable).
+ */
+export async function parseCartridge(jsonText: string): Promise<CartridgeParseResult> {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch (e: any) {
+    throw new Error(`Not valid JSON: ${e?.message || e}`);
+  }
+  if (!parsed || typeof parsed !== 'object') throw new Error('File does not contain a JSON object.');
+  if (parsed.format !== 'oakcartridge') throw new Error('Not an OakCartridge file (missing or wrong "format" field).');
+  if (typeof parsed.name !== 'string' || !parsed.name.trim()) throw new Error('Cartridge is missing a valid "name".');
+  if (typeof parsed.source !== 'string' || !parsed.source.trim()) throw new Error('Cartridge is missing a valid "source".');
+
+  const description = typeof parsed.description === 'string' ? parsed.description : 'Imported indicator';
+  const category = typeof parsed.category === 'string' && parsed.category.trim() ? parsed.category : 'User Created';
+
+  let integrity: CartridgeIntegrity = 'unsigned';
+  if (typeof parsed.contentHash === 'string' && parsed.contentHash) {
+    const recomputed = await sha256Hex(cartridgeDigestInput(parsed.name, description, category, parsed.source));
+    integrity = recomputed === parsed.contentHash ? 'verified' : 'mismatch';
+  }
+
+  return { def: { name: parsed.name, description, category, source: parsed.source }, integrity };
 }

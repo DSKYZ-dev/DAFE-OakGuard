@@ -7,7 +7,7 @@ import { executeScript } from './oakscript/interpreter';
 import type { OakPlot, OakAlert } from './oakscript/runtime';
 import type { Program } from './oakscript/ast';
 import { getIndicators, type IndicatorDef } from './oakscript/indicators';
-import { getStoredOverrides, type InputDef } from './oakscript/editor';
+import { getStoredOverrides, sendAlert, type InputDef } from './oakscript/editor';
 
 export interface IndicatorInstance {
   id: string;
@@ -124,6 +124,7 @@ export function setInstanceDashboardVisible(id: string, visible: boolean): void 
 export function removeIndicator(id: string): void {
   instances.delete(id);
   instanceOrder = instanceOrder.filter(i => i !== id);
+  lastForwardedAlertCount.delete(id);
 }
 
 /** Update an instance's source AND re-detect its inputs. Editing a script
@@ -155,6 +156,27 @@ export function setInstanceEnabled(id: string, enabled: boolean): void {
   if (inst) inst.enabled = enabled;
 }
 
+// executeScript() re-runs the FULL bar range every call (this function runs
+// every render frame), so result.alerts is the complete list from bar 0
+// every time, not just newly-fired ones — the array only ever grows as more
+// bars arrive, so a per-instance "how many have we already forwarded"
+// cursor is enough to notify/log each alert exactly once instead of
+// re-firing every alert on every single frame. Known v1 edge case: if the
+// user changes this instance's input overrides, the recomputed alert list
+// can differ in content at the same index (a threshold moved, so different
+// bars now qualify) — the count-based cursor can't detect that and may
+// re-forward or skip a handful of alerts right at that boundary. Rare
+// (requires editing inputs on a script that also alerts) and never worse
+// than the pre-existing behavior of forwarding nothing at all.
+const lastForwardedAlertCount = new Map<string, number>();
+// undefined (not just 0) marks "never seen this instance" so the very
+// first run — which can already contain hundreds of historical alerts,
+// since executeScript() processes the full bar range in one pass — records
+// them into Alert History without firing a browser Notification/webhook
+// POST per bar. Only alerts from the SECOND run onward (i.e. genuinely new
+// since the user started watching this instance) get the full sendAlert()
+// side effects.
+
 export function runAllInstances(barData: {
   close: number[]; open: number[]; high: number[];
   low: number[]; volume: number[]; time: number[];
@@ -177,6 +199,14 @@ export function runAllInstances(barData: {
       inst.plots = result.plots;
       inst.errors = result.errors;
       inst.alerts = result.alerts;
+
+      const prevCount = lastForwardedAlertCount.get(id);
+      if (prevCount === undefined) {
+        for (const alert of result.alerts) sendAlert(alert, false);
+      } else {
+        for (let i = prevCount; i < result.alerts.length; i++) sendAlert(result.alerts[i]);
+      }
+      lastForwardedAlertCount.set(id, result.alerts.length);
     } catch (e: any) {
       inst.errors = [e instanceof ParseError ? e.message : String(e)];
       inst.plots = [];
