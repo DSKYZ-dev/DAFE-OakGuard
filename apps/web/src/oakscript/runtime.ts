@@ -1,5 +1,13 @@
+// A single cell in a table() drawing-object grid (row-major: cells[row][col]).
+export interface OakTableCell {
+  text: string;
+  bgColor?: string;
+  textColor?: string;
+}
+
 export interface OakPlot {
-  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d' | 'plot3d_shape' | 'plot3d_label';
+  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d' | 'plot3d_shape' | 'plot3d_label'
+    | 'line_obj' | 'box_obj' | 'polyline_obj' | 'circle_obj' | 'arrow_obj' | 'image_obj' | 'linefill_obj';
   name: string;
   value?: number;
   series?: number[];
@@ -16,13 +24,33 @@ export interface OakPlot {
   fillBot?: number;
   is3D?: boolean;
   // 3D shape fields
-  shape3d?: 'cube' | 'sphere' | 'pyramid' | 'torus' | 'diamond' | 'coneup' | 'conedown';
+  shape3d?: 'cube' | 'sphere' | 'pyramid' | 'torus' | 'diamond' | 'coneup' | 'conedown' | 'image';
   // rotation in degrees (applied after any built-in orientation, e.g. conedown's flip)
   rx?: number;
   ry?: number;
   rz?: number;
   size?: number;
   z_level?: number;
+  // ── Drawing-object fields (line/box/polyline/circle/arrow/image/table/linefill) ──
+  id?: string;
+  x2?: number;
+  y2?: number;
+  bgColor?: string;
+  extend?: 'none' | 'left' | 'right' | 'both';
+  points?: { x: number; y: number }[];
+  closed?: boolean;
+  cols?: number;
+  rows?: number;
+  cells?: OakTableCell[][];
+  position?: string;
+  opacity?: number;
+  imgWidth?: number;
+  imgHeight?: number;
+  imageRef?: string;
+  boxed?: boolean;
+  align?: string;
+  id1?: string;
+  id2?: string;
 }
 
 export interface OakPlot3D {
@@ -33,32 +61,6 @@ export interface OakPlot3D {
     | 'helix' | 'vortex' | 'manifold' | 'nebula' | 'constellation' | 'torus' | 'trail' | 'ridgeline';
   color: string;
   pane: 'main' | 'separate' | '3d';
-  z_level?: number;
-}
-
-export interface OakPlot {
-  type: 'line' | 'shape' | 'hline' | 'fill' | 'barcolor' | 'bgcolor' | 'label' | 'table' | 'plot3d' | 'plot3d_shape' | 'plot3d_label';
-  name: string;
-  value?: number;
-  series?: number[];
-  color?: string;
-  linewidth?: number;
-  style?: string;
-  price?: number;
-  text?: string;
-  x?: number;
-  y?: number;
-  barIdx?: number;
-  pane?: 'main' | 'separate' | '3d';
-  fillTop?: number;
-  fillBot?: number;
-  is3D?: boolean;
-  shape3d?: 'cube' | 'sphere' | 'pyramid' | 'torus' | 'diamond' | 'coneup' | 'conedown';
-  // rotation in degrees (applied after any built-in orientation, e.g. conedown's flip)
-  rx?: number;
-  ry?: number;
-  rz?: number;
-  size?: number;
   z_level?: number;
 }
 
@@ -149,6 +151,20 @@ export const StdLib = {
     const signalLine = emaImpl(macdLine, signal);
     const histogram = macdLine.map((v, i) => v - signalLine[i]);
     return { macd: macdLine, signal: signalLine, hist: histogram };
+  },
+
+  // regression.channel(source, length, mult) — same per-bar-record shape as
+  // macd() above. The "regression line" reuses this file's existing
+  // linreg()/smaImpl approximation (linreg() above is itself just smaImpl)
+  // as `mid`; `upper`/`lower` are mid +/- mult*stdev(source,length), the
+  // same Bollinger-style channel idiom but centered on the regression line.
+  regressionChannel(source: number[], length: number, mult: number): { mid: number[]; upper: number[]; lower: number[] } {
+    const mid = smaImpl(source, length);
+    const dev = this.stdev(source, length);
+    const m = typeof mult === 'number' ? mult : 2;
+    const upper = mid.map((v, i) => v + m * dev[i]);
+    const lower = mid.map((v, i) => v - m * dev[i]);
+    return { mid, upper, lower };
   },
 
   crossover(a: number[], b: number[]): boolean[] {

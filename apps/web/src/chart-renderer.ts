@@ -2,6 +2,7 @@ import type { BaseBar, VolumeBin, VolumeProfileMode } from '@dafe/types';
 import type { BarType, PerBarVolume } from './data-generator';
 import type { OakPlot } from './oakscript';
 import type { VPComputed } from './volume-profile';
+import { resolveImage } from './image-cache';
 
 export type PerfMode = 'low' | 'medium' | 'high' | 'ultra';
 let _perf: PerfMode = 'high';
@@ -376,7 +377,7 @@ export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
 // ─── BAR RENDERER ──────────────────────────────────────────────────
 // Pre-allocated arrays to reduce GC pressure per frame
 const _barPrices: number[] = [];
-export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, time: number, barType: BarType, perBarVol?: PerBarVolume[]): void {
+export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, time: number, barType: BarType, perBarVol?: PerBarVolume[], barColorOverrides?: Map<number, string>): void {
   const { width, height } = ctx.canvas;
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
@@ -415,6 +416,10 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
     const bTop = Math.min(oy, cy);
     const bBot = Math.max(oy, cy);
     const bH = Math.max(2.5, bBot - bTop);
+    // barcolor() override for this bar, keyed by its absolute index into
+    // `bars` (same indexing convention as perBarVol above). Additive only —
+    // undefined/missing map leaves every existing up/down color path untouched.
+    const overrideColor = barColorOverrides?.get(i + start);
 
     // Per-bar volume profile (2D-Per-Bar mode VPI)
     if (perBarVol && perBarVol[i + start]) {
@@ -439,26 +444,31 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
     switch (barType) {
       case 'line': drawLineBar(ctx, x, cy, visible, i, vLen, minP, pRange, height, view, bs, width); break;
       case 'area': drawAreaBar(ctx, x, cy, visible, i, vLen, minP, pRange, height, view, bs, width); break;
-      case 'renko': drawRenkoBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity); break;
-      case 'kagi': drawKagiBar(ctx, x, hy, ly, bar, isBull, visible, i, vLen, minP, pRange, height, view, bs, width); break;
-      case 'footprint': drawFootprintBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start]); break;
-      case 'imbalance-bar': drawImbalanceBar(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start]); break;
-      default: drawStandardCandle(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity); break;
+      case 'renko': drawRenkoBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, overrideColor); break;
+      case 'kagi': drawKagiBar(ctx, x, hy, ly, bar, isBull, visible, i, vLen, minP, pRange, height, view, bs, width, overrideColor); break;
+      case 'footprint': drawFootprintBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start], overrideColor); break;
+      case 'imbalance-bar': drawImbalanceBar(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start], overrideColor); break;
+      default: drawStandardCandle(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, overrideColor); break;
     }
   }
   ctx.restore();
 }
 
 function drawStandardCandle(ctx: CanvasRenderingContext2D, x: number, oy: number, cy: number, hy: number, ly: number,
-  bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number): void {
+  bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, overrideColor?: string): void {
   const bullCol = '#1affa0';
   const bearCol = '#ff3b6b';
   const color = isBull ? bullCol : bearCol;
+  // barcolor() override: same RGB triple used for both directions when present,
+  // substituted into the existing isBull-branched literals below (structure unchanged).
+  const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
+  const rgbBull = overrideRgb || '26,255,160';
+  const rgbBear = overrideRgb || '255,59,107';
 
   // Wick — bold with rounded ends
   ctx.shadowBlur = 10;
-  ctx.shadowColor = isBull ? 'rgba(26,255,160,0.45)' : 'rgba(255,59,107,0.45)';
-  ctx.strokeStyle = isBull ? 'rgba(26,255,160,0.95)' : 'rgba(255,59,107,0.95)';
+  ctx.shadowColor = isBull ? `rgba(${rgbBull},0.45)` : `rgba(${rgbBear},0.45)`;
+  ctx.strokeStyle = isBull ? `rgba(${rgbBull},0.95)` : `rgba(${rgbBear},0.95)`;
   ctx.lineWidth = 3.6;
   ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(x, hy); ctx.lineTo(x, ly); ctx.stroke();
@@ -466,16 +476,16 @@ function drawStandardCandle(ctx: CanvasRenderingContext2D, x: number, oy: number
 
   // Body gradient fill
   ctx.shadowBlur = 10 + intensity * 12;
-  ctx.shadowColor = isBull ? `rgba(26,255,160,${0.25 + intensity * 0.35})` : `rgba(255,59,107,${0.25 + intensity * 0.35})`;
+  ctx.shadowColor = isBull ? `rgba(${rgbBull},${0.25 + intensity * 0.35})` : `rgba(${rgbBear},${0.25 + intensity * 0.35})`;
   const g = ctx.createLinearGradient(0, bTop, 0, bBot);
   if (isBull) {
-    g.addColorStop(0, `rgba(26,255,160,${0.75 + intensity * 0.25})`);
-    g.addColorStop(0.5, `rgba(26,255,160,${0.45 + intensity * 0.25})`);
-    g.addColorStop(1, `rgba(26,255,160,${0.15 + intensity * 0.15})`);
+    g.addColorStop(0, `rgba(${rgbBull},${0.75 + intensity * 0.25})`);
+    g.addColorStop(0.5, `rgba(${rgbBull},${0.45 + intensity * 0.25})`);
+    g.addColorStop(1, `rgba(${rgbBull},${0.15 + intensity * 0.15})`);
   } else {
-    g.addColorStop(0, `rgba(255,59,107,${0.7 + intensity * 0.25})`);
-    g.addColorStop(0.5, `rgba(255,59,107,${0.4 + intensity * 0.25})`);
-    g.addColorStop(1, `rgba(255,59,107,${0.12 + intensity * 0.12})`);
+    g.addColorStop(0, `rgba(${rgbBear},${0.7 + intensity * 0.25})`);
+    g.addColorStop(0.5, `rgba(${rgbBear},${0.4 + intensity * 0.25})`);
+    g.addColorStop(1, `rgba(${rgbBear},${0.12 + intensity * 0.12})`);
   }
   ctx.fillStyle = g;
   ctx.fillRect(x - hW, bTop, cW, bH);
@@ -528,22 +538,26 @@ function drawAreaBar(ctx: CanvasRenderingContext2D, x: number, cy: number, visib
 }
 
 function drawRenkoBar(ctx: CanvasRenderingContext2D, x: number, bTop: number, bBot: number, bH: number,
-  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number): void {
+  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, overrideColor?: string): void {
+  const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
   ctx.shadowBlur = 6;
-  ctx.shadowColor = isBull ? 'rgba(34, 204, 136, 0.3)' : 'rgba(255, 68, 119, 0.3)';
-  ctx.fillStyle = isBull
-    ? `rgba(34, 204, 136, ${0.5 + intensity * 0.3})`
-    : `rgba(255, 68, 119, ${0.4 + intensity * 0.3})`;
+  ctx.shadowColor = overrideRgb ? `rgba(${overrideRgb}, 0.3)` : (isBull ? 'rgba(34, 204, 136, 0.3)' : 'rgba(255, 68, 119, 0.3)');
+  ctx.fillStyle = overrideRgb
+    ? `rgba(${overrideRgb}, ${(isBull ? 0.5 : 0.4) + intensity * 0.3})`
+    : isBull
+      ? `rgba(34, 204, 136, ${0.5 + intensity * 0.3})`
+      : `rgba(255, 68, 119, ${0.4 + intensity * 0.3})`;
   ctx.fillRect(x - hW * 0.6, bTop, cW * 0.6, bH);
 }
 
 function drawKagiBar(ctx: CanvasRenderingContext2D, x: number, hy: number, ly: number, bar: BaseBar, isBull: boolean,
-  visible: BaseBar[], i: number, vLen: number, minP: number, pRange: number, height: number, view: ViewState, bs: number, width: number): void {
+  visible: BaseBar[], i: number, vLen: number, minP: number, pRange: number, height: number, view: ViewState, bs: number, width: number, overrideColor?: string): void {
   const lineW = isBull ? 3 : 1;
-  ctx.strokeStyle = isBull ? 'rgba(34, 204, 136, 0.7)' : 'rgba(255, 68, 119, 0.5)';
+  const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
+  ctx.strokeStyle = overrideRgb ? `rgba(${overrideRgb}, ${isBull ? 0.7 : 0.5})` : (isBull ? 'rgba(34, 204, 136, 0.7)' : 'rgba(255, 68, 119, 0.5)');
   ctx.lineWidth = lineW;
   ctx.shadowBlur = 4;
-  ctx.shadowColor = isBull ? 'rgba(34, 204, 136, 0.2)' : 'rgba(255, 68, 119, 0.15)';
+  ctx.shadowColor = overrideRgb ? `rgba(${overrideRgb}, ${isBull ? 0.2 : 0.15})` : (isBull ? 'rgba(34, 204, 136, 0.2)' : 'rgba(255, 68, 119, 0.15)');
   ctx.beginPath(); ctx.moveTo(x, hy); ctx.lineTo(x, ly); ctx.stroke();
   ctx.shadowBlur = 0;
   if (i > 0) {
@@ -555,10 +569,10 @@ function drawKagiBar(ctx: CanvasRenderingContext2D, x: number, hy: number, ly: n
 }
 
 function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number, bBot: number, bH: number,
-  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume): void {
+  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume, overrideColor?: string): void {
   if (!pv || pv.levels.length === 0 || pv.maxVol === 0) {
     drawStandardCandle(ctx, x, (bar.open + bar.high) / 2, (bar.close + bar.low) / 2,
-      bar.high, bar.low, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity);
+      bar.high, bar.low, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, overrideColor);
     return;
   }
 
@@ -573,8 +587,8 @@ function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number
   const minLevelH = 8;
   const step = levelH < minLevelH ? Math.ceil(minLevelH / levelH) : 1;
 
-  // Bar border
-  ctx.strokeStyle = isBull ? bullCol : bearCol;
+  // Bar border — barcolor() override takes precedence over the up/down pick.
+  ctx.strokeStyle = overrideColor || (isBull ? bullCol : bearCol);
   ctx.lineWidth = 1;
   ctx.strokeRect(x - halfW, bTop, barW, bH);
 
@@ -623,10 +637,11 @@ function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number
 }
 
 function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, cy: number, hy: number, ly: number,
-  bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume): void {
+  bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume, overrideColor?: string): void {
   const bullCol = '#1affa0';
   const bearCol = '#ff3b6b';
-  const color = isBull ? bullCol : bearCol;
+  const color = overrideColor || (isBull ? bullCol : bearCol);
+  const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
 
   // Wicks
   ctx.strokeStyle = color;
@@ -641,7 +656,7 @@ function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, 
   // Body — thicker when higher volume intensity
   const bodyW = cW * (1 + intensity * 0.5);
   const bodyGrad = ctx.createLinearGradient(x - bodyW, bTop, x + bodyW, bTop);
-  const rgb = isBull ? '34,204,136' : '255,68,119';
+  const rgb = overrideRgb || (isBull ? '34,204,136' : '255,68,119');
   bodyGrad.addColorStop(0, `rgba(${rgb}, 0.15)`);
   bodyGrad.addColorStop(0.5, `rgba(${rgb}, ${0.4 + intensity * 0.4})`);
   bodyGrad.addColorStop(1, `rgba(${rgb}, 0.15)`);
@@ -1194,10 +1209,28 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
   const linePlots: OakPlot[] = [];
   const shapePlots: OakPlot[] = [];
   const bgColors: OakPlot[] = [];
+  // New drawing-object buckets (barcolor is excluded — it recolors candles
+  // in drawBars, not drawn here).
+  const linefillPlots: OakPlot[] = [];
+  const boxPlots: OakPlot[] = [];
+  const circlePlots: OakPlot[] = [];
+  const polylinePlots: OakPlot[] = [];
+  const lineObjPlots: OakPlot[] = [];
+  const arrowPlots: OakPlot[] = [];
+  const imagePlots: OakPlot[] = [];
+  const tablePlots: OakPlot[] = [];
   for (const p of plots) {
     if (p.type === 'line' || p.type === 'hline') linePlots.push(p);
     else if (p.type === 'shape') shapePlots.push(p);
     else if (p.type === 'bgcolor') bgColors.push(p);
+    else if (p.type === 'linefill_obj') linefillPlots.push(p);
+    else if (p.type === 'box_obj') boxPlots.push(p);
+    else if (p.type === 'circle_obj') circlePlots.push(p);
+    else if (p.type === 'polyline_obj') polylinePlots.push(p);
+    else if (p.type === 'line_obj') lineObjPlots.push(p);
+    else if (p.type === 'arrow_obj') arrowPlots.push(p);
+    else if (p.type === 'image_obj') imagePlots.push(p);
+    else if (p.type === 'table') tablePlots.push(p);
   }
 
   // For each line plot, we need to find the series values
@@ -1308,6 +1341,187 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
     ctx.fillText(String(p.price), right + 6, y - 4);
   }
 
+  // ─── Drawing objects: line/box/circle/polyline/arrow/image/linefill ──
+  // Shared bar_index+price → screen-pixel projection, reusing the exact
+  // same coordinate helpers as every other pass in this function.
+  const projPt = (barIdx: number, price: number): { x: number; y: number } => {
+    const px = barX(barIdx - start, vLen, width, view.barSpacing, view.scrollX);
+    const py = priceToY(price, minP, pRange, height, view);
+    return { x: px, y: py };
+  };
+
+  // a. linefill_obj — fill the quad between two named line_obj segments.
+  //    Unknown/missing ids are skipped silently, never thrown.
+  if (linefillPlots.length > 0) {
+    const lineObjById = new Map<string, OakPlot>();
+    for (const lp of lineObjPlots) if (lp.id) lineObjById.set(lp.id, lp);
+    for (const p of linefillPlots) {
+      if (!p.id1 || !p.id2) continue;
+      const l1 = lineObjById.get(p.id1);
+      const l2 = lineObjById.get(p.id2);
+      if (!l1 || !l2) continue;
+      if (typeof l1.x !== 'number' || typeof l1.y !== 'number' || typeof l1.x2 !== 'number' || typeof l1.y2 !== 'number'
+        || typeof l2.x !== 'number' || typeof l2.y !== 'number' || typeof l2.x2 !== 'number' || typeof l2.y2 !== 'number') continue;
+      const a1 = projPt(l1.x, l1.y);
+      const a2 = projPt(l1.x2, l1.y2);
+      const b1 = projPt(l2.x, l2.y);
+      const b2 = projPt(l2.x2, l2.y2);
+      ctx.fillStyle = p.color || 'rgba(180,140,255,0.15)';
+      ctx.beginPath();
+      ctx.moveTo(a1.x, a1.y);
+      ctx.lineTo(a2.x, a2.y);
+      ctx.lineTo(b2.x, b2.y);
+      ctx.lineTo(b1.x, b1.y);
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  // b. box_obj — bounding rect from (x,y) to (x2,y2).
+  for (const p of boxPlots) {
+    if (typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.x2 !== 'number' || typeof p.y2 !== 'number') continue;
+    const c1 = projPt(p.x, p.y);
+    const c2 = projPt(p.x2, p.y2);
+    const rx = Math.min(c1.x, c2.x);
+    const ry = Math.min(c1.y, c2.y);
+    const rw = Math.abs(c2.x - c1.x);
+    const rh = Math.abs(c2.y - c1.y);
+    if (p.bgColor) { ctx.fillStyle = p.bgColor; ctx.fillRect(rx, ry, rw, rh); }
+    ctx.strokeStyle = p.color || 'rgba(180,140,255,0.6)';
+    ctx.lineWidth = p.linewidth || 1;
+    ctx.strokeRect(rx, ry, rw, rh);
+  }
+
+  // c. circle_obj — same bounding box as box_obj, ellipse inscribed.
+  for (const p of circlePlots) {
+    if (typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.x2 !== 'number' || typeof p.y2 !== 'number') continue;
+    const c1 = projPt(p.x, p.y);
+    const c2 = projPt(p.x2, p.y2);
+    const rx = Math.min(c1.x, c2.x);
+    const ry = Math.min(c1.y, c2.y);
+    const rw = Math.abs(c2.x - c1.x);
+    const rh = Math.abs(c2.y - c1.y);
+    ctx.beginPath();
+    ctx.ellipse(rx + rw / 2, ry + rh / 2, rw / 2, rh / 2, 0, 0, Math.PI * 2);
+    if (p.bgColor) { ctx.fillStyle = p.bgColor; ctx.fill(); }
+    ctx.strokeStyle = p.color || 'rgba(180,140,255,0.6)';
+    ctx.lineWidth = p.linewidth || 1;
+    ctx.stroke();
+  }
+
+  // d. polyline_obj — path through mapped points.
+  for (const p of polylinePlots) {
+    if (!p.points || p.points.length < 2) continue;
+    ctx.beginPath();
+    const first = projPt(p.points[0].x, p.points[0].y);
+    ctx.moveTo(first.x, first.y);
+    for (let pi = 1; pi < p.points.length; pi++) {
+      const pt = projPt(p.points[pi].x, p.points[pi].y);
+      ctx.lineTo(pt.x, pt.y);
+    }
+    if (p.closed) {
+      ctx.closePath();
+      ctx.fillStyle = p.bgColor || (p.color ? hexToRgba(p.color, 0.15) : 'rgba(180,140,255,0.12)');
+      ctx.fill();
+    }
+    ctx.strokeStyle = p.color || 'rgba(180,140,255,0.7)';
+    ctx.lineWidth = p.linewidth || 1;
+    ctx.stroke();
+  }
+
+  // e. line_obj — segment + extend ray(s) to the pane edge, honoring style.
+  for (const p of lineObjPlots) {
+    if (typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.x2 !== 'number' || typeof p.y2 !== 'number') continue;
+    const a = projPt(p.x, p.y);
+    const b = projPt(p.x2, p.y2);
+    ctx.strokeStyle = p.color || 'rgba(180,140,255,0.8)';
+    ctx.lineWidth = p.linewidth || 1;
+    if (p.style === 'dashed') ctx.setLineDash([6, 4]);
+    else if (p.style === 'dotted') ctx.setLineDash([2, 3]);
+    else ctx.setLineDash([]);
+
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    if (p.extend && p.extend !== 'none') {
+      const dx = b.x - a.x;
+      if (Math.abs(dx) > 1e-6) {
+        const slope = (b.y - a.y) / dx;
+        const leftPt = a.x <= b.x ? a : b;
+        const rightPt = a.x <= b.x ? b : a;
+        ctx.beginPath();
+        if (p.extend === 'left' || p.extend === 'both') {
+          const edgeX = 0;
+          const edgeY = leftPt.y - slope * (leftPt.x - edgeX);
+          ctx.moveTo(leftPt.x, leftPt.y);
+          ctx.lineTo(edgeX, edgeY);
+        }
+        if (p.extend === 'right' || p.extend === 'both') {
+          const edgeX = chartRight(width);
+          const edgeY = rightPt.y + slope * (edgeX - rightPt.x);
+          ctx.moveTo(rightPt.x, rightPt.y);
+          ctx.lineTo(edgeX, edgeY);
+        }
+        ctx.stroke();
+      }
+    }
+    ctx.setLineDash([]);
+  }
+
+  // f. arrow_obj — segment + arrowhead at (x2,y2) pointing away from (x,y).
+  //    Arrowhead geometry adapted from the triangleup/arrowup shape-marker
+  //    cases further below (moveTo/lineTo/lineTo/closePath/fill + dark outline).
+  for (const p of arrowPlots) {
+    if (typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.x2 !== 'number' || typeof p.y2 !== 'number') continue;
+    const a = projPt(p.x, p.y);
+    const b = projPt(p.x2, p.y2);
+    const acol = p.color || 'rgba(180,140,255,0.85)';
+    ctx.strokeStyle = acol;
+    ctx.lineWidth = p.linewidth || 1.5;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const headLen = 10;
+    const headAngle = Math.PI / 7;
+    const lx = b.x - headLen * Math.cos(ang - headAngle);
+    const ly2 = b.y - headLen * Math.sin(ang - headAngle);
+    const rx2 = b.x - headLen * Math.cos(ang + headAngle);
+    const ry2 = b.y - headLen * Math.sin(ang + headAngle);
+    ctx.beginPath();
+    ctx.moveTo(b.x, b.y);
+    ctx.lineTo(lx, ly2);
+    ctx.lineTo(rx2, ry2);
+    ctx.closePath();
+    ctx.fillStyle = acol;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.stroke();
+  }
+
+  // g. image_obj — resolveImage() + centered draw with opacity/rotation.
+  for (const p of imagePlots) {
+    if (typeof p.x !== 'number' || typeof p.y !== 'number' || !p.imageRef) continue;
+    const img = resolveImage(p.imageRef);
+    if (!img) continue; // still decoding — skip this frame, no error
+    const pt = projPt(p.x, p.y);
+    const iw = p.imgWidth || 48;
+    const ih = p.imgHeight || 48;
+    const opacity = typeof p.opacity === 'number' ? p.opacity : 1;
+    const rot = ((p.rz || 0) * Math.PI) / 180;
+    ctx.save();
+    ctx.globalAlpha = opacity;
+    ctx.translate(pt.x, pt.y);
+    if (rot) ctx.rotate(rot);
+    ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+    ctx.restore();
+  }
+
   // Draw shape markers
   for (const p of shapePlots) {
     const idxInView = typeof p.barIdx === 'number' ? p.barIdx - start : typeof p.x === 'number' ? Math.round(p.x) - start : -1;
@@ -1400,6 +1614,24 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
         }
         break;
       }
+      case 'image': {
+        // plotimage(...) — same resolveImage+drawImage-with-opacity-and-rotation
+        // as the image_obj pass above, using the shape plot's own fields.
+        const img = resolveImage(p.imageRef || '');
+        if (img) {
+          const iw = p.imgWidth || 24;
+          const ih = p.imgHeight || 24;
+          const iOpacity = typeof p.opacity === 'number' ? p.opacity : 1;
+          const iRot = ((p.rz || 0) * Math.PI) / 180;
+          ctx.save();
+          ctx.globalAlpha = iOpacity;
+          ctx.translate(x, y);
+          if (iRot) ctx.rotate(iRot);
+          ctx.drawImage(img, -iw / 2, -ih / 2, iw, ih);
+          ctx.restore();
+        }
+        break;
+      }
       default: {
         ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
       }
@@ -1423,9 +1655,91 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
     const idxInView = typeof p.barIdx === 'number' ? p.barIdx - start : typeof p.x === 'number' ? Math.round(p.x) - start : -1;
     const x = idxInView >= 0 && idxInView < vLen ? barX(idxInView, vLen, width, view.barSpacing, view.scrollX) : width / 2;
     const y = typeof p.y === 'number' ? priceToY(p.y, minP, pRange, height, view) : height / 2;
-    ctx.fillStyle = p.color || 'rgba(255,255,255,0.7)';
+    const col = p.color || 'rgba(255,255,255,0.7)';
+    const text = p.text || '';
+    // .size/.align are new optional fields — absent means identical output
+    // to the original bare behavior (10px monospace, left-aligned at x+8).
+    const fontSize = p.size || 10;
+    ctx.font = `${fontSize}px monospace`;
+    const align: CanvasTextAlign = p.align === 'center' || p.align === 'right' ? p.align : 'left';
+    const tx = align === 'left' ? x + 8 : x;
+
+    if (p.boxed) {
+      // Reuse the exact price-label-chip background pattern used earlier in
+      // this function (rgba(8,8,20,0.88) roundRect + stroke + fillText).
+      const textW = ctx.measureText(text).width;
+      const pad = 4;
+      const th = fontSize + 6;
+      const rectLeft = align === 'center' ? tx - textW / 2 - pad
+        : align === 'right' ? tx - textW - pad
+        : tx - pad;
+      const rectW = textW + pad * 2;
+      ctx.fillStyle = 'rgba(8,8,20,0.88)';
+      ctx.strokeStyle = hexToRgba(col, 0.5);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(rectLeft, y - th / 2, rectW, th, 3);
+      ctx.fill(); ctx.stroke();
+    }
+
+    ctx.textAlign = align;
+    ctx.fillStyle = col;
+    ctx.fillText(text, tx, y + 3);
+    ctx.textAlign = 'left';
+  }
+
+  // Table plots — screen-space anchored dashboards (chrome UI, NOT
+  // barX/priceToY chart-space; positioned against the canvas bounds).
+  const TABLE_PAD = 12;
+  const TABLE_CELL_W = 90;
+  const TABLE_CELL_H = 22;
+  for (const p of tablePlots) {
+    const cols = p.cols || 0;
+    const rows = p.rows || 0;
+    if (cols <= 0 || rows <= 0 || !p.cells) continue;
+    const cells = p.cells;
+    const cw = Math.min(TABLE_CELL_W, Math.max(30, (ctx.canvas.width - TABLE_PAD * 2) / cols));
+    const ch = Math.min(TABLE_CELL_H, Math.max(14, (ctx.canvas.height - TABLE_PAD * 2) / rows));
+    const tblW = cw * cols;
+    const tblH = ch * rows;
+    const pos = p.position || 'top_right';
+
+    let ox = (ctx.canvas.width - tblW) / 2;
+    if (pos.includes('left')) ox = TABLE_PAD;
+    else if (pos.includes('right')) ox = ctx.canvas.width - tblW - TABLE_PAD;
+
+    let oy = (ctx.canvas.height - tblH) / 2;
+    if (pos.includes('top')) oy = TABLE_PAD;
+    else if (pos.includes('bottom')) oy = ctx.canvas.height - tblH - TABLE_PAD;
+
+    ox = Math.max(0, Math.min(ox, Math.max(0, ctx.canvas.width - tblW)));
+    oy = Math.max(0, Math.min(oy, Math.max(0, ctx.canvas.height - tblH)));
+
+    ctx.fillStyle = p.bgColor || 'rgba(8,8,20,0.85)';
+    ctx.fillRect(ox, oy, tblW, tblH);
+    ctx.strokeStyle = 'rgba(180,140,255,0.3)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(ox, oy, tblW, tblH);
+
     ctx.font = '10px monospace';
-    ctx.fillText(p.text || '', x + 8, y + 3);
+    for (let r = 0; r < rows; r++) {
+      const rowCells = cells[r];
+      if (!rowCells) continue;
+      for (let c = 0; c < cols; c++) {
+        const cell = rowCells[c];
+        if (!cell) continue;
+        const cx = ox + c * cw;
+        const cy = oy + r * ch;
+        if (cell.bgColor) {
+          ctx.fillStyle = cell.bgColor;
+          ctx.fillRect(cx + 1, cy + 1, cw - 2, ch - 2);
+        }
+        if (cell.text) {
+          ctx.fillStyle = cell.textColor || 'rgba(230,230,255,0.9)';
+          ctx.fillText(cell.text, cx + 4, cy + ch / 2 + 3);
+        }
+      }
+    }
   }
 
   ctx.restore();

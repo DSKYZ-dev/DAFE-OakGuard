@@ -22,8 +22,9 @@ import {
   createEditor, toggleEditor, isEditorVisible,
   getIndicators, getCategories, type OakPlot,
   setSendErrorsCallback, setAgentActionCallback, setAgentChatCallback,
-  setToggleVisibilityCallback, registerEditorShortcuts, getDefaultScript,
+  setToggleVisibilityCallback, setImageAssetsChangedCallback, registerEditorShortcuts, getDefaultScript,
 } from './oakscript';
+import { getAllAssetsAsMap } from './oakscript/image-assets';
 import * as draw from './drawings';
 import type { DrawTool } from './drawings';
 import {
@@ -417,6 +418,20 @@ let oakScriptEnabled = false;
 let oakScriptErrors: string[] = [];
 let osTextarea: HTMLTextAreaElement | null = null;
 
+// Resolved name->dataUrl map for saved image assets (image-assets.ts's
+// IndexedDB library), threaded into every executeScript call so
+// image.new()/plotimage()/plotimage_3d() can resolve a saved asset name.
+// Populated once at startup and refreshed whenever the editor's Images
+// panel adds or deletes an asset (see setImageAssetsChangedCallback below).
+let imageAssetsCache: Map<string, string> = new Map();
+function refreshImageAssetsCache(): void {
+  getAllAssetsAsMap().then(map => {
+    imageAssetsCache = map;
+    runAllIndicators();
+    updateUI();
+  }).catch(() => {});
+}
+
 // Store the currently selected indicator ID for the inputs panel
 let activeInputsId: string | null = null;
 
@@ -474,7 +489,7 @@ function hasPane3DActive(): boolean {
 }
 
 function runAllIndicators(): void {
-  runAllInstances(getBarData());
+  runAllInstances(getBarData(), imageAssetsCache);
   oakScriptErrors = [];
   for (const inst of getActiveInstances()) {
     oakScriptErrors.push(...inst.errors);
@@ -1488,6 +1503,14 @@ document.addEventListener('DOMContentLoaded', () => {
   startupChecks();
   refreshProviderCapabilities();
   syncLlmConfigFromSettings();
+  // Resolve the saved image-asset library once at startup so early script
+  // runs can already reference saved names; re-runs active indicators once
+  // ready since the initial runAllIndicators() calls above may have already
+  // fired with an empty cache.
+  getAllAssetsAsMap().then(map => {
+    imageAssetsCache = map;
+    if (hasActiveIndicators()) { runAllIndicators(); updateUI(); }
+  }).catch(() => {});
 
   // Initialize GPU particle system. Allocate the full buffer (cheap, ~200KB)
   // so the perf governor can scale the active count freely; start at the
@@ -1836,13 +1859,20 @@ CRITICAL RULES:
 - == not = in conditions. Use input() for params.
 - var is ONLY for persistent state with a LITERAL initial value (var lastHigh = 0.0), updated with := inside logic. A var initializer runs ONCE on bar 0 and FREEZES — NEVER declare calculations/conditions/inputs-derived expressions with var; plain assignment recomputes every bar.
 - NEVER use a negative history index like high[-1] — that reads a FUTURE bar. Use [1]/[2] for past bars; confirm swings 1-2 bars late.
-- DYNAMIC price levels (fibs, pivots, moving S/R that follow new swings) MUST use plot(level, "Title", "#hex", 1, "stepline") — the line then moves when the level changes. hline() is ONLY for constants that never change (e.g. RSI 70/30); an hline whose value changes leaves a NEW permanent line each time and buries the chart. In 3D, levels MUST use plot3d(level, ..., "line3d", ...) — line3d draws exact straight segments; "ribbon"/"surface" spline-smooth step-shaped level series into spike blades that look nothing like fib lines. Give EACH level line a DISTINCT z_level (0, 1, 2, …) so they render as cleanly separated parallel planes — putting multiple level lines on the SAME z_level overlaps them into a twisted rope.
+- DYNAMIC price levels (fibs, pivots, moving S/R that follow new swings) MUST use plot(level, "Title", "#hex", 1, "stepline") — the line then moves when the level changes. hline() is ONLY for constants that never change (e.g. RSI 70/30); an hline whose value changes leaves a NEW permanent line each time and buries the chart. hline(price, color?, pane?) is 3 args MAX — not Pine's hline(price, title, color, linestyle, linewidth); there is no title/linestyle/linewidth slot. In 3D, levels MUST use plot3d(level, ..., "line3d", ...) — line3d draws exact straight segments; "ribbon"/"surface" spline-smooth step-shaped level series into spike blades that look nothing like fib lines. Give EACH level line a DISTINCT z_level (0, 1, 2, …) so they render as cleanly separated parallel planes — putting multiple level lines on the SAME z_level overlaps them into a twisted rope.
 - label3d is for RARE, meaningful moments only (a breakout, the latest signal) — never label every signal bar; dense repeats stack into unreadable towers (the engine declutters duplicates, but the script should be selective in the first place).
-- 3D: Full plot3d/plotshape_3d docs are in the coder system prompt. Key: 2D plot()/plotshape() do NOT render in 3D mode — use plot3d()/plotshape_3d(). MANDATORY: plotshape_3d() must pair with at least one plot3d() (same pane).
+- 3D: Full plot3d/plotshape_3d docs are in the coder system prompt. Key: 2D plot()/plotshape() do NOT render in 3D mode — use plot3d()/plotshape_3d(). MANDATORY: plotshape_3d() must pair with at least one plot3d() using the EXACT SAME pane argument (both "3d", or both "separate") — a plotshape_3d(..., "3d") next to a plot3d(..., "separate") puts them in DIFFERENT scenes and one of them renders nowhere.
 - VISUAL FOCUS (this outranks everything about visuals): render ONLY what the request needs. Maximum 2-3 plot3d layers, and every single visual element must trace directly back to something the user asked for — no decorative extras, no "bonus" derivatives, no piling styles on. One excellent, readable visual beats five cluttered ones.
 - You are EDITING: do NOT add any new plot3d/plotshape_3d/label3d call the user did not ask for in THIS request. If the user asks to remove or simplify visuals, removing them IS the task — obey immediately and completely.
 - 3D cone signals: expose markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1) and multiply the cone size by it so users can tune marker scale from the inputs panel.${signalRule}${dimensionRule}
 - SELF-REVIEW BEFORE OUTPUT: Silently verify (1) mathematical accuracy — is every calculation, crossover, threshold, and indicator relationship correct? (2) visual focus — does every plot/shape/label trace back to the user's request? Remove anything they didn't ask for. If either check fails, fix it before answering.
+- DRAWING TOOLKIT: line.new(x1,y1,x2,y2,color?,width?,style?,extend?,id?) / line.delete(id); box.new(left,top,right,bottom,borderColor?,bgColor?,width?,id?) / box.delete(id); circle.new(x1,y1,x2,y2,color?,bgColor?,width?,id?); arrow.new(x1,y1,x2,y2,color?,width?,id?); polyline.new(points,color?,width?,closed?,id?) with points as [bar_index,price] pairs; linefill.new(lineId1,lineId2,color) fills the band between two existing line.new ids; table.new(position,columns,rows,bgColor?,id?) returns a handle and table.cell(handle,col,row,text,bgColor?,textColor?) fills it (position: top_left/top_right/top_center/middle_left/middle_center/middle_right/bottom_left/bottom_right/bottom_center); barcolor(color,pane?) recolors the current bar's candle; fibretracement.new(x1,y1,x2,y2,levels?,colorUp?,colorDown?,id?) and gannfan.new(x1,y1,angleUnit?,color?,id?) draw analyst overlays as real line objects; text.new(x,y,text,color?,size?,id?) is unboxed label sugar, label.new(x,y,text,color?,size?,boxed?,align?) is the boxed form.
+- OBJECT ID IDIOM: line.new/box.new/polyline.new/circle.new/arrow.new/table.new/image.new all take a trailing id — pass the SAME literal id string across multiple bars to UPDATE that object in place (a moving trendline, a growing zone) instead of stacking a new one every bar; omit the id for a fresh object per firing (e.g. one marker per pivot) — omitted-id objects are auto-capped on a rolling basis.
+- IMAGES: image.new(x,y,source,width?,height?,anchor?,opacity?,rotation?,id?) places a 2D image, plotimage(bar_index,price,source,width?,height?,pane?,id?) is a per-bar signal-marker form, plotimage_3d(bar_index,price,source,size?,z_level?,pane?,rx?,ry?,rz?) is the 3D billboard form; source is EITHER an inline data:image/png;base64,... or data:image/jpeg;base64,... string OR the exact name of an asset already saved via the editor's Images panel — never invent an asset name you weren't given.
+- COORDINATES: x/x1/x2 mean bar_index and y/y1/y2 mean price on every drawing builtin, but width/height on image.new and width/height/size on plotimage/plotimage_3d are PIXELS (screen-space), not price units.
+- regression.channel(source,length,mult?) returns {mid,upper,lower} per bar as a CALCULATION ONLY — it does not draw itself; the script must plot all three series (three plot() calls) and use fill() between upper and lower for the shaded channel.
+- CAPABILITY MINDSET: You now have a full drawing toolkit — lines, boxes, polylines, circles, arrows, tables/dashboards, text/labels, fills between lines, fibonacci/gann overlays, and image import (inline or a saved asset by name), in both 2D and 3D. When a request has no single dedicated builtin (a supply/demand zone, a custom diagram, a labeled channel), DECOMPOSE it into these primitives instead of saying it isn't possible — e.g. 'mark a supply zone' = box.new anchored to the swing high/low; 'label the golden pocket' = fibretracement.new; 'put my logo in the corner' = image.new with a saved asset name. This does NOT relax VISUAL FOCUS: decomposing into primitives still means using the FEWEST objects that faithfully render exactly what was asked — never add drawing calls beyond what the request needs.
+- When adding a drawing object or image to this EXISTING script, follow the id idiom above: reuse an object's existing id only if you intend to update/move it, and do NOT change or drop an existing line/box/polyline/circle/arrow/table/image's id unless the user explicitly asked to replace that object — changing its id orphans the old one on the chart.
 - Goal: the most accurate, focused, and polished version of exactly what the user asked for.`;
       const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
       const resp = await advisor.sendMessage(promptText, snapshot, undefined, 'oakscript_coder');
@@ -1908,6 +1938,9 @@ CRITICAL RULES:
       updateUI();
     }
   });
+
+  // ── Wire Images-panel asset changes back into the cached asset map ──
+  setImageAssetsChangedCallback(() => refreshImageAssetsCache());
 
   // ── Register editor keyboard shortcuts ──
   registerEditorShortcuts([
@@ -3110,6 +3143,20 @@ function frameBody(now: number) {
   const combined3d = activeIndicators ? getCombinedPlots() : null;
   const hasPane3d = combined3d ? combined3d.plot3d.some(p => p.pane === '3d') : false;
 
+  // barcolor() plots recolor candles directly (not drawn via
+  // drawOakScriptPlots) — scan the combined main-pane plots for 'barcolor'
+  // entries and build a bar-index -> color map for drawBars. Iteration order
+  // matches indicator/bar execution order, so a later entry for the same
+  // bar index naturally overwrites an earlier one (last-write-wins).
+  const barColorOverrides = new Map<number, string>();
+  if (combined3d) {
+    for (const p of combined3d.main) {
+      if (p.type === 'barcolor' && typeof p.barIdx === 'number' && p.color) {
+        barColorOverrides.set(p.barIdx, p.color);
+      }
+    }
+  }
+
   if (hasPane3d) {
     // 3D indicator mode: render bars + indicator geometry + 3D shapes in Three.js
     const shape3DForMain = combined3d
@@ -3141,7 +3188,7 @@ function frameBody(now: number) {
     }
     else { ctx.fillStyle = '#0a0a18'; ctx.fillRect(0, 0, width, height); }
     drawGrid(ctx, transformed, view, time);
-    drawBars(ctx, transformed, view, time, barType, vpiEnabled ? perBarVols : undefined);
+    drawBars(ctx, transformed, view, time, barType, vpiEnabled ? perBarVols : undefined, barColorOverrides.size > 0 ? barColorOverrides : undefined);
     drawTimeAxis(ctx, transformed, view);
   }
 

@@ -512,6 +512,139 @@ SECTIONS: list[dict] = [
             "cosmic", "thermal", "electric", "compositing", "visual engine",
         ],
     },
+    {
+        "title": "Drawing Objects — Lines, Boxes, Polylines, Circles, Arrows",
+        "content": (
+            "Persistent drawing primitives, unlike plot()/plotshape() which redraw a full "
+            "series every execution — these create/replace ONE object identified by an id "
+            "string.\n"
+            "line.new(x1, y1, x2, y2, color?, width?, style?, extend?, id?) — x/x1/x2 = "
+            "bar_index, y/y1/y2 = price. style: \"solid\"|\"dashed\"|\"dotted\". extend: "
+            "\"none\"|\"left\"|\"right\"|\"both\" rays the line to the pane edge. "
+            "line.delete(id) removes it.\n"
+            "box.new(left, top, right, bottom, borderColor?, bgColor?, width?, id?) — "
+            "rectangle zone; bgColor is the translucent fill, distinct from the border "
+            "color. box.delete(id) removes it.\n"
+            "circle.new(x1, y1, x2, y2, color?, bgColor?, width?, id?) — ellipse inscribed "
+            "in the (x1,y1)-(x2,y2) bounding box.\n"
+            "arrow.new(x1, y1, x2, y2, color?, width?, id?) — freeform point-to-point "
+            "arrow (distinct from plotarrow's per-bar directional marker).\n"
+            "polyline.new(points, color?, width?, closed?, id?) — points is an array of "
+            "[bar_index, price] pairs. closed=true connects the last point back to the "
+            "first.\n"
+            "linefill.new(lineId1, lineId2, color) — translucent band filling the area "
+            "between two already-created line.new ids.\n\n"
+            "THE ID IDIOM (critical — this is how Pine-style handles work here since the "
+            "whole script re-runs every bar): pass the SAME literal id string every time "
+            "to MUTATE one persistent object in place instead of stacking duplicates — "
+            "e.g. a moving trendline: line.new(pivotBar, pivotPrice, bar_index, close, "
+            "\"#22aaff\", 2, \"solid\", \"none\", \"trend1\") called UNCONDITIONALLY every bar "
+            "just moves trend1's endpoint. A growing zone: box.new(zoneLeft, zoneHigh, "
+            "bar_index, zoneLow, \"#ffd43b\", \"rgba(255,212,59,0.08)\", 1, \"zone1\") called "
+            "unconditionally with the same id each bar just extends `right`. OMIT the id "
+            "to get a NEW object each time the call fires (auto id "
+            "`type:auto:barIndex`) — correct for \"mark every pivot\" style calls inside a "
+            "conditional, one object per signal, rolling-capped (30 for line/box/circle/"
+            "arrow, 20 for polyline/linefill/image, 6 for table) so old ones age out "
+            "automatically. Passing a literal id INSIDE a conditional block is a common "
+            "mistake — every firing collapses onto the same one object; derive the id "
+            "from bar_index (e.g. \"piv:\" + tostring(bar_index)) if one object per signal "
+            "is intended.\n"
+            "barcolor(color, pane?) recolors the current bar's candle body/wick — call "
+            "inside a signal condition, the bar-level analog to bgcolor()."
+        ),
+        "keywords": [
+            "line", "box", "polyline", "circle", "arrow", "linefill", "drawing",
+            "trendline", "zone", "rectangle", "id", "handle", "moving", "growing",
+            "persistent", "barcolor", "line.new", "box.new",
+        ],
+    },
+    {
+        "title": "Tables & Dashboards",
+        "content": (
+            "table.new(position, columns, rows, bgColor?, id?) — creates a screen-"
+            "anchored dashboard grid and returns a live handle. position is one of 9 "
+            "screen anchors: \"top_left\", \"top_right\", \"top_center\", \"middle_left\", "
+            "\"middle_center\", \"middle_right\", \"bottom_left\", \"bottom_right\", "
+            "\"bottom_center\" — anchored against the chart's screen pixels, NOT "
+            "bar/price like every other drawing object.\n"
+            "table.cell(handle, col, row, text, bgColor?, textColor?) — sets one cell "
+            "(0-indexed col/row) on the handle returned by table.new.\n"
+            "Idiom: rebuild the whole table every bar (matches Pine's own idiom) — "
+            "declare tbl = table.new(\"top_right\", 2, 3, \"rgba(10,10,20,0.85)\", \"dash1\") "
+            "unconditionally at top level, then table.cell(tbl, 0, 0, \"Session\", ...) / "
+            "table.cell(tbl, 1, 0, tostring(round(r)), ...) calls right after — the same "
+            "id keeps mutating one table in place instead of stacking. Use for session "
+            "stats, multi-timeframe readouts, or any labeled key/value corner dashboard "
+            "— a 2D screen-space alternative to a 3D ribbon dashboard."
+        ),
+        "keywords": [
+            "table", "dashboard", "cell", "position", "anchor", "corner", "grid",
+            "session stats", "screen", "table.new", "table.cell",
+        ],
+    },
+    {
+        "title": "Images — Import & Signals",
+        "content": (
+            "Two source forms, resolved identically everywhere an image builtin takes a "
+            "`source` argument: (1) an inline data URI — a string starting with "
+            "\"data:image/\" — fully self-contained in the script; or (2) the exact string "
+            "name of an image saved via the editor's Image Assets panel (uploaded PNG/"
+            "JPEG, stored locally). An unresolvable name renders nothing rather than "
+            "crashing.\n"
+            "image.new(x, y, source, width?, height?, anchor?, opacity?, rotation?, id?) "
+            "— places an image at (bar_index, price). anchor: \"center\"|\"top_left\"|"
+            "\"top_right\"|\"bottom_left\"|\"bottom_right\". width/height are PIXELS "
+            "(screen-space, like every label/marker size in OakScript) — NOT price "
+            "units, so they don't distort under zoom/pan. rotation is degrees. Same id "
+            "mutates in place, same idiom as line.new/box.new — good for a fixed "
+            "logo/watermark.\n"
+            "plotimage(bar_index, price, source, width?, height?, pane?, id?) — per-bar "
+            "image SIGNAL marker, the image equivalent of plotshape; call inside a "
+            "signal condition to stamp a custom icon (e.g. a custom buy/sell glyph) at "
+            "that bar instead of the built-in triangle/cross/diamond shapes.\n"
+            "plotimage_3d(bar_index, price, source, size?, z_level?, pane?, rx?, ry?, "
+            "rz?) — billboard sprite version for a pane=\"3d\"/\"separate\" scene; faces "
+            "the camera like label3d. Only images get a 3D form — line/box/polyline/"
+            "table/circle/arrow are 2D-only.\n"
+            "Common uses: a corner logo/watermark (image.new with a saved asset name, "
+            "high opacity, fixed id); a custom buy/sell icon replacing plotshape's "
+            "built-in triangles (plotimage inside if buySig { ... })."
+        ),
+        "keywords": [
+            "image", "images", "picture", "logo", "watermark", "png", "jpeg",
+            "upload", "asset", "plotimage", "icon", "signal marker", "billboard",
+            "sprite", "anchor", "rotation", "opacity", "image.new",
+        ],
+    },
+    {
+        "title": "Analyst Overlay Tools — Fibonacci, Gann, Regression Channel",
+        "content": (
+            "fibretracement.new(x1, y1, x2, y2, levels?, colorUp?, colorDown?, id?) — "
+            "draws N retracement lines between two anchor points (a swing high/low "
+            "pair). levels defaults to the 7 standard ratios [0, 0.236, 0.382, 0.5, "
+            "0.618, 0.786, 1]; each ratio becomes its own line_obj internally (sub-ids "
+            "derived from id), so a single id still updates the whole set in place on "
+            "the next call.\n"
+            "gannfan.new(x1, y1, angleUnit?, color?, id?) — draws the 7 classic Gann "
+            "fan angles (1x8, 1x4, 1x3, 1x2, 1x1, 2x1, 4x1) radiating from (x1, y1).\n"
+            "regression.channel(source, length, mult?) — CALCULATION ONLY, not an "
+            "auto-drawing primitive like the two above: returns {mid, upper, lower} per "
+            "bar, same shape as macd(). mid is a moving-average midline over `length` "
+            "bars, upper/lower are mid ± mult * stdev(source, length) (mult defaults "
+            "2.0). Render it yourself with existing primitives — the standard recipe:\n"
+            "    rc = regression.channel(close, 100, 2.0)\n"
+            "    plot(rc.mid, \"Reg Mid\", \"#b48cff\", 1)\n"
+            "    plot(rc.upper, \"Reg Upper\", \"#22aaff\", 1)\n"
+            "    plot(rc.lower, \"Reg Lower\", \"#22aaff\", 1)\n"
+            "    fill(rc.upper, rc.lower, \"rgba(34,170,255,0.06)\")"
+        ),
+        "keywords": [
+            "fibonacci", "fib", "retracement", "gann", "fan", "angle", "regression",
+            "channel", "analyst", "overlay", "swing", "golden pocket",
+            "fibretracement.new", "gannfan.new", "regression.channel",
+        ],
+    },
 ]
 
 # ─── Function index: {"name": ..., "signature": ..., "desc": ..., "category": ...} ──
@@ -560,7 +693,7 @@ FUNCTIONS: list[dict] = [
     {"name": "plotshape", "signature": "plotshape(bar_index, price, title, style, color, pane?)", "desc": "Shape marker at bar+price", "category": "plotting_2d"},
     {"name": "plotarrow", "signature": "plotarrow(bar_index, price, title, direction, color?, pane?)", "desc": "Directional arrow marker", "category": "plotting_2d"},
     {"name": "plotchar", "signature": "plotchar(bar_index, price, char, color?, pane?)", "desc": "Character/emoji marker", "category": "plotting_2d"},
-    {"name": "label.new", "signature": "label.new(x, y, text, color)", "desc": "Text label at position", "category": "plotting_2d"},
+    {"name": "label.new", "signature": "label.new(x, y, text, color?, size?, boxed?, align?)", "desc": "Text label at (bar_index, price); boxed defaults true (background chip); extended from the original 4-arg form with size/boxed/align", "category": "plotting_2d"},
     {"name": "plot3d", "signature": "plot3d(series, name, style, color, pane?, z_level?)", "desc": "3D visualization — 15 styles: surface/ribbon/bars3d/scatter/line3d/wireframe/mesh/helix/vortex/manifold/nebula/constellation/torus/trail/ridgeline; pane \"3d\"|\"separate\"|\"main\"; z_level stacks layers in depth", "category": "plotting_3d"},
     {"name": "plotshape_3d", "signature": "plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?)", "desc": "3D marker at (bar, price, Z) — shapes cube/sphere/pyramid/torus/diamond/coneup/conedown; buy=coneup green below bar, sell=conedown red above bar (auto-offset, tip at price); size 0.2-3.0 (scale with signal strength); rx/ry/rz rotate in degrees; call inside a condition; pair with a plot3d of the same pane", "category": "plotting_3d"},
     {"name": "label3d", "signature": "label3d(bar_index, price, text, color?, size?, z_level?, pane?)", "desc": "Billboard text label at (bar, price, Z) in a 3D scene — short text, call inside a condition (40 most recent render)", "category": "plotting_3d"},
@@ -583,6 +716,24 @@ FUNCTIONS: list[dict] = [
     {"name": "sin", "signature": "sin(x)", "desc": "Sine", "category": "math_string"},
     {"name": "cos", "signature": "cos(x)", "desc": "Cosine", "category": "math_string"},
     {"name": "tan", "signature": "tan(x)", "desc": "Tangent", "category": "math_string"},
+    {"name": "line.new", "signature": "line.new(x1, y1, x2, y2, color?, width?, style?, extend?, id?)", "desc": "Persistent line object; same id mutates it in place (moving trendline idiom), omit id for a new object every firing bar (rolling-capped at 30)", "category": "drawing_2d"},
+    {"name": "line.delete", "signature": "line.delete(id)", "desc": "Removes a line created by line.new", "category": "drawing_2d"},
+    {"name": "box.new", "signature": "box.new(left, top, right, bottom, borderColor?, bgColor?, width?, id?)", "desc": "Persistent rectangle zone; same id mutates in place (e.g. a growing consolidation zone as `right` advances)", "category": "drawing_2d"},
+    {"name": "box.delete", "signature": "box.delete(id)", "desc": "Removes a box created by box.new", "category": "drawing_2d"},
+    {"name": "circle.new", "signature": "circle.new(x1, y1, x2, y2, color?, bgColor?, width?, id?)", "desc": "Ellipse inscribed in the (x1,y1)-(x2,y2) bounding box", "category": "drawing_2d"},
+    {"name": "arrow.new", "signature": "arrow.new(x1, y1, x2, y2, color?, width?, id?)", "desc": "Freeform point-to-point arrow (distinct from plotarrow's per-bar directional marker)", "category": "drawing_2d"},
+    {"name": "polyline.new", "signature": "polyline.new(points, color?, width?, closed?, id?)", "desc": "Multi-point path; points is an array of [bar_index, price] pairs, closed=true connects last point back to first", "category": "drawing_2d"},
+    {"name": "linefill.new", "signature": "linefill.new(lineId1, lineId2, color)", "desc": "Translucent band filling the area between two existing line.new ids", "category": "drawing_2d"},
+    {"name": "table.new", "signature": "table.new(position, columns, rows, bgColor?, id?)", "desc": "Screen-anchored dashboard grid (position from 9 anchors); returns a handle for table.cell()", "category": "drawing_2d"},
+    {"name": "table.cell", "signature": "table.cell(handle, col, row, text, bgColor?, textColor?)", "desc": "Sets one cell's text/colors on a table.new handle (0-indexed col/row)", "category": "drawing_2d"},
+    {"name": "barcolor", "signature": "barcolor(color, pane?)", "desc": "Recolors the current bar's candle body/wick — call inside a signal condition, a bar-level analog to bgcolor()", "category": "drawing_2d"},
+    {"name": "text.new", "signature": "text.new(x, y, text, color?, size?, id?)", "desc": "Sugar alias for label.new with boxed defaulting to false (plain text, no background chip)", "category": "drawing_2d"},
+    {"name": "fibretracement.new", "signature": "fibretracement.new(x1, y1, x2, y2, levels?, colorUp?, colorDown?, id?)", "desc": "Draws N fibonacci retracement lines between two points (default levels 0/0.236/0.382/0.5/0.618/0.786/1)", "category": "drawing_analyst"},
+    {"name": "gannfan.new", "signature": "gannfan.new(x1, y1, angleUnit?, color?, id?)", "desc": "Draws the 7 classic Gann fan angles radiating from (x1, y1)", "category": "drawing_analyst"},
+    {"name": "regression.channel", "signature": "regression.channel(source, length, mult?)", "desc": "Calculation only -> {mid, upper, lower}; render with 3x plot()+fill(), same recipe as macd/bollinger", "category": "drawing_analyst"},
+    {"name": "image.new", "signature": "image.new(x, y, source, width?, height?, anchor?, opacity?, rotation?, id?)", "desc": "Places an image at (bar_index, price); source is a data:image/... URI or a saved asset name; width/height in pixels, rotation in degrees", "category": "image"},
+    {"name": "plotimage", "signature": "plotimage(bar_index, price, source, width?, height?, pane?, id?)", "desc": "Per-bar image signal marker (like plotshape but with a custom image) — call inside a condition", "category": "image"},
+    {"name": "plotimage_3d", "signature": "plotimage_3d(bar_index, price, source, size?, z_level?, pane?, rx?, ry?, rz?)", "desc": "3D billboard sprite version of plotimage for pane=\"3d\"/\"separate\" scenes", "category": "image"},
 ]
 
 # ─── Inline full examples ──────────────────────────────────────────
@@ -757,6 +908,64 @@ EXAMPLES: list[dict] = [
         ),
         "keywords": ["bollinger", "bands", "bb", "volatility", "volume terrain"],
     },
+    {
+        "name": "Support/Resistance Zone with box.new",
+        # Canonical box.new "growing zone" idiom: unconditional top-level call,
+        # same literal id every bar, right edge advances with bar_index.
+        "code": (
+            'lb = input(10, "Pivot Lookback")\n\n'
+            "ph = pivothigh(high, lb, lb)\n"
+            "pl = pivotlow(low, lb, lb)\n\n"
+            "var zoneHigh = high\n"
+            "var zoneLow = low\n"
+            "var zoneLeft = bar_index\n\n"
+            "if ph > 0 {\n"
+            "    zoneHigh := ph\n"
+            "    zoneLeft := bar_index - lb\n"
+            "}\n"
+            "if pl > 0 and pl < zoneLow {\n"
+            "    zoneLow := pl\n"
+            "}\n\n"
+            'box.new(zoneLeft, zoneHigh, bar_index, zoneLow, "#ffd43b", '
+            '"rgba(255,212,59,0.08)", 1, "srZone")\n\n'
+            'plot(close, "Close", "#22aaff", 1)'
+        ),
+        "keywords": ["box.new", "support", "resistance", "zone", "sr", "pivot",
+                     "growing zone", "rectangle", "consolidation"],
+    },
+    {
+        "name": "Session Dashboard with table.new",
+        # Canonical table.new/table.cell idiom: unconditional top-level rebuild
+        # every bar, same id keeps mutating one table instead of stacking.
+        "code": (
+            "newDay = floor(time / 86400000) != floor(time[1] / 86400000)\n\n"
+            "var sessHigh = high\n"
+            "var sessLow = low\n"
+            "if newDay or bar_index == 0 {\n"
+            "    sessHigh := high\n"
+            "    sessLow := low\n"
+            "}\n"
+            "if high > sessHigh {\n"
+            "    sessHigh := high\n"
+            "}\n"
+            "if low < sessLow {\n"
+            "    sessLow := low\n"
+            "}\n\n"
+            "r = rsi(close, 14)\n\n"
+            'tbl = table.new("top_right", 2, 4, "rgba(10,10,20,0.85)", "sessTbl")\n'
+            'table.cell(tbl, 0, 0, "Session High", "rgba(0,0,0,0)", "#ffffff")\n'
+            'table.cell(tbl, 1, 0, tostring(round(sessHigh)), "rgba(0,0,0,0)", "#22cc88")\n'
+            'table.cell(tbl, 0, 1, "Session Low", "rgba(0,0,0,0)", "#ffffff")\n'
+            'table.cell(tbl, 1, 1, tostring(round(sessLow)), "rgba(0,0,0,0)", "#ff4477")\n'
+            'table.cell(tbl, 0, 2, "RSI", "rgba(0,0,0,0)", "#ffffff")\n'
+            'table.cell(tbl, 1, 2, tostring(round(r)), "rgba(0,0,0,0)", "#b48cff")\n'
+            'table.cell(tbl, 0, 3, "Close", "rgba(0,0,0,0)", "#ffffff")\n'
+            'table.cell(tbl, 1, 3, tostring(round(close)), "rgba(0,0,0,0)", "#22aaff")\n\n'
+            'plot(close, "Close", "#22aaff", 1)'
+        ),
+        "keywords": ["table.new", "table.cell", "dashboard", "session",
+                     "session high", "session low", "corner", "stats"],
+    },
 ]
 
 
@@ -815,11 +1024,15 @@ SYNONYMS: dict[str, list[str]] = {
     "overbought": ["rsi", "cci", "hline"], "oversold": ["rsi", "cci", "hline"],
     "momentum": ["rsi", "roc", "macd"], "trend": ["ema", "sma", "adx"],
     "volatility": ["atr", "stdev", "bollinger"], "band": ["bollinger", "stdev", "fill"],
-    "bollinger": ["stdev", "sma", "fill"], "channel": ["highest", "lowest", "fill"],
+    "bollinger": ["stdev", "sma", "fill"], "channel": ["highest", "lowest", "fill", "regression.channel"],
     "heatmap": ["color", "ternary", "conditional"], "gradient": ["color", "fill", "area"],
     "cloud": ["fill", "area", "color"], "ribbon": ["plot3d", "ema"],
-    "marker": ["plotshape", "plotchar", "plotarrow"], "arrow": ["plotarrow", "plotshape"],
+    "marker": ["plotshape", "plotchar", "plotarrow"], "arrow": ["plotarrow", "plotshape", "arrow.new"],
     "label": ["label.new", "plotchar"], "background": ["bgcolor", "color"],
+    "trendline": ["line.new"], "zone": ["box.new"],
+    "logo": ["image.new"], "watermark": ["image.new"],
+    "fib": ["fibretracement.new"], "fibonacci": ["fibretracement.new"],
+    "gann": ["gannfan.new"],
     "3d": ["plot3d", "plotshape_3d", "label3d", "surface", "ribbon"],
     "surface": ["plot3d"], "mesh": ["plot3d"],
     "helix": ["plot3d"], "vortex": ["plot3d"], "manifold": ["plot3d"],
@@ -831,7 +1044,7 @@ SYNONYMS: dict[str, list[str]] = {
     "name": ["label3d"], "planet": ["plotshape_3d", "label3d"],
     "sphere": ["plotshape_3d"], "landscape": ["surface", "ridgeline", "plot3d"],
     "terrain": ["surface", "bars3d", "plot3d"],
-    "dashboard": ["plot3d", "combine", "layer"], "layer": ["combine", "plot3d", "fill"],
+    "dashboard": ["plot3d", "combine", "layer", "table.new"], "layer": ["combine", "plot3d", "fill"],
     "alert": ["alertcondition"], "notify": ["alert", "alertcondition"],
     "divergence": ["rsi", "crossover", "crossunder"], "color": ["color.new", "color.rgb"],
     "conditional": ["ternary"], "transparency": ["color.new", "rgba"],
@@ -851,7 +1064,9 @@ SYNTAX_RULES = (
     "page in an infinite loop); strings MUST be quoted "
     "(\"surface\", \"#22cc88\"); use == not = in conditions; colors are hex/rgba strings; "
     "MACD via m=macd(c,12,26,9) then m.macd/.signal/.hist; plot* calls must be outside "
-    "conditions to always render. A misspelled/undefined variable name reads as 0/false "
+    "conditions to always render. hline(price, color?, pane?) takes AT MOST 3 args — "
+    "NOT Pine's hline(price, title, color, linestyle, linewidth); never add a 4th/5th "
+    "style/linewidth argument, there is no title slot. A misspelled/undefined variable name reads as 0/false "
     "with NO error — before finishing, re-check every variable used against its actual "
     "input()/declaration name. Give each plot3d call a genuinely distinct source value "
     "(a count, a stdev, a raw vs. smoothed version) instead of visualizing the same "
@@ -1006,7 +1221,12 @@ def retrieve(query: str, budget_chars: int = 2200) -> dict:
     """
     results = search(query, max_results=8)
     out: list[str] = [f"OAKSCRIPT SYNTAX: {SYNTAX_RULES}"]
-    used = len(out[0])
+    # budget_chars bounds the DYNAMIC per-query content (functions/sections/examples)
+    # below, not this fixed prefix — SYNTAX_RULES alone (~3800 chars) already exceeds
+    # every real caller's budget (2200/4500), so counting it against the same budget
+    # meant retrieve() silently returned ONLY the syntax rules for every query,
+    # regardless of relevance — the actual point of this function never fired.
+    used = 0
 
     fns = [r for r in results if r["type"] == "function"]
     secs = [r for r in results if r["type"] == "section"]

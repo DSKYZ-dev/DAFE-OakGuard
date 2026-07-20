@@ -4,6 +4,7 @@
  */
 import * as THREE from 'three';
 import type { OakPlot3D, OakPlot } from './oakscript/runtime';
+import { resolveImage } from './image-cache';
 
 const ID = 'three-lower-scene';
 let _ok = false;
@@ -427,8 +428,30 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
   if (shapePlots) {
     for (const sp of shapePlots) {
       if (sp.type !== 'plot3d_shape') continue;
-      let geometry: THREE.BufferGeometry;
       const s = sp.size ?? 1;
+      // Position: map barIdx to X (using barCount), price to Y (using min/range), z_level to Z (using zOffsets)
+      // Hoisted above the shape switch so both the mesh path and the 3D
+      // image-billboard early-branch below can reuse the same x/y/z.
+      const xFrac = barCount > 1 ? (sp.barIdx ?? 0) / (barCount - 1) : 0.5;
+      const x = xFrac * 10 - 5;
+      const y = ((sp.price ?? 0) - min) / range * 4;
+      const z = zOffsets.get(sp.z_level ?? 0) ?? 0;
+      // 3D image billboard (plotimage_3d) — resolved from the shared
+      // sync-read image decode cache; skip the geometry switch entirely.
+      if (sp.shape3d === 'image') {
+        const img = resolveImage(sp.imageRef ?? '');
+        if (img) {
+          const tex = new THREE.Texture(img);
+          tex.needsUpdate = true;
+          const aspect = img.width && img.height ? img.width / img.height : 1;
+          const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+          sprite.scale.set(s * 0.6 * aspect, s * 0.6, 1);
+          sprite.position.set(x, y, z);
+          r.scene.add(sprite);
+        }
+        continue;
+      }
+      let geometry: THREE.BufferGeometry;
       switch (sp.shape3d) {
         case 'cube':
           geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3);
@@ -457,11 +480,6 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
         color: col, emissive: col.clone().multiplyScalar(0.2),
         specular: 0x222244, shininess: 60,
       }));
-      // Position: map barIdx to X (using barCount), price to Y (using min/range), z_level to Z (using zOffsets)
-      const xFrac = barCount > 1 ? (sp.barIdx ?? 0) / (barCount - 1) : 0.5;
-      const x = xFrac * 10 - 5;
-      const y = ((sp.price ?? 0) - min) / range * 4;
-      const z = zOffsets.get(sp.z_level ?? 0) ?? 0;
       // Signal cones: offset from the bar (gap scales with size) with the tip
       // pointing AT the price — coneup sits below, conedown flips and sits above.
       let yOff = 0;

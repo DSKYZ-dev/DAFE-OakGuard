@@ -158,7 +158,7 @@ export function setInstanceEnabled(id: string, enabled: boolean): void {
 export function runAllInstances(barData: {
   close: number[]; open: number[]; high: number[];
   low: number[]; volume: number[]; time: number[];
-}): void {
+}, imageAssets?: Map<string, string>): void {
   for (const id of instanceOrder) {
     const inst = instances.get(id);
     if (!inst || !inst.enabled) continue;
@@ -173,7 +173,7 @@ export function runAllInstances(barData: {
         volume: barData.volume,
         time: barData.time,
         count: barData.close.length,
-      }, persist, inst.overrides.size > 0 ? inst.overrides : undefined);
+      }, persist, inst.overrides.size > 0 ? inst.overrides : undefined, imageAssets);
       inst.plots = result.plots;
       inst.errors = result.errors;
       inst.alerts = result.alerts;

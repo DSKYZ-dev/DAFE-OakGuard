@@ -2,7 +2,7 @@ import type { Program, ASTNode } from './ast';
 import type { Identifier, NumberLiteral, StringLiteral, BooleanLiteral, ArrayLiteral, NilLiteral } from './ast';
 import type { BinaryExpr, UnaryExpr, TernaryExpr, CallExpr, IndexExpr, MemberExpr } from './ast';
 import type { VarDecl, Assignment, IfStatement, ForStatement, WhileStatement, ReturnStmt, ExpressionStmt, FunctionDecl } from './ast';
-import type { OakPlot, OakAlert } from './runtime';
+import type { OakPlot, OakAlert, OakTableCell } from './runtime';
 import { StdLib } from './runtime';
 
 // Recognized plot() render styles (used to disambiguate the 5th positional arg).
@@ -19,6 +19,85 @@ function hexToRgbTuple(hex: string): [number, number, number] {
   const rgb = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(h);
   if (rgb) return [+rgb[1], +rgb[2], +rgb[3]];
   return [180, 140, 255];
+}
+
+// ─── Drawing-object shared helpers ──────────────────────────────────
+// Generalizes hline()'s dedup+rolling-cap pattern (see the 'hline' case
+// below) across every persistent drawing-object type. There is no
+// Pine-style handle/mutate system here — the whole script re-runs once per
+// bar sharing one flat ctx.plots array — so "same id -> mutate in place,
+// different id -> push + rolling-cap the type" is the substitute.
+
+// Per-type cap on live objects before the OLDEST is evicted.
+const OBJECT_CAPS: Record<string, number> = {
+  line_obj: 30,
+  box_obj: 30,
+  circle_obj: 30,
+  arrow_obj: 30,
+  polyline_obj: 20,
+  linefill_obj: 20,
+  image_obj: 20,
+  table: 6,
+  label: 40,
+};
+
+// Same-key upsert: a repeat call with the same (type, id) mutates the
+// existing OakPlot in place (Object.assign) instead of stacking a new plot
+// every bar/firing. A brand-new id pushes a fresh OakPlot, registers it in
+// ctx.objectSeen/ctx.objectOrder, and evicts the OLDEST id for that type
+// once OBJECT_CAPS[type] is exceeded (spliced out of ctx.plots too) — same
+// eviction behavior as hline()'s 24-line cap, generalized.
+function upsertObject(ctx: RuntimeContext, type: string, id: string, fields: Partial<OakPlot>): OakPlot {
+  const key = `${type}|${id}`;
+  const existing = ctx.objectSeen.get(key);
+  if (existing) {
+    Object.assign(existing, fields);
+    return existing;
+  }
+  const plot: OakPlot = { type: type as OakPlot['type'], name: '', id, ...fields };
+  ctx.plots.push(plot);
+  ctx.objectSeen.set(key, plot);
+  let order = ctx.objectOrder.get(type);
+  if (!order) { order = []; ctx.objectOrder.set(type, order); }
+  order.push(id);
+  const cap = OBJECT_CAPS[type] ?? 30;
+  if (order.length > cap) {
+    const oldestId = order.shift()!;
+    const oldestKey = `${type}|${oldestId}`;
+    const oldestPlot = ctx.objectSeen.get(oldestKey);
+    if (oldestPlot) {
+      const idx = ctx.plots.indexOf(oldestPlot);
+      if (idx >= 0) ctx.plots.splice(idx, 1);
+    }
+    ctx.objectSeen.delete(oldestKey);
+  }
+  return plot;
+}
+
+// Explicit removal by (type, id) — shared by line.delete/box.delete: splices
+// the OakPlot out of ctx.plots and cleans both objectSeen and objectOrder so
+// a later new object of the same type doesn't inherit a phantom eviction slot.
+function deleteObjectById(ctx: RuntimeContext, type: string, id: string): void {
+  const key = `${type}|${id}`;
+  const plot = ctx.objectSeen.get(key);
+  if (!plot) return;
+  const idx = ctx.plots.indexOf(plot);
+  if (idx >= 0) ctx.plots.splice(idx, 1);
+  ctx.objectSeen.delete(key);
+  const order = ctx.objectOrder.get(type);
+  if (order) {
+    const oi = order.indexOf(id);
+    if (oi >= 0) order.splice(oi, 1);
+  }
+}
+
+// Explicit id if a non-empty string was passed, else one auto id per firing
+// bar (`${prefix}:auto:${barIndex}`) — an unconditional top-level call
+// re-fires this every bar (dedup/mutate via upsertObject keeps it to one
+// object), a conditional call gets a fresh identity each firing bar.
+function autoId(ctx: RuntimeContext, explicitArg: RuntimeValue, prefix: string): string {
+  if (typeof explicitArg === 'string' && explicitArg.length > 0) return explicitArg;
+  return `${prefix}:auto:${ctx.barIndex}`;
 }
 
 // ─── OakRing — fixed-size circular buffer ──────────────────────────
@@ -167,6 +246,16 @@ export interface RuntimeContext {
   // conditional one fires for every historical trigger — without dedup each
   // call stacked another permanent line on the chart ("fib lines multiply").
   hlineSeen: Set<string>;
+  // Shared per-execution: drawing-object dedup/mutation state (line.new,
+  // box.new, table.new, etc.) — same-key upsert generalizes the hlineSeen
+  // pattern above. objectSeen key = `${type}|${id}`; objectOrder tracks
+  // insertion order per type for rolling-cap eviction (oldest id first).
+  objectSeen: Map<string, OakPlot>;
+  objectOrder: Map<string, string[]>;
+  // Optional name -> data-URL map for image.new/plotimage/plotimage_3d
+  // source resolution, threaded in from the caller (indicator-manager.ts /
+  // editor.ts). Omitted entirely when the caller doesn't pass one.
+  imageAssets?: Map<string, string>;
   // Shared per-execution: user-defined functions (f(x) => ...).
   userFuncs: Map<string, FunctionDecl>;
   // Recursion guard for user-function calls.
@@ -196,7 +285,7 @@ export interface PlotResult {
   errors: string[];
 }
 
-export function executeScript(program: Program, barData: RuntimeBarData, persist: Map<string, RuntimeValue>, inputOverrides?: Map<string, RuntimeValue>): PlotResult {
+export function executeScript(program: Program, barData: RuntimeBarData, persist: Map<string, RuntimeValue>, inputOverrides?: Map<string, RuntimeValue>, imageAssets?: Map<string, string>): PlotResult {
   const errors: string[] = [];
   const plots: OakPlot[] = [];
   const alerts: OakAlert[] = [];
@@ -205,6 +294,8 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
   const cache = new Map<string, any>();
   const seriesByName = new Map<string, number[]>();
   const hlineSeen = new Set<string>();
+  const objectSeen = new Map<string, OakPlot>();
+  const objectOrder = new Map<string, string[]>();
   const userFuncs = new Map<string, FunctionDecl>();
 
   // Execute bar by bar (PineScript execution model)
@@ -226,6 +317,9 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
       cache,
       loopSteps: 0,
       hlineSeen,
+      objectSeen,
+      objectOrder,
+      imageAssets,
       userFuncs,
       callDepth: 0,
     };
@@ -670,6 +764,29 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         return 0;
       }
 
+      case 'regression.channel': {
+        // regression.channel(source,length,mult?) -> {mid,upper,lower} per
+        // bar — pure calculation (documented as a plot()+fill() recipe, not
+        // an auto-drawing primitive), same per-bar-record shape as the
+        // 'macd' case above, including its built-in-source caching pattern.
+        const sourceNode = expr.args[0];
+        const length = typeof args[1] === 'number' ? args[1] : 14;
+        const mult = typeof args[2] === 'number' ? args[2] : 2;
+        const isBuiltInSrc = sourceNode.type === 'Identifier'
+          && ['close', 'open', 'high', 'low', 'volume'].includes((sourceNode as Identifier).name);
+        const cacheKey = isBuiltInSrc
+          ? `regression.channel:${(sourceNode as Identifier).name}:${length}:${mult}`
+          : '';
+        if (cacheKey && ctx.cache.has(cacheKey)) {
+          const r = ctx.cache.get(cacheKey);
+          return { mid: r.mid[ctx.barIndex] ?? 0, upper: r.upper[ctx.barIndex] ?? 0, lower: r.lower[ctx.barIndex] ?? 0 };
+        }
+        const series = isBuiltInSrc ? (ctx.bars as any)[(sourceNode as Identifier).name] : buildSeries(sourceNode, ctx);
+        const result = StdLib.regressionChannel(series, length, mult);
+        if (cacheKey) ctx.cache.set(cacheKey, result);
+        return { mid: result.mid[ctx.barIndex] ?? 0, upper: result.upper[ctx.barIndex] ?? 0, lower: result.lower[ctx.barIndex] ?? 0 };
+      }
+
       case 'crossover': case 'crossunder': {
         // Cache full-array results so we don't recompute every bar
         const aNode = expr.args[0], bNode = expr.args[1];
@@ -887,6 +1004,277 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         return null;
       }
 
+      // ─── Drawing objects — lines, boxes, polylines, circles, arrows ───
+      // All route through upsertObject/autoId (defined near the top of this
+      // file, alongside hexToRgbTuple): same id -> mutate in place, new id ->
+      // push + rolling-cap the type. Coordinates: x/x1/x2 = bar_index,
+      // y/y1/y2 = price; width = pixels (screen-space, like existing label
+      // sizing) not price units.
+      case 'line.new': {
+        // line.new(x1,y1,x2,y2,color?,width?,style?,extend?,id?)
+        const x1 = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y1 = typeof args[1] === 'number' ? args[1] : 0;
+        const x2 = typeof args[2] === 'number' ? args[2] : x1;
+        const y2 = typeof args[3] === 'number' ? args[3] : y1;
+        const col = typeof args[4] === 'string' ? args[4] : '#b48cff';
+        const width = typeof args[5] === 'number' ? args[5] : 1;
+        const style = typeof args[6] === 'string' ? args[6] : 'solid';
+        const extend = (typeof args[7] === 'string' ? args[7] : 'none') as OakPlot['extend'];
+        const id = autoId(ctx, args[8], 'line');
+        upsertObject(ctx, 'line_obj', id, { x: x1, y: y1, x2, y2, color: col, linewidth: width, style, extend, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'line.delete': {
+        deleteObjectById(ctx, 'line_obj', typeof args[0] === 'string' ? args[0] : '');
+        return null;
+      }
+
+      case 'box.new': {
+        // box.new(left,top,right,bottom,borderColor?,bgColor?,width?,id?)
+        const left = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const top = typeof args[1] === 'number' ? args[1] : 0;
+        const right = typeof args[2] === 'number' ? args[2] : left;
+        const bottom = typeof args[3] === 'number' ? args[3] : top;
+        const borderColor = typeof args[4] === 'string' ? args[4] : '#b48cff';
+        const bg = typeof args[5] === 'string' ? args[5] : 'rgba(180,140,255,0.15)';
+        const width = typeof args[6] === 'number' ? args[6] : 1;
+        const id = autoId(ctx, args[7], 'box');
+        upsertObject(ctx, 'box_obj', id, { x: left, y: top, x2: right, y2: bottom, color: borderColor, bgColor: bg, linewidth: width, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'box.delete': {
+        deleteObjectById(ctx, 'box_obj', typeof args[0] === 'string' ? args[0] : '');
+        return null;
+      }
+
+      case 'circle.new': {
+        // circle.new(x1,y1,x2,y2,color?,bgColor?,width?,id?) — bounding box;
+        // the renderer inscribes an ellipse inside it.
+        const x1 = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y1 = typeof args[1] === 'number' ? args[1] : 0;
+        const x2 = typeof args[2] === 'number' ? args[2] : x1;
+        const y2 = typeof args[3] === 'number' ? args[3] : y1;
+        const col = typeof args[4] === 'string' ? args[4] : '#b48cff';
+        const bg = typeof args[5] === 'string' ? args[5] : 'transparent';
+        const width = typeof args[6] === 'number' ? args[6] : 1;
+        const id = autoId(ctx, args[7], 'circle');
+        upsertObject(ctx, 'circle_obj', id, { x: x1, y: y1, x2, y2, color: col, bgColor: bg, linewidth: width, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'arrow.new': {
+        // arrow.new(x1,y1,x2,y2,color?,width?,id?) — freeform two-point
+        // arrow, distinct from the bar-anchored plotarrow() above.
+        const x1 = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y1 = typeof args[1] === 'number' ? args[1] : 0;
+        const x2 = typeof args[2] === 'number' ? args[2] : x1;
+        const y2 = typeof args[3] === 'number' ? args[3] : y1;
+        const col = typeof args[4] === 'string' ? args[4] : '#b48cff';
+        const width = typeof args[5] === 'number' ? args[5] : 1;
+        const id = autoId(ctx, args[6], 'arrow');
+        upsertObject(ctx, 'arrow_obj', id, { x: x1, y: y1, x2, y2, color: col, linewidth: width, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'polyline.new': {
+        // polyline.new(points,color?,width?,closed?,id?)
+        // points = a runtime array of 2-element [bar,price] arrays (OakScript
+        // array literals already evaluate to RuntimeValue[]) — filtered/mapped
+        // defensively into {x,y} objects.
+        const rawPoints = Array.isArray(args[0]) ? args[0] : [];
+        const points = rawPoints
+          .filter((p): p is RuntimeValue[] => Array.isArray(p) && p.length >= 2 && typeof p[0] === 'number' && typeof p[1] === 'number')
+          .map((p) => ({ x: p[0] as number, y: p[1] as number }));
+        const col = typeof args[1] === 'string' ? args[1] : '#b48cff';
+        const width = typeof args[2] === 'number' ? args[2] : 1;
+        const closed = args[3] === true;
+        const id = autoId(ctx, args[4], 'polyline');
+        upsertObject(ctx, 'polyline_obj', id, { points, color: col, linewidth: width, closed, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'linefill.new': {
+        // linefill.new(lineId1,lineId2,color) — keyed on BOTH ids (not
+        // autoId); the renderer resolves id1/id2 back to their line_obj
+        // entries at draw time to fill the band between them.
+        const id1 = typeof args[0] === 'string' ? args[0] : '';
+        const id2 = typeof args[1] === 'string' ? args[1] : '';
+        const col = typeof args[2] === 'string' ? args[2] : 'rgba(180,140,255,0.15)';
+        const key = `${id1}|${id2}`;
+        upsertObject(ctx, 'linefill_obj', key, { id1, id2, color: col, barIdx: ctx.barIndex });
+        return key;
+      }
+
+      // ─── Tables & dashboards ───────────────────────────────────────────
+      case 'table.new': {
+        // table.new(position,columns,rows,bgColor?,id?) — creates the
+        // backing 'table' OakPlot via upsertObject, then returns a live JS
+        // handle (same established pattern as array()/oakring()/matrix()
+        // above) wrapping plot.cells so table.cell(...) can mutate the grid
+        // without needing a real object-handle system.
+        const position = typeof args[0] === 'string' ? args[0] : 'top_right';
+        const cols = typeof args[1] === 'number' ? Math.max(1, Math.floor(args[1])) : 1;
+        const rows = typeof args[2] === 'number' ? Math.max(1, Math.floor(args[2])) : 1;
+        const bg = typeof args[3] === 'string' ? args[3] : 'rgba(20,20,30,0.85)';
+        const id = autoId(ctx, args[4], 'table');
+        const cells: OakTableCell[][] = [];
+        for (let r = 0; r < rows; r++) {
+          const row: OakTableCell[] = [];
+          for (let c = 0; c < cols; c++) row.push({ text: '' });
+          cells.push(row);
+        }
+        const plot = upsertObject(ctx, 'table', id, { position, cols, rows, bgColor: bg, cells, barIdx: ctx.barIndex });
+        const handle: any = { _type: 'OakTable', id, position, cols, rows };
+        handle.cell = (col: number, row: number, text: RuntimeValue, cellBg?: RuntimeValue, cellFg?: RuntimeValue) => {
+          const r = plot.cells?.[row];
+          if (r && r[col]) {
+            r[col].text = text != null ? String(text) : '';
+            if (typeof cellBg === 'string') r[col].bgColor = cellBg;
+            if (typeof cellFg === 'string') r[col].textColor = cellFg;
+          }
+          return null;
+        };
+        return handle;
+      }
+
+      case 'table.cell': {
+        // table.cell(handle,col,row,text,bgColor?,textColor?) — free-function
+        // form for Pine-idiom parity; delegates to the handle's own method.
+        const handle = args[0] as any;
+        if (handle && typeof handle.cell === 'function') {
+          handle.cell(args[1], args[2], args[3], args[4], args[5]);
+        }
+        return null;
+      }
+
+      case 'barcolor': {
+        // barcolor(color,pane?) — per-bar candle recolor override, NOT a
+        // persistent object (no upsertObject/id): every bar pushes its own
+        // entry, read directly by drawBars()'s barColorOverrides scan, not
+        // drawOakScriptPlots. pane is accepted for signature parity but
+        // objects/overrides in this pass are main-pane only.
+        const col = typeof args[0] === 'string' ? args[0] : '';
+        if (col) ctx.plots.push({ type: 'barcolor', name: '', color: col, barIdx: ctx.barIndex, pane: 'main' });
+        return null;
+      }
+
+      // ─── Analyst overlay tools — sugar built on line.new's upsertObject ──
+      case 'fibretracement.new': {
+        // fibretracement.new(x1,y1,x2,y2,levels?,colorUp?,colorDown?,id?)
+        // Sugar: emits N real line_obj entries (one per ratio), not a new
+        // OakPlot type.
+        const x1 = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y1 = typeof args[1] === 'number' ? args[1] : 0;
+        const x2 = typeof args[2] === 'number' ? args[2] : x1;
+        const y2 = typeof args[3] === 'number' ? args[3] : y1;
+        const levels = Array.isArray(args[4]) && args[4].length > 0
+          ? (args[4].filter((v): v is number => typeof v === 'number') as number[])
+          : [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+        const colorUp = typeof args[5] === 'string' ? args[5] : '#22cc88';
+        const colorDown = typeof args[6] === 'string' ? args[6] : '#ff4477';
+        const id = autoId(ctx, args[7], 'fib');
+        for (const ratio of levels) {
+          const price = y1 + (y2 - y1) * ratio;
+          const subId = `${id}:${ratio}`;
+          const col = ratio <= 0.5 ? colorUp : colorDown;
+          upsertObject(ctx, 'line_obj', subId, {
+            x: x1, y: price, x2, y2: price, color: col,
+            style: 'dashed', extend: 'right', barIdx: ctx.barIndex,
+          });
+        }
+        return id;
+      }
+
+      case 'gannfan.new': {
+        // gannfan.new(x1,y1,angleUnit?,color?,id?)
+        // Sugar: the 7 classic Gann angles (1x1..1x8/8x1), each a real
+        // line_obj entry via upsertObject.
+        const x1 = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y1 = typeof args[1] === 'number' ? args[1] : 0;
+        const angleUnit = typeof args[2] === 'number' ? args[2] : 1;
+        const col = typeof args[3] === 'string' ? args[3] : '#b48cff';
+        const id = autoId(ctx, args[4], 'gann');
+        const angles: [number, number][] = [[1, 1], [1, 2], [2, 1], [1, 4], [4, 1], [1, 8], [8, 1]];
+        for (const [rise, run] of angles) {
+          const slope = (angleUnit * rise) / run;
+          const subId = `${id}:${rise}x${run}`;
+          upsertObject(ctx, 'line_obj', subId, {
+            x: x1, y: y1, x2: x1 + 50, y2: y1 + slope * 50,
+            style: 'dotted', extend: 'right', color: col, barIdx: ctx.barIndex,
+          });
+        }
+        return id;
+      }
+
+      // ─── Images — import & signals ──────────────────────────────────────
+      // Source resolution (shared rule): a string starting with 'data:image/'
+      // is used directly as imageRef; otherwise it's looked up by exact name
+      // in ctx.imageAssets (the saved-asset library threaded into
+      // executeScript), defaulting to '' if not found/not provided.
+      case 'image.new': {
+        // image.new(x,y,source,width?,height?,anchor?,opacity?,rotation?,id?)
+        // width/height/opacity are pixels/0..1 (screen-space, not price
+        // units); rotation reuses the existing rz field (degrees).
+        const x = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y = typeof args[1] === 'number' ? args[1] : 0;
+        const source = typeof args[2] === 'string' ? args[2] : '';
+        const imageRef = source.startsWith('data:image/') ? source : (ctx.imageAssets?.get(source) ?? '');
+        const width = typeof args[3] === 'number' ? args[3] : 48;
+        const height = typeof args[4] === 'number' ? args[4] : 48;
+        const anchor = typeof args[5] === 'string' ? args[5] : 'center';
+        const opacity = typeof args[6] === 'number' ? args[6] : 1;
+        const rotation = typeof args[7] === 'number' ? args[7] : 0;
+        const id = autoId(ctx, args[8], 'image');
+        upsertObject(ctx, 'image_obj', id, {
+          x, y, imageRef, imgWidth: width, imgHeight: height,
+          position: anchor, opacity, rz: rotation, barIdx: ctx.barIndex,
+        });
+        return id;
+      }
+
+      case 'plotimage': {
+        // plotimage(bar_index,price,source,width?,height?,pane?,id?) — a
+        // per-bar signal marker (pushed directly, not via upsertObject —
+        // one entry per firing bar), parallel to plotshape/plotarrow/plotchar
+        // above. Same source-resolution rule as image.new.
+        const barIdx = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const price = typeof args[1] === 'number' ? args[1] : 0;
+        const source = typeof args[2] === 'string' ? args[2] : '';
+        const imageRef = source.startsWith('data:image/') ? source : (ctx.imageAssets?.get(source) ?? '');
+        const width = typeof args[3] === 'number' ? args[3] : 24;
+        const height = typeof args[4] === 'number' ? args[4] : 24;
+        const pane = args[5] === 'separate' ? 'separate' : 'main';
+        ctx.plots.push({ type: 'shape', name: '', style: 'image', imageRef, imgWidth: width, imgHeight: height, price, barIdx, pane });
+        return true;
+      }
+
+      case 'plotimage_3d': {
+        // plotimage_3d(bar_index,price,source,size?,z_level?,pane?,rx?,ry?,rz?)
+        // Parallel to plotshape_3d above, but shape3d is fixed to 'image'
+        // (no title/color args — images aren't colorized). Same
+        // source-resolution rule as image.new.
+        const barIdx = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const price = typeof args[1] === 'number' ? args[1] : 0;
+        const source = typeof args[2] === 'string' ? args[2] : '';
+        const imageRef = source.startsWith('data:image/') ? source : (ctx.imageAssets?.get(source) ?? '');
+        const size = typeof args[3] === 'number' ? args[3] : 1;
+        const z_level = typeof args[4] === 'number' ? args[4] : 0;
+        const pane = (args[5] === '3d' || args[5] === 'main' ? args[5] : 'separate') as 'main' | 'separate' | '3d';
+        const rx = typeof args[6] === 'number' ? args[6] : 0;
+        const ry = typeof args[7] === 'number' ? args[7] : 0;
+        const rz = typeof args[8] === 'number' ? args[8] : 0;
+        ctx.plots.push({
+          type: 'plot3d_shape', name: '',
+          barIdx, price, imageRef,
+          shape3d: 'image',
+          size, z_level,
+          pane, rx, ry, rz,
+        });
+        return true;
+      }
+
       case 'label': {
         const labelType = typeof args[0] === 'string' ? args[0] : 'new';
         if (labelType === 'new') {
@@ -894,19 +1282,54 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
           const y = args[2] as number;
           const text = String(args[3] || '');
           const col = typeof args[4] === 'object' ? (args[4] as any)?.color : '#ffffff';
-          ctx.plots.push({ type: 'label', name: '', x, y, text, color: String(col) });
+          // Neither this legacy form nor label.new below carries an id
+          // parameter, so there's no stable identity to mutate in place —
+          // dedupe/cap by VALUE instead (same key shape as hline's dedup),
+          // mirroring upsertObject's rolling-cap eviction so an unconditional
+          // or repeatedly-true-conditional label() can't accumulate forever.
+          const key = `${x}|${y}|${text}`;
+          upsertObject(ctx, 'label', key, { x, y, text, color: String(col), barIdx: x });
         }
         return null;
       }
 
       case 'label.new': {
-        // label.new(x, y, text, color) — proper namespaced form.
+        // label.new(x, y, text, color?, size?, boxed?, align?) — proper
+        // namespaced form. size/boxed/align are additive trailing args
+        // (boxed defaults true); existing x/y/text/color positional meaning
+        // is unchanged. text.new below is the same idea with boxed
+        // defaulting false and its own id.
         const x = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
         const y = typeof args[1] === 'number' ? args[1] : 0;
         const text = String(args[2] ?? '');
         const col = typeof args[3] === 'string' ? args[3] : '#ffffff';
-        ctx.plots.push({ type: 'label', name: '', x, y, text, color: col, barIdx: x });
+        const size = typeof args[4] === 'number' ? args[4] : undefined;
+        const boxed = typeof args[5] === 'boolean' ? args[5] : true;
+        const align = typeof args[6] === 'string' ? args[6] : undefined;
+        // Same value-keyed dedup as the legacy label() case above — no id
+        // parameter exists on this signature, so (x,y,text) IS the identity;
+        // an unconditional label.new with a changing text/position still
+        // accumulates (correctly, that's genuinely a new label each time),
+        // capped by OBJECT_CAPS so it can't grow without bound.
+        const key = `${x}|${y}|${text}`;
+        upsertObject(ctx, 'label', key, { x, y, text, color: col, barIdx: x, size, boxed, align });
         return null;
+      }
+
+      case 'text.new': {
+        // text.new(x,y,text,color?,size?,id?) — thin sugar over label.new
+        // with boxed defaulting false (label.new above defaults true); has
+        // its own optional id (label.new does not) and returns it. Unlike
+        // the value-keyed cases above, a real id means true same-id-updates-
+        // in-place semantics, same as line.new/box.new/etc.
+        const x = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
+        const y = typeof args[1] === 'number' ? args[1] : 0;
+        const text = String(args[2] ?? '');
+        const col = typeof args[3] === 'string' ? args[3] : '#ffffff';
+        const size = typeof args[4] === 'number' ? args[4] : undefined;
+        const id = autoId(ctx, args[5], 'text');
+        upsertObject(ctx, 'label', id, { x, y, text, color: col, barIdx: x, size, boxed: false });
+        return id;
       }
 
       case 'color.new': {
