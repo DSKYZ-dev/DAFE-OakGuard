@@ -12,6 +12,7 @@ __pycache__/
 
 # Backend
 backend/settings.json
+backend/.vault_key
 
 # Logs
 *.log

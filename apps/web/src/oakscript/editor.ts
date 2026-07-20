@@ -10,6 +10,7 @@ import { getDocumentation, type DocSection } from './docs';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
 import { runBacktest, runBacktestOnBars, BacktestCancelledError } from '../backtest/engine';
+import { playTone } from '../accessibility';
 import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
 import { renderEquityCurve } from '../backtest/chart';
@@ -321,6 +322,8 @@ export function sendAlert(alert: OakAlert, notify: boolean = true): void {
   if (alertHistory.length > 100) alertHistory = alertHistory.slice(0, 100);
 
   if (!notify) return;
+
+  playTone('alert');
 
   if (Notification.permission === 'granted') {
     new Notification('OakScript Alert: ' + alert.type, {

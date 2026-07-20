@@ -7,6 +7,7 @@
 // or consensus involved: this proves internal self-consistency (nothing was
 // silently altered after the fact), not who performed an action.
 import { sha256Hex } from './crypto-utils';
+import { signalColors } from './accessibility';
 
 export interface LedgerEntry {
   seq: number;
@@ -161,10 +162,10 @@ export function showLedgerModal(): void {
       verifyStatus.textContent = result.checkedCount === 0
         ? 'Ledger is empty.'
         : `✓ Chain intact — ${result.checkedCount} entries verified.${result.prunedBefore ? ' (Oldest entries have been pruned; verified from the oldest entry still stored.)' : ''}`;
-      verifyStatus.style.color = '#22cc88';
+      verifyStatus.style.color = signalColors().bull;
     } else {
       verifyStatus.textContent = `✗ BROKEN at entry ${result.brokenAtSeq}: ${result.reason}`;
-      verifyStatus.style.color = '#ff4477';
+      verifyStatus.style.color = signalColors().bear;
     }
     verifyBtn.disabled = false;
   };

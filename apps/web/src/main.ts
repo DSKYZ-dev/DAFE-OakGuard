@@ -60,6 +60,11 @@ import { registerWidget, initWidgetMenu } from './widget-registry';
 import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
 import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
 import { appendLedgerEntry, showLedgerModal } from './ledger';
+import {
+  signalColors, playTone,
+  isAccessiblePaletteEnabled, setAccessiblePaletteEnabled,
+  isSonificationEnabled, setSonificationEnabled,
+} from './accessibility';
 import { detectCurrency } from './trading/currency';
 import type { OrderType } from './trading/broker-port';
 import {
@@ -1436,6 +1441,7 @@ broker.onFill((fill) => {
     qty: fill.qty, price: fill.price, commission: fill.commission,
     slippage: fill.slippage, timestamp: fill.timestamp,
   });
+  playTone(fill.side === 'buy' ? 'buy' : 'sell');
 });
 broker.onOrderUpdate(() => renderTradeOrders());
 
@@ -1491,7 +1497,8 @@ function renderTradePositions(): void {
   list.innerHTML = positions.map(p => {
     const px = transformed[transformed.length - 1]?.close ?? p.avgPrice;
     const unreal = (px - p.avgPrice) * p.qty;
-    return `<div class="trade-list-row"><span class="pos-info">${escapeHtml(p.symbol)} ${p.qty > 0 ? 'LONG' : 'SHORT'} ${Math.abs(p.qty)} @ ${p.avgPrice.toFixed(2)}<button class="close-position" data-close-symbol="${escapeHtml(p.symbol)}">Close</button></span><span class="${unreal >= 0 ? 'pos' : 'neg'}" style="color:${unreal >= 0 ? '#22cc88' : '#ff4477'}">${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}</span></div>`;
+    const plColor = unreal >= 0 ? signalColors().bull : signalColors().bear;
+    return `<div class="trade-list-row"><span class="pos-info">${escapeHtml(p.symbol)} ${p.qty > 0 ? 'LONG' : 'SHORT'} ${Math.abs(p.qty)} @ ${p.avgPrice.toFixed(2)}<button class="close-position" data-close-symbol="${escapeHtml(p.symbol)}">Close</button></span><span class="${unreal >= 0 ? 'pos' : 'neg'}" style="color:${plColor}">${unreal >= 0 ? '+' : ''}${unreal.toFixed(2)}</span></div>`;
   }).join('');
   list.querySelectorAll('.close-position').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -2196,6 +2203,26 @@ CRITICAL RULES:
     settingsPanel?.classList.remove('active');
     showLedgerModal();
   });
+
+  const paletteEl = document.getElementById('set-accessible-palette') as HTMLInputElement | null;
+  if (paletteEl) {
+    paletteEl.checked = isAccessiblePaletteEnabled();
+    paletteEl.addEventListener('change', () => {
+      setAccessiblePaletteEnabled(paletteEl.checked);
+      renderTradePositions();
+    });
+  }
+  const sonificationEl = document.getElementById('set-sonification') as HTMLInputElement | null;
+  if (sonificationEl) {
+    sonificationEl.checked = isSonificationEnabled();
+    sonificationEl.addEventListener('change', () => {
+      setSonificationEnabled(sonificationEl.checked);
+      // The checkbox click IS the user gesture Web Audio needs before it
+      // will produce sound — confirm the toggle actually works right away
+      // rather than the user only finding out on their next alert/fill.
+      if (sonificationEl.checked) playTone('alert');
+    });
+  }
 
   document.getElementById('perf-select')?.addEventListener('change', () => {
     const val = (document.getElementById('perf-select') as HTMLSelectElement)?.value;

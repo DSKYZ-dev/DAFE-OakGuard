@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 import model_manager as mm
+import vault
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -89,14 +90,25 @@ def _is_cloud_model_name(name: str) -> bool:
     return n.endswith("-cloud") or ":cloud" in n
 
 
+# Ironclad Vault: the only three fields in settings.json sensitive enough to
+# encrypt at rest — a broker password and two third-party API keys. Every
+# other setting (provider choice, model name, ...) is not a secret.
+_VAULT_FIELDS = ("massive_api_key", "serpapi_api_key", "tradovate_password")
+
 def load_settings() -> dict[str, Any]:
     s = dict(DEFAULTS)
+    needs_migration = False
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 s.update(json.load(f))
         except Exception:
             pass
+    for field in _VAULT_FIELDS:
+        raw = s.get(field, "")
+        if raw and not vault.is_encrypted(raw):
+            needs_migration = True
+        s[field] = vault.decrypt(raw)
     # Migration: older versions had a single "ollama" provider covering both
     # the local daemon and its signed-in cloud models. If a saved model tag is
     # clearly a cloud tag, surface it as the explicit "ollama-cloud" provider
@@ -105,11 +117,27 @@ def load_settings() -> dict[str, Any]:
                                 ("llm_coder_provider", "llm_coder_model")):
         if s.get(prov_key) == "ollama" and _is_cloud_model_name(str(s.get(model_key, ""))):
             s[prov_key] = "ollama-cloud"
+    if needs_migration:
+        # A pre-vault settings.json had one or more of these fields in
+        # cleartext — encrypt them on disk immediately rather than waiting
+        # for the user to next hit "Save" on the settings panel, which they
+        # may never do if nothing else needs changing.
+        try:
+            save_settings(s)
+        except Exception:
+            pass
     return s
 
 def save_settings(data: dict[str, Any]) -> None:
+    # Encrypt a COPY for the on-disk write — callers (api_save_settings) keep
+    # using their own `data` dict as plaintext afterward, e.g. to build the
+    # masked API response, and must not see it silently turn into ciphertext
+    # out from under them.
+    to_write = dict(data)
+    for field in _VAULT_FIELDS:
+        to_write[field] = vault.encrypt(to_write.get(field, "") or "")
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+        json.dump(to_write, f, indent=2)
 
 def mask_key(k: str) -> str:
     # Long secrets: show first/last 4 with the middle starred. Short but

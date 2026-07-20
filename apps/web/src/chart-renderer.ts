@@ -3,6 +3,7 @@ import type { BarType, PerBarVolume } from './data-generator';
 import type { OakPlot } from './oakscript';
 import type { VPComputed } from './volume-profile';
 import { resolveImage } from './image-cache';
+import { signalColors } from './accessibility';
 
 export type PerfMode = 'low' | 'medium' | 'high' | 'ultra';
 let _perf: PerfMode = 'high';
@@ -921,7 +922,7 @@ export function drawTradeMarkers(ctx: CanvasRenderingContext2D, bars: BaseBar[],
     const y = isBuy
       ? priceToY(bar.low, minP, pRange, height, view) + size + 6
       : priceToY(bar.high, minP, pRange, height, view) - size - 6;
-    const col = isBuy ? '#22cc88' : '#ff4477';
+    const col = isBuy ? signalColors().bull : signalColors().bear;
 
     ctx.save();
     ctx.shadowBlur = 6;
