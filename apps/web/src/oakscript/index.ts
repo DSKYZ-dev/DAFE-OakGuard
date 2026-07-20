@@ -6,7 +6,7 @@ export { StdLib } from './runtime';
 export type { OakPlot, OakContext } from './runtime';
 export type { RuntimeValue, RuntimeContext, RuntimeBarData, PlotResult } from './interpreter';
 export { executeScript } from './interpreter';
-export { createEditor, toggleEditor, runScript, getCurrentResult, showErrors, showResults, getDefaultScript, isEditorVisible, getStoredOverrides, setStoredOverrides, detectInputs, setSendErrorsCallback, setAgentActionCallback, setAgentChatCallback, setToggleVisibilityCallback, setImageAssetsChangedCallback, registerEditorShortcuts } from './editor';
+export { createEditor, toggleEditor, runScript, getCurrentResult, showErrors, showResults, getDefaultScript, isEditorVisible, getStoredOverrides, setStoredOverrides, detectInputs, setSendErrorsCallback, setAgentActionCallback, setAgentChatCallback, setToggleVisibilityCallback, setImageAssetsChangedCallback, setChartContextCallback, registerEditorShortcuts } from './editor';
 export type { OakscriptResult, InputDef, ParsedError } from './editor';
 export { getIndicators, getCategories, getIndicatorByName, saveUserIndicator, removeUserIndicator, getUserIndicators } from './indicators';
 export type { IndicatorDef } from './indicators';

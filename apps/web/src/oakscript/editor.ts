@@ -6,6 +6,10 @@ import { getIndicators, getCategories, type IndicatorDef, saveUserIndicator, get
 import { getDocumentation, type DocSection } from './docs';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
+import { runBacktest, BacktestCancelledError } from '../backtest/engine';
+import { MAX_BACKTEST_BARS } from '../backtest/data';
+import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
+import { renderEquityCurve } from '../backtest/chart';
 
 export interface OakscriptResult {
   plots: OakPlot[];
@@ -41,9 +45,13 @@ let textarea: HTMLTextAreaElement | null = null;
 let errorListDiv: HTMLDivElement | null = null;
 let docPanel: HTMLDivElement | null = null;
 let imagesPanel: HTMLDivElement | null = null;
+let backtestPanel: HTMLDivElement | null = null;
 let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
+let lastBacktestConfig: Partial<BacktestConfig> | null = null;
+let lastBacktestResult: BacktestResult | null = null;
+let backtestAbortController: AbortController | null = null;
 
 const DEFAULT_SCRIPT = `//DAFE Trading Systems - DskyzInvestment
 `;
@@ -261,6 +269,15 @@ export function setImageAssetsChangedCallback(cb: () => void): void {
   onImageAssetsChanged = cb;
 }
 
+// Lets the Backtest panel pre-fill its symbol/timeframe fields from the
+// live chart's current state instead of starting blank every time. A
+// synchronous getter (not a push callback) since the panel only needs the
+// value at the moment it opens.
+let onGetChartContext: (() => { symbol: string; timeframe: string; baseUrl?: string }) | null = null;
+export function setChartContextCallback(cb: () => { symbol: string; timeframe: string; baseUrl?: string }): void {
+  onGetChartContext = cb;
+}
+
 export function createEditor(container: HTMLElement, onRun: (source: string) => void): { panel: HTMLDivElement; textarea: HTMLTextAreaElement } {
   onRunCallback = onRun;
 
@@ -272,6 +289,12 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     background: 'rgba(8, 8, 20, 0.95)', border: '1px solid rgba(180, 140, 255, 0.15)',
     borderRadius: '10px', display: 'none', flexDirection: 'column', zIndex: '10001',
     backdropFilter: 'blur(12px)', boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
+    // Without this, content taller than the panel's own height (e.g. a
+    // populated Backtest results section) paints OUTSIDE this box instead
+    // of clipping/scrolling — visually bleeding onto whatever is
+    // positioned underneath (confirmed live: scrollHeight can exceed
+    // clientHeight once results are shown).
+    overflowY: 'auto',
   });
 
   // ── Header (draggable) ─────────────────────────────────────────
@@ -654,12 +677,19 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(imagesBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   imagesBtn.onclick = () => toggleImages();
 
+  const backtestBtn = document.createElement('button');
+  backtestBtn.textContent = '⏱️ Backtest';
+  backtestBtn.title = 'Time Machine — backtest this script against historical data';
+  Object.assign(backtestBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
+  backtestBtn.onclick = () => toggleBacktest();
+
   controls.appendChild(viewBtn);
   controls.appendChild(saveBtn);
   controls.appendChild(manageBtn);
   controls.appendChild(indSelect);
   controls.appendChild(docsBtn);
   controls.appendChild(imagesBtn);
+  controls.appendChild(backtestBtn);
 
   const applyBtn = document.createElement('button');
   applyBtn.textContent = '▶ Apply';
@@ -766,6 +796,16 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     flexShrink: '0',
   });
   editorPanel.appendChild(imagesPanel);
+
+  // ── Backtest (Time Machine) Panel ─────────────────────────────────
+  backtestPanel = document.createElement('div');
+  backtestPanel.id = 'oakscript-backtest';
+  Object.assign(backtestPanel.style, {
+    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '420px',
+    borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
+    flexShrink: '0',
+  });
+  editorPanel.appendChild(backtestPanel);
 
   // ── Agent Chat Box ────────────────────────────────────────────
   const agentChat = document.createElement('div');
@@ -1400,6 +1440,306 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+// ─── Backtest (Time Machine) Panel ───────────────────────────────────
+const BT_IN_SAMPLE_COLOR = '#22cc88';
+const BT_OUT_OF_SAMPLE_COLOR = '#22aaff';
+
+function toggleBacktest(): void {
+  if (!backtestPanel) return;
+  const isVisible = backtestPanel.style.display !== 'none';
+  backtestPanel.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) renderBacktest();
+}
+
+function renderBacktest(): void {
+  if (!backtestPanel) return;
+  backtestPanel.innerHTML = '';
+
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
+    zIndex: '1',
+  });
+  const headerTitle = document.createElement('div');
+  headerTitle.textContent = '⏱️ Time Machine — Backtest';
+  Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '4px' });
+  header.appendChild(headerTitle);
+  backtestPanel.appendChild(header);
+
+  const chartCtx = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const cfg = {
+    symbol: lastBacktestConfig?.symbol ?? chartCtx.symbol ?? 'SPY',
+    timeframe: lastBacktestConfig?.timeframe ?? chartCtx.timeframe ?? '1h',
+    barCount: lastBacktestConfig?.barCount ?? 500,
+    inSamplePct: lastBacktestConfig?.inSamplePct ?? 70,
+    qtyPerTrade: lastBacktestConfig?.qtyPerTrade ?? 1,
+    startingCash: lastBacktestConfig?.startingCash ?? 10000,
+    stopLossMode: lastBacktestConfig?.stopLossMode ?? 'none',
+    stopLossValue: lastBacktestConfig?.stopLossValue ?? 2,
+    takeProfitMode: lastBacktestConfig?.takeProfitMode ?? 'none',
+    takeProfitValue: lastBacktestConfig?.takeProfitValue ?? 4,
+  };
+
+  const formWrap = document.createElement('div');
+  Object.assign(formWrap.style, { padding: '6px 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
+
+  function fieldInputStyle() {
+    return {
+      width: '100%', padding: '3px 5px', boxSizing: 'border-box' as const,
+      border: '1px solid rgba(180, 140, 255, 0.15)', borderRadius: '4px',
+      background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.7)',
+      fontSize: '10px', outline: 'none',
+    };
+  }
+  function field(labelText: string, input: HTMLInputElement | HTMLSelectElement, width: string): HTMLDivElement {
+    const wrap = document.createElement('div');
+    Object.assign(wrap.style, { display: 'flex', flexDirection: 'column', gap: '2px', width });
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    Object.assign(label.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+    Object.assign(input.style, fieldInputStyle());
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  const symbolInput = document.createElement('input');
+  symbolInput.type = 'text'; symbolInput.value = cfg.symbol;
+  const timeframeInput = document.createElement('input');
+  timeframeInput.type = 'text'; timeframeInput.value = cfg.timeframe;
+  const barCountInput = document.createElement('input');
+  barCountInput.type = 'number'; barCountInput.min = '50'; barCountInput.max = String(MAX_BACKTEST_BARS);
+  barCountInput.value = String(cfg.barCount);
+  const inSampleInput = document.createElement('input');
+  inSampleInput.type = 'number'; inSampleInput.min = '10'; inSampleInput.max = '90';
+  inSampleInput.value = String(cfg.inSamplePct);
+  const qtyInput = document.createElement('input');
+  qtyInput.type = 'number'; qtyInput.min = '1'; qtyInput.step = '1'; qtyInput.value = String(cfg.qtyPerTrade);
+  const cashInput = document.createElement('input');
+  cashInput.type = 'number'; cashInput.min = '1'; cashInput.value = String(cfg.startingCash);
+
+  // Optional bracket orders — reuse PaperBroker's existing 'stop'/
+  // 'trailing-stop'/'limit' order types (see engine.ts's
+  // placeBracketOrders()); "None" (default) preserves the exact pre-bracket
+  // behavior where entries only ever close via the script's own
+  // strategy.exit(). Value inputs stay always-visible/enabled — the mode
+  // dropdown alone decides whether they're used, deliberately no
+  // show/hide wiring for a 2-field form.
+  const slModeSelect = document.createElement('select');
+  for (const [val, label] of [
+    ['none', 'None'], ['fixed-pct', 'Fixed %'], ['fixed-amount', 'Fixed $'],
+    ['trailing-pct', 'Trailing %'], ['trailing-amount', 'Trailing $'],
+  ] as [StopLossMode, string][]) {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (val === cfg.stopLossMode) opt.selected = true;
+    slModeSelect.appendChild(opt);
+  }
+  const slValueInput = document.createElement('input');
+  slValueInput.type = 'number'; slValueInput.min = '0.01'; slValueInput.step = '0.01';
+  slValueInput.value = String(cfg.stopLossValue);
+  slValueInput.title = 'Interpreted as % or $ depending on the Stop-Loss mode selected';
+
+  const tpModeSelect = document.createElement('select');
+  for (const [val, label] of [
+    ['none', 'None'], ['fixed-pct', 'Fixed %'], ['fixed-amount', 'Fixed $'],
+  ] as [TakeProfitMode, string][]) {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (val === cfg.takeProfitMode) opt.selected = true;
+    tpModeSelect.appendChild(opt);
+  }
+  const tpValueInput = document.createElement('input');
+  tpValueInput.type = 'number'; tpValueInput.min = '0.01'; tpValueInput.step = '0.01';
+  tpValueInput.value = String(cfg.takeProfitValue);
+  tpValueInput.title = 'Interpreted as % or $ depending on the Take-Profit mode selected';
+
+  formWrap.appendChild(field('Symbol', symbolInput, '90px'));
+  formWrap.appendChild(field('Timeframe', timeframeInput, '70px'));
+  formWrap.appendChild(field(`Bars (max ${MAX_BACKTEST_BARS})`, barCountInput, '110px'));
+  formWrap.appendChild(field('In-sample %', inSampleInput, '90px'));
+  formWrap.appendChild(field('Qty/trade', qtyInput, '80px'));
+  formWrap.appendChild(field('Starting cash', cashInput, '100px'));
+  formWrap.appendChild(field('Stop-Loss', slModeSelect, '100px'));
+  formWrap.appendChild(field('SL Value', slValueInput, '80px'));
+  formWrap.appendChild(field('Take-Profit', tpModeSelect, '100px'));
+  formWrap.appendChild(field('TP Value', tpValueInput, '80px'));
+  backtestPanel.appendChild(formWrap);
+
+  const actionsRow = document.createElement('div');
+  Object.assign(actionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 8px' });
+
+  const runBtn = document.createElement('button');
+  runBtn.textContent = '▶ Run Backtest';
+  Object.assign(runBtn.style, {
+    padding: '4px 10px', border: '1px solid rgba(34,204,136,0.4)',
+    borderRadius: '4px', background: 'rgba(34,204,136,0.15)',
+    color: '#22cc88', cursor: 'pointer', fontSize: '10px', fontWeight: '700',
+  });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '✕ Cancel';
+  Object.assign(cancelBtn.style, {
+    padding: '4px 10px', border: '1px solid rgba(255,68,119,0.4)',
+    borderRadius: '4px', background: 'rgba(255,68,119,0.1)',
+    color: '#ff4477', cursor: 'pointer', fontSize: '10px', fontWeight: '600',
+    display: 'none',
+  });
+
+  const statusMsg = document.createElement('span');
+  Object.assign(statusMsg.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+
+  actionsRow.appendChild(runBtn);
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(statusMsg);
+  backtestPanel.appendChild(actionsRow);
+
+  const resultsDiv = document.createElement('div');
+  Object.assign(resultsDiv.style, { padding: '0 10px 10px' });
+  backtestPanel.appendChild(resultsDiv);
+
+  function statBlock(stats: BacktestResult['inSample'], color: string): HTMLDivElement {
+    const block = document.createElement('div');
+    Object.assign(block.style, {
+      flex: '1', minWidth: '160px', border: `1px solid ${color}33`, borderRadius: '5px',
+      padding: '6px 8px', background: `${color}0d`,
+    });
+    const title = document.createElement('div');
+    title.textContent = stats.label === 'in-sample' ? 'In-Sample' : 'Out-of-Sample';
+    Object.assign(title.style, { color, fontSize: '10px', fontWeight: '700', marginBottom: '4px' });
+    block.appendChild(title);
+
+    const rows: [string, string][] = [
+      ['Net P&L', `$${stats.netPnL.toFixed(2)} (${(stats.netPnLPct * 100).toFixed(1)}%)`],
+      ['Max drawdown', `$${stats.maxDrawdown.toFixed(2)} (${(stats.maxDrawdownPct * 100).toFixed(1)}%)`],
+      ['Sharpe (per-bar, unannualized)', stats.sharpePerBar.toFixed(3)],
+      ['Win rate', `${(stats.winRate * 100).toFixed(1)}% (${stats.totalTrades} trades)`],
+      ['Avg win / loss', `$${stats.avgWin.toFixed(2)} / $${stats.avgLoss.toFixed(2)}`],
+    ];
+    for (const [label, value] of rows) {
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display: 'flex', justifyContent: 'space-between', fontSize: '9px',
+        color: 'rgba(255,255,255,0.6)', padding: '1px 0',
+      });
+      const l = document.createElement('span');
+      l.textContent = label; l.style.color = 'rgba(255,255,255,0.35)';
+      const v = document.createElement('span');
+      v.textContent = value;
+      row.appendChild(l); row.appendChild(v);
+      block.appendChild(row);
+    }
+    return block;
+  }
+
+  function renderResults(result: BacktestResult): void {
+    resultsDiv.innerHTML = '';
+
+    // Required, always-visible whenever a result is shown — never render
+    // stats without it directly above them.
+    const disclaimer = document.createElement('div');
+    disclaimer.textContent = 'Backtest results use a single fixed historical split and simplified next-bar-open fills. Past performance on this data does not predict live results. This is not financial advice.';
+    Object.assign(disclaimer.style, {
+      fontSize: '9px', color: 'rgba(255,200,80,0.85)', background: 'rgba(255,200,80,0.08)',
+      border: '1px solid rgba(255,200,80,0.2)', borderRadius: '4px', padding: '5px 7px', marginBottom: '6px',
+    });
+    resultsDiv.appendChild(disclaimer);
+
+    if (result.scriptErrors.length > 0) {
+      const errBox = document.createElement('div');
+      const shown = result.scriptErrors.slice(0, 3).join(' | ');
+      const more = result.scriptErrors.length > 3 ? ` (+${result.scriptErrors.length - 3} more)` : '';
+      errBox.textContent = `Script errors during backtest: ${shown}${more}`;
+      Object.assign(errBox.style, {
+        fontSize: '9px', color: '#ff4477', background: 'rgba(255,68,119,0.08)',
+        border: '1px solid rgba(255,68,119,0.2)', borderRadius: '4px', padding: '5px 7px', marginBottom: '6px',
+      });
+      resultsDiv.appendChild(errBox);
+    }
+
+    const canvas = document.createElement('canvas');
+    Object.assign(canvas.style, { width: '100%', height: '140px', display: 'block' });
+    resultsDiv.appendChild(canvas);
+    // Deferred a frame so clientWidth/clientHeight are resolved post-layout.
+    requestAnimationFrame(() => renderEquityCurve(canvas, result));
+
+    // Always shown side by side, never just one sample alone — so a result
+    // can't be mistaken for genuine out-of-sample performance.
+    const statsRow = document.createElement('div');
+    Object.assign(statsRow.style, { display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' });
+    statsRow.appendChild(statBlock(result.inSample, BT_IN_SAMPLE_COLOR));
+    statsRow.appendChild(statBlock(result.outOfSample, BT_OUT_OF_SAMPLE_COLOR));
+    resultsDiv.appendChild(statsRow);
+  }
+
+  runBtn.onclick = async () => {
+    const config: BacktestConfig = {
+      symbol: symbolInput.value.trim().toUpperCase() || 'SPY',
+      timeframe: timeframeInput.value.trim() || '1h',
+      barCount: Math.max(50, Math.min(MAX_BACKTEST_BARS, parseInt(barCountInput.value, 10) || 500)),
+      inSamplePct: Math.max(10, Math.min(90, parseInt(inSampleInput.value, 10) || 70)),
+      qtyPerTrade: Math.max(1, parseFloat(qtyInput.value) || 1),
+      startingCash: Math.max(1, parseFloat(cashInput.value) || 10000),
+      stopLossMode: slModeSelect.value as StopLossMode,
+      stopLossValue: Math.max(0.01, parseFloat(slValueInput.value) || 2),
+      takeProfitMode: tpModeSelect.value as TakeProfitMode,
+      takeProfitValue: Math.max(0.01, parseFloat(tpValueInput.value) || 4),
+      baseUrl: chartCtx.baseUrl,
+    };
+    lastBacktestConfig = config;
+
+    const source = textarea ? textarea.value : '';
+    if (!source.trim()) {
+      statusMsg.textContent = 'Editor is empty — nothing to backtest.';
+      statusMsg.style.color = '#ff4477';
+      return;
+    }
+
+    resultsDiv.innerHTML = '';
+    runBtn.disabled = true;
+    runBtn.textContent = 'Running...';
+    cancelBtn.style.display = 'inline-block';
+    statusMsg.style.color = 'rgba(255,255,255,0.4)';
+
+    const controller = new AbortController();
+    backtestAbortController = controller;
+
+    try {
+      const result = await runBacktest(config, source, {
+        signal: controller.signal,
+        onProgress: (stage) => {
+          statusMsg.textContent =
+            stage === 'fetching' ? 'Fetching historical bars...' :
+            stage === 'running-script' ? 'Running script (signal collection)...' :
+            stage === 'replaying' ? 'Replaying fills...' : 'Done.';
+        },
+      });
+      lastBacktestResult = result;
+      statusMsg.textContent = `Done — ${result.totalBars} bars, ${result.trades.length} trades.`;
+      renderResults(result);
+    } catch (e: any) {
+      if (e instanceof BacktestCancelledError) {
+        statusMsg.textContent = 'Cancelled.';
+      } else {
+        statusMsg.textContent = `Backtest failed: ${e?.message || e}`;
+        statusMsg.style.color = '#ff4477';
+      }
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = '▶ Run Backtest';
+      cancelBtn.style.display = 'none';
+      backtestAbortController = null;
+    }
+  };
+
+  cancelBtn.onclick = () => {
+    backtestAbortController?.abort();
+  };
+
+  if (lastBacktestResult) renderResults(lastBacktestResult);
 }
 
 export function showResults(errors: string[], _inputs: InputDef[]): void {

@@ -27,7 +27,7 @@ export interface BuiltinStyleCheck {
 export interface BuiltinDef {
   /** Dotted or bare builtin name, e.g. 'line.new', 'plotimage', 'sma'. */
   name: string;
-  category: 'drawing_2d' | 'drawing_analyst' | 'image' | 'existing';
+  category: 'drawing_2d' | 'drawing_analyst' | 'image' | 'backtest' | 'mtf' | 'existing';
   minArgs: number;
   maxArgs: number;
   /** Positional argument names, in order (optional args are suffixed '?'). */
@@ -65,6 +65,10 @@ export const TABLE_POSITIONS = new Set([
   'bottom_left', 'bottom_right', 'bottom_center',
 ]);
 export const IMAGE_ANCHORS = new Set(['center', 'top_left', 'top_right', 'bottom_left', 'bottom_right']);
+export const STRATEGY_DIRECTIONS = new Set(['long', 'short']);
+export const SECURITY_TIMEFRAMES = new Set([
+  '1s', '5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w',
+]);
 
 // ─── Registry ────────────────────────────────────────────────────────────
 export const BUILTIN_REGISTRY: BuiltinDef[] = [
@@ -305,6 +309,29 @@ export const BUILTIN_REGISTRY: BuiltinDef[] = [
     name: 'plotimage_3d', category: 'image', minArgs: 3, maxArgs: 9,
     argDescriptions: ['bar_index', 'price', 'source', 'size?', 'z_level?', 'pane?', 'rx?', 'ry?', 'rz?'],
     summary: 'Draws a 3D billboard image sprite at a bar/price/z-level.',
+  },
+
+  // ── New — backtest strategy orders (Time Machine) ──────────────────────
+  {
+    name: 'strategy.entry', category: 'backtest', minArgs: 1, maxArgs: 3,
+    argDescriptions: ['direction', 'id?', 'qty?'],
+    styleChecks: [{ argIndex: 0, values: STRATEGY_DIRECTIONS, code: 'UNKNOWN_STRATEGY_DIRECTION', label: 'strategy.entry direction' }],
+    hasIdArg: true,
+    summary: 'Backtest-only: opens a position for this symbol (no-op if one is already open). Position-level, not id-level.',
+  },
+  {
+    name: 'strategy.exit', category: 'backtest', minArgs: 0, maxArgs: 1,
+    argDescriptions: ['id?'],
+    hasIdArg: true,
+    summary: 'Backtest-only: closes the open position for this symbol (no-op if none is open). Not a bracket-order (stop/limit/trailing) clone.',
+  },
+
+  // ── New — confirmed-only multi-timeframe confluence ─────────────────────
+  {
+    name: 'security', category: 'mtf', minArgs: 2, maxArgs: 2,
+    argDescriptions: ['timeframe', 'source'],
+    styleChecks: [{ argIndex: 0, values: SECURITY_TIMEFRAMES, code: 'UNKNOWN_SECURITY_TIMEFRAME', label: 'security timeframe' }],
+    summary: 'Reads a higher timeframe\'s last CONFIRMED (fully closed) value of source, aggregated from bars already loaded — never the still-forming bucket. NaN if timeframe is unknown or not coarser than the loaded resolution.',
   },
 ];
 

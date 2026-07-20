@@ -72,6 +72,14 @@ export interface OakAlert {
   price: number;
 }
 
+export interface OakStrategyOrder {
+  kind: 'entry' | 'exit';
+  direction?: 'long' | 'short';
+  id: string;
+  qty?: number;
+  barIdx: number;
+}
+
 export interface OakContext {
   barIndex: number;
   barCount: number;

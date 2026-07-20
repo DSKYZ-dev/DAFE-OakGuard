@@ -2,7 +2,7 @@ import type { Program, ASTNode } from './ast';
 import type { Identifier, NumberLiteral, StringLiteral, BooleanLiteral, ArrayLiteral, NilLiteral } from './ast';
 import type { BinaryExpr, UnaryExpr, TernaryExpr, CallExpr, IndexExpr, MemberExpr } from './ast';
 import type { VarDecl, Assignment, IfStatement, ForStatement, WhileStatement, ReturnStmt, ExpressionStmt, FunctionDecl } from './ast';
-import type { OakPlot, OakAlert, OakTableCell } from './runtime';
+import type { OakPlot, OakAlert, OakTableCell, OakStrategyOrder } from './runtime';
 import { StdLib } from './runtime';
 
 // Recognized plot() render styles (used to disambiguate the 5th positional arg).
@@ -231,6 +231,10 @@ export interface RuntimeContext {
   bars: RuntimeBarData;
   plots: OakPlot[];
   alerts: OakAlert[];
+  // Shared per-execution: strategy.entry/strategy.exit order events emitted
+  // by the script, consumed by the backtest engine's execution-replay pass
+  // (apps/web/src/backtest/engine.ts). Empty for every non-backtest caller.
+  strategyOrders: OakStrategyOrder[];
   barIndex: number;
   returnValue: RuntimeValue | null;
   breakFlag: boolean;
@@ -268,6 +272,14 @@ export interface RuntimeContext {
 // other backstop. 200k is far beyond any legitimate per-bar loop workload.
 const MAX_LOOP_STEPS_PER_BAR = 200_000;
 
+// Wall-clock backstop across the *whole* run (orthogonal to the per-bar loop
+// cap above). A script that's merely slow per-bar rather than infinite-
+// looping within one bar can still take unbounded total time across a
+// multi-thousand-bar backtest — this bounds that. Checked every N bars
+// rather than every bar to keep performance.now() overhead negligible.
+const MAX_EXECUTION_WALL_MS = 20_000;
+const DEADLINE_CHECK_INTERVAL_BARS = 100;
+
 export interface RuntimeBarData {
   close: number[];
   open: number[];
@@ -281,6 +293,7 @@ export interface RuntimeBarData {
 export interface PlotResult {
   plots: OakPlot[];
   alerts: OakAlert[];
+  strategyOrders: OakStrategyOrder[];
   persist: Map<string, RuntimeValue>;
   errors: string[];
 }
@@ -289,6 +302,7 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
   const errors: string[] = [];
   const plots: OakPlot[] = [];
   const alerts: OakAlert[] = [];
+  const strategyOrders: OakStrategyOrder[] = [];
   const allPersist = new Map(persist);
   const seriesHistory = new Map<ASTNode, number[]>();
   const cache = new Map<string, any>();
@@ -298,14 +312,29 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
   const objectOrder = new Map<string, string[]>();
   const userFuncs = new Map<string, FunctionDecl>();
 
+  const executionStart = performance.now();
+
   // Execute bar by bar (PineScript execution model)
   for (let bi = 0; bi < barData.count; bi++) {
+    // Wall-clock backstop: MAX_LOOP_STEPS_PER_BAR only bounds a single bar's
+    // loop work (caught below by the per-bar try/catch, which lets the run
+    // continue to the next bar). A script that's merely slow per-bar rather
+    // than looping infinitely within one can still take unbounded total time
+    // across a multi-thousand-bar backtest, so this check sits outside that
+    // try/catch — an uncaught throw here aborts the whole run instead of
+    // just the current bar. Existing callers already wrap executeScript() in
+    // try/catch, so this needs no caller changes.
+    if (bi > 0 && bi % DEADLINE_CHECK_INTERVAL_BARS === 0 && performance.now() - executionStart > MAX_EXECUTION_WALL_MS) {
+      throw new Error(`OakScript execution exceeded ${MAX_EXECUTION_WALL_MS}ms wall-clock limit at bar ${bi}/${barData.count}`);
+    }
+
     const ctx: RuntimeContext = {
       vars: new Map(),
       persist: allPersist,
       bars: barData,
       plots,
       alerts,
+      strategyOrders,
       barIndex: bi,
       returnValue: null,
       breakFlag: false,
@@ -343,7 +372,7 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
     }
   }
 
-  return { plots, alerts, persist: allPersist, errors };
+  return { plots, alerts, strategyOrders, persist: allPersist, errors };
 }
 
 function evaluateStatement(stmt: ASTNode, ctx: RuntimeContext): void {
@@ -454,19 +483,41 @@ function evaluateAssignment(stmt: Assignment, ctx: RuntimeContext): RuntimeValue
     // and store by variable name for index lookback support
     const fnName = (stmt.value as CallExpr).callee.type === 'Identifier'
       ? ((stmt.value as CallExpr).callee as Identifier).name : '';
-    const srcNode = (stmt.value as CallExpr).args[0];
-    const p1 = typeof ((stmt.value as CallExpr).args[1]) === 'number' ? ((stmt.value as CallExpr).args[1]) : 0;
-    if (srcNode?.type === 'Identifier' && fnName) {
-      const cacheKey = `${fnName}:${(srcNode as Identifier).name}:${p1}`;
-      for (const [k] of ctx.cache) {
-        if (k.startsWith(cacheKey)) {
-          const cached = ctx.cache.get(k);
-          if (Array.isArray(cached)) {
-            ctx.seriesHistory.set(stmt.target, cached);
-            const varName = (stmt.target as Identifier).name;
-            ctx.seriesByName.set(varName, cached);
+    const callArgs = (stmt.value as CallExpr).args;
+    if (fnName === 'security') {
+      // security(timeframe, source) has the REVERSED shape vs. every other
+      // series fn(source, length, ...) assumed below — source is args[1],
+      // not args[0] — and its cache key is `security:${timeframe}:${srcName}`
+      // (exact match, see the 'security' case in evaluateCall), not the
+      // generic fnName:srcName:param prefix-search format. Without this,
+      // htf[1]-style lookback on a `security()` result would silently
+      // fall through to returning the current value instead of history.
+      const tfNode = callArgs[0];
+      const srcNode = callArgs[1];
+      if (tfNode?.type === 'StringLiteral' && srcNode?.type === 'Identifier') {
+        const cacheKey = `security:${(tfNode as StringLiteral).value}:${(srcNode as Identifier).name}`;
+        const cached = ctx.cache.get(cacheKey);
+        if (Array.isArray(cached)) {
+          ctx.seriesHistory.set(stmt.target, cached);
+          const varName = (stmt.target as Identifier).name;
+          ctx.seriesByName.set(varName, cached);
+        }
+      }
+    } else {
+      const srcNode = callArgs[0];
+      const p1 = typeof (callArgs[1]) === 'number' ? (callArgs[1]) : 0;
+      if (srcNode?.type === 'Identifier' && fnName) {
+        const cacheKey = `${fnName}:${(srcNode as Identifier).name}:${p1}`;
+        for (const [k] of ctx.cache) {
+          if (k.startsWith(cacheKey)) {
+            const cached = ctx.cache.get(k);
+            if (Array.isArray(cached)) {
+              ctx.seriesHistory.set(stmt.target, cached);
+              const varName = (stmt.target as Identifier).name;
+              ctx.seriesByName.set(varName, cached);
+            }
+            break;
           }
-          break;
         }
       }
     }
@@ -762,6 +813,54 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
           } catch { return 0; }
         }
         return 0;
+      }
+
+      case 'security': {
+        // security(timeframe, source) — Confirmed-Only Multi-Timeframe
+        // Confluence: OakScript's equivalent of Pine's request.security(),
+        // bare (not dotted) since 'request.' is a blocked Pine namespace
+        // and OakScript's own convention drops Pine namespaces anyway
+        // (ta.sma -> sma, input.int -> input). Pure in-memory aggregation
+        // of bars already loaded — no new fetch, no symbol param (always
+        // the current chart's own symbol).
+        const tfArg = typeof args[0] === 'string' ? args[0] : '';
+        const htfMs = SECURITY_TIMEFRAME_MS[tfArg];
+        const sourceNode = expr.args[1];
+        if (!htfMs || !sourceNode) return NaN;
+
+        const gapCacheKey = 'security:_gap';
+        let medianGap = ctx.cache.get(gapCacheKey);
+        if (medianGap === undefined) {
+          medianGap = medianBarGapMs(ctx.bars.time);
+          ctx.cache.set(gapCacheKey, medianGap);
+        }
+
+        const isBuiltInSrc = sourceNode.type === 'Identifier'
+          && ['close', 'open', 'high', 'low', 'volume', 'time'].includes((sourceNode as Identifier).name);
+
+        if (isBuiltInSrc) {
+          const srcName = (sourceNode as Identifier).name;
+          const cacheKey = `security:${tfArg}:${srcName}`;
+          if (ctx.cache.has(cacheKey)) {
+            const arr = ctx.cache.get(cacheKey);
+            return arr[ctx.barIndex] ?? NaN;
+          }
+          const ohlcField: 'open' | 'high' | 'low' | 'close' | null =
+            srcName === 'open' || srcName === 'high' || srcName === 'low' || srcName === 'close' ? srcName : null;
+          const values = (ctx.bars as any)[srcName] as number[];
+          const result = computeConfirmedHtfSeries(ctx.bars.time, values, htfMs, medianGap, ohlcField);
+          ctx.cache.set(cacheKey, result);
+          return result[ctx.barIndex] ?? NaN;
+        }
+
+        // Derived expression: only "so far" data is knowable at this bar,
+        // so this recomputes every bar — the same uncached idiom the
+        // sma/highest mega-case above already uses for non-built-in
+        // sources (no new performance-cost class introduced).
+        const series = buildSeries(sourceNode, ctx);
+        const timesSoFar = ctx.bars.time.slice(0, ctx.barIndex + 1);
+        const result = computeConfirmedHtfSeries(timesSoFar, series, htfMs, medianGap, null);
+        return result[ctx.barIndex] ?? NaN;
       }
 
       case 'regression.channel': {
@@ -1415,6 +1514,27 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         return condition;
       }
 
+      case 'strategy.entry': {
+        // strategy.entry(direction, id?, qty?) — position-level (not id-level):
+        // PaperBroker keys positions by symbol only, so v1's execution-replay
+        // pass treats this as "open a position if none is open." `id` rides
+        // along for readability/forward-compat but isn't compared on fill.
+        const direction = (typeof args[0] === 'string' ? args[0] : 'long') as 'long' | 'short';
+        const id = autoId(ctx, args[1], 'entry');
+        const qty = typeof args[2] === 'number' ? args[2] : undefined;
+        ctx.strategyOrders.push({ kind: 'entry', direction, id, qty, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'strategy.exit': {
+        // strategy.exit(id?) — closes the open position for this symbol, if
+        // any. Not a bracket-order clone (no stop/limit/trailing) — v1 is
+        // deliberately a plain flatten-on-signal.
+        const id = autoId(ctx, args[0], 'exit');
+        ctx.strategyOrders.push({ kind: 'exit', id, barIdx: ctx.barIndex });
+        return id;
+      }
+
       case 'tostring': return String(args[0]);
       case 'tonumber': return typeof args[0] === 'number' ? args[0] : parseFloat(String(args[0]));
       case 'abs': return Math.abs(args[0] as number);
@@ -1679,6 +1799,65 @@ function buildSeries(node: ASTNode, ctx: RuntimeContext): number[] {
     series.push(i < ctx.barIndex ? ctx.bars.close[i] : numVal);
   }
   return series;
+}
+
+// ─── security() — confirmed-only multi-timeframe aggregation ───────
+// Timeframe -> ms lookup, deliberately self-contained (duplicated, not
+// imported from data-generator.ts, which already has its own private
+// TIMEFRAMES_MS with identical values). interpreter.ts currently has
+// zero imports from outside oakscript/ and is bundled into a real Web
+// Worker (backtest/worker.ts) — importing data-generator.ts's ~400-line,
+// DOM/fetch-adjacent module for 12 numbers would trade that provable
+// Worker-safety guarantee for a trivial saving.
+const SECURITY_TIMEFRAME_MS: Record<string, number> = {
+  '1s': 1000, '5s': 5000, '10s': 10000, '30s': 30000,
+  '1m': 60000, '5m': 300000, '15m': 900000, '30m': 1800000,
+  '1h': 3600000, '4h': 14400000, '1d': 86400000, '1w': 604800000,
+};
+
+function medianBarGapMs(times: number[]): number {
+  if (times.length < 2) return Infinity;
+  const gaps: number[] = [];
+  for (let i = 1; i < times.length; i++) gaps.push(times[i] - times[i - 1]);
+  gaps.sort((a, b) => a - b);
+  const mid = Math.floor(gaps.length / 2);
+  return gaps.length % 2 === 0 ? (gaps[mid - 1] + gaps[mid]) / 2 : gaps[mid];
+}
+
+// Confirmed-only HTF aggregation: result[i] is the last FULLY CLOSED
+// higher-timeframe bucket's value as of bar i — never the still-forming
+// one (that would repaint/lookahead). NaN until the first bucket has
+// closed — same "withhold with NaN until confirmed" idiom StdLib's
+// pivothigh/pivotlow already use (runtime.ts), just triggered by a
+// timeframe-bucket boundary crossing instead of a fixed left/right window.
+function computeConfirmedHtfSeries(
+  times: number[], values: number[], htfMs: number, medianGap: number,
+  ohlcField: 'open' | 'high' | 'low' | 'close' | null,
+): number[] {
+  const result = new Array(times.length).fill(NaN);
+  // Guard: requesting a timeframe at or finer than what's actually loaded
+  // is nonsensical (nothing to downsample) — 1.5x sits safely below the
+  // smallest real adjacent-tier ratio in the Timeframe union (2x, e.g.
+  // 30m->1h) while still reliably catching same-timeframe requests under
+  // minor real-world timestamp jitter (e.g. live gaps averaging 59998ms
+  // instead of exactly 60000ms, which a bare `<=` would miss).
+  if (!Number.isFinite(medianGap) || htfMs < medianGap * 1.5) return result;
+
+  let curBucket: number | null = null;
+  let running = NaN;
+  let lastConfirmed = NaN;
+  for (let i = 0; i < times.length; i++) {
+    const bId = Math.floor(times[i] / htfMs);
+    if (curBucket === null || bId !== curBucket) {
+      if (curBucket !== null) lastConfirmed = running; // previous bucket just closed
+      curBucket = bId;
+      running = values[i]; // seed new bucket
+    } else if (ohlcField === 'high') running = Math.max(running, values[i]);
+    else if (ohlcField === 'low') running = Math.min(running, values[i]);
+    else if (ohlcField !== 'open') running = values[i]; // close/volume/time/derived: last value wins
+    result[i] = lastConfirmed;
+  }
+  return result;
 }
 
 function isTruthy(val: RuntimeValue, ctx?: RuntimeContext): boolean {

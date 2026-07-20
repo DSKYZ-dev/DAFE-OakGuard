@@ -22,9 +22,14 @@ import {
   createEditor, toggleEditor, isEditorVisible,
   getIndicators, getCategories, type OakPlot,
   setSendErrorsCallback, setAgentActionCallback, setAgentChatCallback,
-  setToggleVisibilityCallback, setImageAssetsChangedCallback, registerEditorShortcuts, getDefaultScript,
+  setToggleVisibilityCallback, setImageAssetsChangedCallback, setChartContextCallback, registerEditorShortcuts, getDefaultScript,
+  StdLib,
 } from './oakscript';
 import { getAllAssetsAsMap } from './oakscript/image-assets';
+import {
+  classifyRegime, createRegimeRibbon, createInitialRegimeState, applyHysteresis,
+  type RegimeResult,
+} from './regime-ribbon';
 import * as draw from './drawings';
 import type { DrawTool } from './drawings';
 import {
@@ -448,6 +453,16 @@ const inputsPanel = createInputsPanel((overrides) => {
 
 const dashboard = createDashboard();
 
+// ─── Regime Ribbon ─────────────────────────────────────────────────
+// Persistent, advisory-only top-of-chart strip — see regime-ribbon.ts for
+// the classification/hysteresis logic. Appended into #chart-area so it's
+// scoped to the chart canvas, not the whole viewport.
+const regimeRibbon = createRegimeRibbon();
+document.getElementById('chart-area')?.appendChild(regimeRibbon.el);
+const regimeState = createInitialRegimeState();
+let lastRegimeComputeAt = 0;
+const REGIME_RECOMPUTE_THROTTLE_MS = 3000; // ADX/ATR over up to 300 bars — cheap, but no reason to redo it every rAF frame
+
 function getBarData() {
   return {
     close: transformed.map(b => b.close),
@@ -457,6 +472,41 @@ function getBarData() {
     volume: transformed.map(b => b.volume),
     time: transformed.map(b => b.timestamp),
   };
+}
+
+// Throttled regime recompute — called every render frame but only does real
+// work once per REGIME_RECOMPUTE_THROTTLE_MS. Cheap enough (bounded 300-bar
+// window) that this throttle exists purely to avoid pointless repeat work at
+// 60fps, not because the computation itself is expensive.
+function updateRegimeRibbon(now: number): void {
+  if (now - lastRegimeComputeAt < REGIME_RECOMPUTE_THROTTLE_MS) return;
+  lastRegimeComputeAt = now;
+  if (transformed.length === 0) { regimeRibbon.update(null, applyIndicatorByName); return; }
+  const high = transformed.map(b => b.high);
+  const low = transformed.map(b => b.low);
+  const close = transformed.map(b => b.close);
+  const fresh = classifyRegime(high, low, close);
+  if (!fresh) { regimeRibbon.update(null, applyIndicatorByName); return; }
+  const displayed: RegimeResult = applyHysteresis(regimeState, fresh, now);
+  regimeRibbon.update(displayed, applyIndicatorByName);
+}
+
+// Programmatically apply a built-in indicator by name — the same direct path
+// the toolbar's "📊 Indicators" dropdown uses (see its change handler below),
+// extracted so the Regime Ribbon's suggestion button can reuse it exactly
+// rather than duplicating the apply logic.
+function applyIndicatorByName(name: string): void {
+  const ind = getIndicators().find(i => i.name === name);
+  if (!ind) return;
+  const inst = addIndicator(ind);
+  runAllIndicators();
+  enforceSingle3DPerPosition(inst.id);
+  oakScriptEnabled = true;
+  activeInputsId = inst.id;
+  inputsPanel.update(inst.inputs, inst.name);
+  inputsPanel.show();
+  dashboard.show();
+  updateUI();
 }
 
 // A main-pane 3D indicator (pane="3d") takes over the whole chart, and a
@@ -689,6 +739,10 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
   const sym = (symbol || currentSymbol).toUpperCase().trim();
   const tfv = tf || timeframe;
   currentSymbol = sym;
+  // Reset regime hysteresis — a stale label from the PREVIOUS symbol must
+  // never linger under the dwell timer onto a newly-switched symbol/timeframe.
+  regimeState.displayed = null;
+  regimeState.lastChangeAt = 0;
 
   const statusEl = document.getElementById('data-status');
   if (statusEl) {
@@ -1576,19 +1630,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     indSelect.addEventListener('change', () => {
       const name = indSelect.value;
-      if (!name) return;
-      const ind = getIndicators().find(i => i.name === name);
-      if (ind) {
-        const inst = addIndicator(ind);
-        runAllIndicators();
-        enforceSingle3DPerPosition(inst.id);
-        oakScriptEnabled = true;
-        activeInputsId = inst.id;
-        inputsPanel.update(inst.inputs, inst.name);
-        inputsPanel.show();
-        dashboard.show();
-        updateUI();
-      }
+      if (name) applyIndicatorByName(name);
       indSelect.value = '';
     });
   }
@@ -1873,6 +1915,8 @@ CRITICAL RULES:
 - regression.channel(source,length,mult?) returns {mid,upper,lower} per bar as a CALCULATION ONLY — it does not draw itself; the script must plot all three series (three plot() calls) and use fill() between upper and lower for the shaded channel.
 - CAPABILITY MINDSET: You now have a full drawing toolkit — lines, boxes, polylines, circles, arrows, tables/dashboards, text/labels, fills between lines, fibonacci/gann overlays, and image import (inline or a saved asset by name), in both 2D and 3D. When a request has no single dedicated builtin (a supply/demand zone, a custom diagram, a labeled channel), DECOMPOSE it into these primitives instead of saying it isn't possible — e.g. 'mark a supply zone' = box.new anchored to the swing high/low; 'label the golden pocket' = fibretracement.new; 'put my logo in the corner' = image.new with a saved asset name. This does NOT relax VISUAL FOCUS: decomposing into primitives still means using the FEWEST objects that faithfully render exactly what was asked — never add drawing calls beyond what the request needs.
 - When adding a drawing object or image to this EXISTING script, follow the id idiom above: reuse an object's existing id only if you intend to update/move it, and do NOT change or drop an existing line/box/polyline/circle/arrow/table/image's id unless the user explicitly asked to replace that object — changing its id orphans the old one on the chart.
+- BACKTESTING (Time Machine): strategy.entry(direction, id?, qty?) / strategy.exit(id?) are order-EVENT builtins consumed ONLY by the backtest panel — they render nothing and have zero effect on the live chart. Position-level not id-level: entry no-ops if already in a position (no pyramiding), exit always closes the WHOLE position (no partial exits, no bracket stop/take-profit). Only ADD strategy.entry/strategy.exit calls when the user explicitly asks to backtest/test a strategy in THIS request — a plain signal-marker request should stay on plotshape. If this existing script already has strategy.entry/strategy.exit calls, preserve them like any other existing logic unless asked to change them.
+- MULTI-TIMEFRAME: security(timeframe, source) — bare, not dotted — returns the last CONFIRMED (fully closed) higher-timeframe value of source, from bars already loaded (no new fetch). NEVER the still-forming bucket: NaN until the first bucket closes, then flat until the next one closes, so it never repaints. timeframe is one of "1s"/"5s"/"10s"/"30s"/"1m"/"5m"/"15m"/"30m"/"1h"/"4h"/"1d"/"1w" and must be COARSER than the chart's own loaded resolution (same/finer = NaN for every bar). Reach for this when a request implies cross-timeframe agreement instead of claiming it isn't possible.
 - Goal: the most accurate, focused, and polished version of exactly what the user asked for.`;
       const snapshot = visualAdapter.getLastSnapshot() || captureChartSnapshot();
       const resp = await advisor.sendMessage(promptText, snapshot, undefined, 'oakscript_coder');
@@ -1941,6 +1985,13 @@ CRITICAL RULES:
 
   // ── Wire Images-panel asset changes back into the cached asset map ──
   setImageAssetsChangedCallback(() => refreshImageAssetsCache());
+
+  // ── Let the Backtest panel pre-fill from the live chart's current state ──
+  setChartContextCallback(() => ({
+    symbol: currentSymbol,
+    timeframe,
+    baseUrl: (window as any).__DAFE_BACKEND_URL || 'http://localhost:8788',
+  }));
 
   // ── Register editor keyboard shortcuts ──
   registerEditorShortcuts([
@@ -3112,6 +3163,9 @@ function frameBody(now: number) {
   perfGovernor.sample(now);
 
   updateSnapshotEveryNthFrame();
+
+  // Regime Ribbon — throttled internally, safe to call every frame.
+  updateRegimeRibbon(now);
 
   // Compute visible range once per frame — shared by all drawing functions
   const { start: visStart, end: visEnd } = getVisibleRange(view, canvas.width, transformed.length);

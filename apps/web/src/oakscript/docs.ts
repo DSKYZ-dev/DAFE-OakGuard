@@ -1911,5 +1911,119 @@ band indicator (compare the "Gradient cloud" recipe earlier) —
 regression.channel just supplies the three series; there is no auto-drawn
 channel object to reach for instead.`,
     },
+    {
+      title: 'Backtesting — Time Machine (strategy.entry / strategy.exit)',
+      content: `strategy.entry(direction, id?, qty?)
+strategy.exit(id?)
+  Order-EVENT builtins consumed by the Time Machine backtest engine (the
+  ⏱️ Backtest panel in the editor) — NOT rendering calls, and NOT active in
+  the live chart/paper-trading path. A script that calls these can still be
+  used as a normal indicator (plot()/plotshape() etc. keep working exactly
+  as before); the strategy.* calls simply do nothing outside a backtest run.
+
+  - direction: "long" or "short"
+  - id: a label carried on the order for readability — see the POSITION-
+    LEVEL note below; it is NOT compared when deciding whether an order
+    fills
+  - qty: number of units (default: the backtest panel's "Qty/trade" field)
+
+  POSITION-LEVEL, NOT ID-LEVEL: the backtest's paper broker tracks one
+  position per SYMBOL, not per id. So:
+  - strategy.entry(...) is a no-op if a position is already open — it will
+    NOT add to or pyramid an existing position.
+  - strategy.exit(...) is a no-op if nothing is open, and always closes the
+    ENTIRE position (there is no partial-exit or per-id close).
+  This is a deliberate v1 simplification, not a bug: there is no bracket-
+  order engine (no attached stop-loss/take-profit, no trailing exit) —
+  express those as additional strategy.exit(...) conditions in your own
+  signal logic instead, e.g. exiting on a stop-price cross.
+
+  EXECUTION MODEL: the backtest runs your script ONCE over the full
+  historical range exactly like a normal chart render (persist/var state
+  and indicator warmup carry across the whole run, unbroken). Every
+  strategy.entry/exit call your script makes is recorded as a signal on the
+  bar it fired; the backtest engine then fills it at the FOLLOWING bar's
+  open price (never the same bar's close) — the standard no-lookahead
+  assumption, since a signal computed from a bar's own close cannot
+  realistically be acted on until the next bar opens.
+
+  UNCONDITIONAL CALLS: exactly like plotshape(), an unconditional top-level
+  strategy.entry/exit fires on every single bar — almost always a mistake.
+  Wrap it in a signal condition (the validator will warn you if you don't).
+
+  EXAMPLE — MA-crossover long/flat strategy:
+    fast = sma(close, 5)
+    slow = sma(close, 20)
+    buySig = crossover(fast, slow)
+    sellSig = crossunder(fast, slow)
+    if buySig {
+        strategy.entry("long", "ma_cross")
+    }
+    if sellSig {
+        strategy.exit("ma_cross")
+    }
+    plot(fast, "Fast", "#22cc88", 1)
+    plot(slow, "Slow", "#ff4477", 1)
+
+  The Backtest panel reports in-sample and out-of-sample stats SIDE BY
+  SIDE from a single fixed historical split (equity curve, max drawdown,
+  per-bar unannualized Sharpe, win rate, avg win/loss) — always both
+  together, since an in-sample-only result is not evidence the strategy
+  works out of sample.`,
+    },
+    {
+      title: 'Confirmed-Only Multi-Timeframe Confluence — security()',
+      content: `security(timeframe, source)
+  OakScript's equivalent of Pine's request.security() — bare, not dotted,
+  since OakScript drops Pine's namespaces everywhere else too (ta.sma ->
+  sma, input.int -> input). Reads a HIGHER timeframe's last CONFIRMED
+  (fully closed) value of source, aggregated purely from the bars already
+  loaded for the current chart — no new fetch, no symbol argument (always
+  the current chart's own symbol).
+
+  CONFIRMED-ONLY IS THE WHOLE POINT: the value returned is always the
+  most recently CLOSED higher-timeframe bucket — never the one still
+  forming. A script reading the in-progress bucket would effectively see
+  the future relative to its own bar-by-bar walk (repainting) — this
+  never happens with security(). Non-repaint is enforced by returning NaN
+  until the first higher-timeframe bucket has actually closed, then
+  holding that value flat until the next bucket closes — the exact same
+  "withhold with NaN until confirmed" idiom pivothigh()/pivotlow() already
+  use elsewhere in this language, just triggered by a timeframe-bucket
+  boundary instead of a fixed left/right bar window.
+
+  - timeframe: one of "1s","5s","10s","30s","1m","5m","15m","30m","1h",
+    "4h","1d","1w" (case-sensitive; anything else returns NaN and the
+    validator flags an unrecognized literal before you even run it).
+  - source: close/open/high/low aggregate like a real OHLC roll-up
+    (close/derived expressions take the LAST value seen in the bucket,
+    high takes the MAX, low takes the MIN, open takes the FIRST) — volume
+    and any other derived expression also use "last value in the bucket",
+    matching Pine's own security() behavior for computed expressions, NOT
+    an implicit sum.
+  - Requesting a timeframe the SAME AS or FINER than what's actually
+    loaded (e.g. asking for "1m" on a chart loaded at "1m", or "30s" on a
+    "1m" chart) is nonsensical — there's no finer data to downsample —
+    and returns NaN for every bar rather than a misleading result.
+  - Known limitation: the very first confirmed value can be built from a
+    PARTIAL bucket if the loaded window starts mid-bucket (there's no
+    backend fetch to go find the true bucket start) — this self-heals
+    after the first full bucket and only ever affects the first 1-2
+    confirmed values.
+
+  EXAMPLE — only take a 1-minute crossover signal that agrees with the
+  1-hour trend:
+    fast = sma(close, 9)
+    slow = sma(close, 21)
+    htfClose = security("1h", close)
+    htfTrendUp = close > htfClose
+    buySig = crossover(fast, slow) and htfTrendUp
+    if buySig {
+        plotshape(bar_index, low, "Buy", "triangleup", "#22cc88")
+    }
+    plot(fast, "Fast", "#22cc88", 1)
+    plot(slow, "Slow", "#ff4477", 1)
+    plot(htfClose, "1H Close", "#22aaff", 1, "stepline")`,
+    },
   ];
 }

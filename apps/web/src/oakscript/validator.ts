@@ -351,11 +351,11 @@ export function validate(source: string): ValidationResult {
         fix: 'Delete this line.',
       });
     }
-    if (/^strategy\s*\(/.test(trimmed) || /(?<![\w.])strategy\.[A-Za-z_]/.test(s)) {
+    if (/^strategy\s*\(/.test(trimmed) || /(?<![\w.])strategy\.(?!entry\b|exit\b)[A-Za-z_]/.test(s)) {
       issues.push({
         line: lineNum, col: 1, severity: 'error', code: 'PINE_STRATEGY',
-        message: 'strategy()/strategy.* is PineScript — OakScript has no strategy engine.',
-        fix: 'Express entries/exits as signals: if buySig { plotshape(bar_index, low, "Buy", "triangleup", "#22cc88") }',
+        message: 'strategy()/strategy.* (other than entry/exit) is PineScript — OakScript has no bracket-order strategy engine.',
+        fix: 'For live/backtest signals use strategy.entry("long"|"short", id?, qty?) / strategy.exit(id?), or express as markers: if buySig { plotshape(bar_index, low, "Buy", "triangleup", "#22cc88") }',
       });
     }
     if ((m = /(?<![\w.])(nz|na|fixnan)\s*\(/.exec(s))) {
@@ -431,6 +431,21 @@ export function validate(source: string): ValidationResult {
           message: 'Unconditional plotshape() draws a marker on EVERY bar.',
           fix: 'Wrap it in a signal condition: if buySig { plotshape(bar_index, low, "Buy", "triangleup", "#22cc88") }',
         });
+      }
+
+      // strategy.entry/exit are order EVENTS (backtest engine), same
+      // unconditional-footgun shape as plotshape's marker-per-bar above.
+      if (!inBlock) {
+        const stratMatch = /^strategy\.(entry|exit)\s*\(/.exec(s.trim());
+        if (stratMatch) {
+          const stratFn = stratMatch[1];
+          const example = stratFn === 'entry' ? 'strategy.entry("long")' : 'strategy.exit()';
+          issues.push({
+            line: lineNum, col: 1, severity: 'warning', code: 'STRATEGY_CALL_UNCONDITIONAL',
+            message: `Unconditional strategy.${stratFn}(...) fires on EVERY bar.`,
+            fix: `Wrap it in a signal condition: if buySig { ${example} }`,
+          });
+        }
       }
 
       // Drawing-object id guards: line.new/box.new/polyline.new/circle.new/

@@ -450,7 +450,8 @@ SECTIONS: list[dict] = [
             "- shape.triangleup / location.belowbar / size.small → plotshape takes a QUOTED "
             "style string and an explicit price: plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n"
             "- color.red / color.green constants → quoted hex strings \"#ff4477\" / \"#22cc88\"\n"
-            "- nz(x) / na(x) / request.security / strategy.entry → do not exist. "
+            "- nz(x) / na(x) → do not exist; request.security() is PineScript — use "
+            "the bare security(timeframe, source). "
             "Missing values read as 0; emit trade signals with plotshape inside if-blocks.\n"
             "History indexing DOES work like Pine: close[1], myVar[1]."
         ),
@@ -645,6 +646,88 @@ SECTIONS: list[dict] = [
             "fibretracement.new", "gannfan.new", "regression.channel",
         ],
     },
+    {
+        "title": "Backtesting — Time Machine (strategy.entry / strategy.exit)",
+        "content": (
+            "strategy.entry(direction, id?, qty?) / strategy.exit(id?) — order-EVENT "
+            "builtins consumed ONLY by the Time Machine backtest panel (not the live "
+            "chart/paper-trading path; a script using them still renders normally as an "
+            "indicator otherwise). direction is \"long\" or \"short\"; id is a label "
+            "carried on the order for readability, NOT compared when filling.\n"
+            "POSITION-LEVEL, NOT ID-LEVEL: the backtest's broker tracks one position per "
+            "SYMBOL. strategy.entry is a no-op if a position is already open (no "
+            "pyramiding/adding); strategy.exit is a no-op if nothing is open and always "
+            "closes the WHOLE position (no partial exit). This is a deliberate v1 "
+            "simplification — no bracket orders (no attached stop/take-profit, no "
+            "trailing exit); express those as additional strategy.exit(...) conditions "
+            "in your own signal logic.\n"
+            "EXECUTION: the backtest runs the script ONCE over the full historical range "
+            "(persist/var state and indicator warmup carry through unbroken, exactly "
+            "like a normal render). Each entry/exit call is recorded on the bar it fired "
+            "and filled at the NEXT bar's open (no lookahead) — never the same bar's "
+            "close.\n"
+            "Exactly like plotshape, an unconditional top-level call fires every bar — "
+            "always wrap it in a signal condition.\n"
+            "    fast = sma(close, 5)\n"
+            "    slow = sma(close, 20)\n"
+            "    if crossover(fast, slow) {\n"
+            "        strategy.entry(\"long\", \"ma_cross\")\n"
+            "    }\n"
+            "    if crossunder(fast, slow) {\n"
+            "        strategy.exit(\"ma_cross\")\n"
+            "    }\n"
+            "The Backtest panel reports in-sample/out-of-sample stats SIDE BY SIDE from "
+            "one fixed historical split (equity curve, max drawdown, per-bar "
+            "unannualized Sharpe, win rate, avg win/loss) — never just one sample alone."
+        ),
+        "keywords": [
+            "backtest", "backtesting", "time machine", "strategy.entry", "strategy.exit",
+            "strategy", "entry", "exit", "long", "short", "equity curve", "drawdown",
+            "sharpe", "win rate", "in-sample", "out-of-sample", "paper broker",
+        ],
+    },
+    {
+        "title": "Confirmed-Only Multi-Timeframe Confluence — security()",
+        "content": (
+            "security(timeframe, source) — OakScript's equivalent of Pine's "
+            "request.security(), bare not dotted (OakScript drops Pine namespaces "
+            "everywhere: ta.sma -> sma, input.int -> input). Reads a HIGHER "
+            "timeframe's last CONFIRMED (fully closed) value of source, aggregated "
+            "purely from bars already loaded for the current chart — no new fetch, "
+            "no symbol argument (always the current chart's own symbol).\n"
+            "CONFIRMED-ONLY: always the most recently CLOSED higher-timeframe "
+            "bucket, NEVER the one still forming (that would repaint/lookahead). "
+            "Returns NaN until the first bucket closes, then holds flat until the "
+            "next one closes — same NaN-until-confirmed idiom as pivothigh/"
+            "pivotlow, triggered by a timeframe-bucket boundary instead of a fixed "
+            "left/right window.\n"
+            "timeframe: one of 1s/5s/10s/30s/1m/5m/15m/30m/1h/4h/1d/1w "
+            "(case-sensitive). source: close/high/low/open aggregate like a real "
+            "OHLC roll-up (close and any derived expression take the LAST value in "
+            "the bucket, high takes MAX, low takes MIN, open takes FIRST — no "
+            "implicit sum for volume).\n"
+            "Requesting a timeframe the SAME AS or FINER than what's loaded (e.g. "
+            "\"1m\" on a 1m chart) returns NaN for every bar — there's nothing to "
+            "downsample. Known limitation: the very first confirmed value can come "
+            "from a partial bucket if the loaded window starts mid-bucket (no "
+            "backend fetch to find the true bucket start) — self-heals after one "
+            "full bucket.\n"
+            "EXAMPLE — only take a 1m crossover signal that agrees with the 1h trend:\n"
+            "    fast = sma(close, 9)\n"
+            "    slow = sma(close, 21)\n"
+            "    htfClose = security(\"1h\", close)\n"
+            "    buySig = crossover(fast, slow) and close > htfClose\n"
+            "    if buySig {\n"
+            "        plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n"
+            "    }\n"
+            "    plot(htfClose, \"1H Close\", \"#22aaff\", 1, \"stepline\")"
+        ),
+        "keywords": [
+            "security", "mtf", "multi-timeframe", "multi timeframe", "higher timeframe",
+            "htf", "confluence", "non-repainting", "repaint", "request.security",
+            "confirmed", "timeframe",
+        ],
+    },
 ]
 
 # ─── Function index: {"name": ..., "signature": ..., "desc": ..., "category": ...} ──
@@ -734,6 +817,9 @@ FUNCTIONS: list[dict] = [
     {"name": "image.new", "signature": "image.new(x, y, source, width?, height?, anchor?, opacity?, rotation?, id?)", "desc": "Places an image at (bar_index, price); source is a data:image/... URI or a saved asset name; width/height in pixels, rotation in degrees", "category": "image"},
     {"name": "plotimage", "signature": "plotimage(bar_index, price, source, width?, height?, pane?, id?)", "desc": "Per-bar image signal marker (like plotshape but with a custom image) — call inside a condition", "category": "image"},
     {"name": "plotimage_3d", "signature": "plotimage_3d(bar_index, price, source, size?, z_level?, pane?, rx?, ry?, rz?)", "desc": "3D billboard sprite version of plotimage for pane=\"3d\"/\"separate\" scenes", "category": "image"},
+    {"name": "strategy.entry", "signature": "strategy.entry(direction, id?, qty?)", "desc": "Backtest-only: opens a position for this symbol (\"long\"/\"short\"); no-op if one is already open — position-level, not id-level", "category": "backtest"},
+    {"name": "strategy.exit", "signature": "strategy.exit(id?)", "desc": "Backtest-only: closes the ENTIRE open position for this symbol; no-op if none is open; not a bracket-order (stop/limit/trailing) clone", "category": "backtest"},
+    {"name": "security", "signature": "security(timeframe, source)", "desc": "Last CONFIRMED (closed) higher-timeframe value of source, from bars already loaded; NaN until confirmed and NaN if timeframe isn't coarser than loaded resolution", "category": "mtf"},
 ]
 
 # ─── Inline full examples ──────────────────────────────────────────
@@ -966,6 +1052,55 @@ EXAMPLES: list[dict] = [
         "keywords": ["table.new", "table.cell", "dashboard", "session",
                      "session high", "session low", "corner", "stats"],
     },
+    {
+        "name": "MA-Crossover Backtest with strategy.entry/exit",
+        # Canonical Time Machine idiom: entry/exit gated behind conditions,
+        # same id on both so the backtest panel's trade log reads cleanly.
+        "code": (
+            'fastLen = input(5, "Fast MA")\n'
+            'slowLen = input(20, "Slow MA")\n\n'
+            "fast = sma(close, fastLen)\n"
+            "slow = sma(close, slowLen)\n"
+            "buySig = crossover(fast, slow)\n"
+            "sellSig = crossunder(fast, slow)\n\n"
+            "if buySig {\n"
+            '    strategy.entry("long", "ma_cross")\n'
+            "}\n"
+            "if sellSig {\n"
+            '    strategy.exit("ma_cross")\n'
+            "}\n\n"
+            'plot(fast, "Fast", "#22cc88", 1)\n'
+            'plot(slow, "Slow", "#ff4477", 1)'
+        ),
+        "keywords": ["strategy.entry", "strategy.exit", "backtest", "time machine",
+                     "crossover strategy", "long", "flat", "equity curve"],
+    },
+    {
+        "name": "1m Signal Confirmed by 1h Trend with security()",
+        # Canonical MTF idiom: htfClose read once, compared against close
+        # to gate the lower-timeframe signal — never used inside a
+        # conditional itself (it's already confirmed/non-repainting).
+        "code": (
+            'fastLen = input(9, "Fast MA")\n'
+            'slowLen = input(21, "Slow MA")\n\n'
+            "fast = sma(close, fastLen)\n"
+            "slow = sma(close, slowLen)\n"
+            'htfClose = security("1h", close)\n\n'
+            "buySig = crossover(fast, slow) and close > htfClose\n"
+            "sellSig = crossunder(fast, slow) and close < htfClose\n\n"
+            "if buySig {\n"
+            '    plotshape(bar_index, low, "Buy", "triangleup", "#22cc88")\n'
+            "}\n"
+            "if sellSig {\n"
+            '    plotshape(bar_index, high, "Sell", "triangledown", "#ff4477")\n'
+            "}\n\n"
+            'plot(fast, "Fast", "#22cc88", 1)\n'
+            'plot(slow, "Slow", "#ff4477", 1)\n'
+            'plot(htfClose, "1H Close", "#22aaff", 1, "stepline")'
+        ),
+        "keywords": ["security", "mtf", "multi-timeframe", "confluence", "htf",
+                     "higher timeframe", "confirmed", "non-repainting"],
+    },
 ]
 
 
@@ -1018,9 +1153,11 @@ _IDF = _build_idf()
 SYNONYMS: dict[str, list[str]] = {
     "average": ["sma", "ema", "moving"], "ma": ["sma", "ema"], "moving": ["sma", "ema", "linreg"],
     "buy": ["crossover", "triangleup", "signal", "long", "entry"],
-    "long": ["crossover", "triangleup", "buy"], "entry": ["crossover", "plotshape", "signal"],
+    "long": ["crossover", "triangleup", "buy", "strategy.entry"],
+    "entry": ["crossover", "plotshape", "signal", "strategy.entry"],
     "sell": ["crossunder", "triangledown", "signal", "short", "exit"],
-    "short": ["crossunder", "triangledown", "sell"], "exit": ["crossunder", "plotshape", "signal"],
+    "short": ["crossunder", "triangledown", "sell", "strategy.entry"],
+    "exit": ["crossunder", "plotshape", "signal", "strategy.exit"],
     "overbought": ["rsi", "cci", "hline"], "oversold": ["rsi", "cci", "hline"],
     "momentum": ["rsi", "roc", "macd"], "trend": ["ema", "sma", "adx"],
     "volatility": ["atr", "stdev", "bollinger"], "band": ["bollinger", "stdev", "fill"],
@@ -1049,7 +1186,17 @@ SYNONYMS: dict[str, list[str]] = {
     "divergence": ["rsi", "crossover", "crossunder"], "color": ["color.new", "color.rgb"],
     "conditional": ["ternary"], "transparency": ["color.new", "rgba"],
     "trade": ["signal", "crossover", "crossunder", "plotshape", "buy", "sell"],
-    "strategy": ["signal", "crossover", "crossunder", "plotshape", "structure"],
+    "strategy": ["signal", "crossover", "crossunder", "plotshape", "structure",
+                 "strategy.entry", "strategy.exit", "backtest"],
+    "backtest": ["strategy.entry", "strategy.exit", "time machine", "equity curve"],
+    "backtesting": ["strategy.entry", "strategy.exit", "time machine"],
+    "time machine": ["strategy.entry", "strategy.exit", "backtest"],
+    "equity curve": ["strategy.entry", "strategy.exit", "backtest", "drawdown"],
+    "drawdown": ["backtest", "equity curve", "sharpe"],
+    "mtf": ["security"], "multi-timeframe": ["security"], "multi timeframe": ["security"],
+    "higher timeframe": ["security"], "htf": ["security"], "confluence": ["security"],
+    "non-repainting": ["security"], "repaint": ["security"],
+    "request.security": ["security"],
     "generate": ["structure", "skeleton"], "create": ["structure", "skeleton"],
     "pinescript": ["pine", "difference"], "pine": ["pinescript", "difference"],
 }
