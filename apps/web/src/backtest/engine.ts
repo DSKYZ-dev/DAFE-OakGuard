@@ -21,6 +21,11 @@ export class BacktestCancelledError extends Error {
 export interface RunBacktestOptions {
   signal?: AbortSignal;
   onProgress?: (stage: 'fetching' | 'running-script' | 'replaying' | 'done') => void;
+  /** Overrides applied on top of the script's own `input(...)` defaults for
+   * this run only — the hook Strategy Lab's variant sweep uses to run the
+   * same source N times with different parameter values. Unset for a normal
+   * single Time Machine run. */
+  inputOverrides?: Map<string, unknown>;
 }
 
 /**
@@ -109,7 +114,7 @@ function runSignalCollection(
       reject(new Error(`Backtest worker error: ${ev.message}`));
     };
 
-    const req: BacktestWorkerRequest = { source, bars };
+    const req: BacktestWorkerRequest = { source, bars, inputOverrides: opts?.inputOverrides };
     worker.postMessage(req);
   });
 }
@@ -134,6 +139,22 @@ export async function runBacktest(
   const rawBars = await fetchBacktestBars(config.symbol, config.timeframe, config.barCount, config.baseUrl);
   const bars = barsToRuntimeBarData(rawBars);
 
+  return runBacktestOnBars(config, source, bars, opts);
+}
+
+/**
+ * Same as runBacktest() but takes already-fetched bars instead of fetching
+ * them itself. Strategy Lab's variant sweep needs the exact same historical
+ * bars across every variant of a script — fetching once here and replaying
+ * it N times avoids N redundant historical-data round-trips for data that
+ * would come back identical every time.
+ */
+export async function runBacktestOnBars(
+  config: BacktestConfig,
+  source: string,
+  bars: ReturnType<typeof barsToRuntimeBarData>,
+  opts?: RunBacktestOptions,
+): Promise<BacktestResult> {
   if (opts?.signal?.aborted) throw new BacktestCancelledError();
 
   opts?.onProgress?.('running-script');

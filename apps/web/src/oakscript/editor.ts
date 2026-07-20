@@ -6,8 +6,8 @@ import { getIndicators, getCategories, type IndicatorDef, saveUserIndicator, get
 import { getDocumentation, type DocSection } from './docs';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
-import { runBacktest, BacktestCancelledError } from '../backtest/engine';
-import { MAX_BACKTEST_BARS } from '../backtest/data';
+import { runBacktest, runBacktestOnBars, BacktestCancelledError } from '../backtest/engine';
+import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
 import { renderEquityCurve } from '../backtest/chart';
 
@@ -46,12 +46,21 @@ let errorListDiv: HTMLDivElement | null = null;
 let docPanel: HTMLDivElement | null = null;
 let imagesPanel: HTMLDivElement | null = null;
 let backtestPanel: HTMLDivElement | null = null;
+let strategyLabPanel: HTMLDivElement | null = null;
 let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
 let lastBacktestConfig: Partial<BacktestConfig> | null = null;
 let lastBacktestResult: BacktestResult | null = null;
 let backtestAbortController: AbortController | null = null;
+let lastStrategyLabConfig: Partial<BacktestConfig> | null = null;
+let lastStrategyLabRows: BatchRunRow[] | null = null;
+let strategyLabAbortController: AbortController | null = null;
+// createEditor() defines refreshIndicatorDropdown() as its own local closure
+// (it needs indSelect, which lives only there); this lets the module-scope
+// Strategy Lab panel trigger the same refresh after an "Approve & Save"
+// without restructuring createEditor.
+let refreshIndicatorDropdownFn: (() => void) | null = null;
 
 const DEFAULT_SCRIPT = `//DAFE Trading Systems - DskyzInvestment
 `;
@@ -118,6 +127,102 @@ function evaluateLiteral(node: ASTNode): any {
   if (node.type === 'NilLiteral') return null;
   if (node.type === 'UnaryExpr' && (node as any).op === '-') return -(evaluateLiteral((node as any).argument) || 0);
   return 0;
+}
+
+// ─── Strategy Lab batch-variant sweep ───────────────────────────────
+// v1 scope (per the adversarial review's mandated cuts): a single
+// deterministic one-at-a-time parameter sweep, never a GA — no iteration,
+// no fitness-guided mutation, no randomness. Running buildBatchVariants()
+// twice on the same inputs always produces the exact same list.
+
+export interface BatchVariant {
+  label: string;
+  /** Empty for the baseline variant. */
+  overrides: Map<string, number>;
+}
+
+export interface BatchRunRow {
+  variant: BatchVariant;
+  result: BacktestResult;
+}
+
+/** Hard, fixed caps — "small fixed N" per the review, never a user-facing
+ * dial. Sweeping more inputs or generating more variants than this starts
+ * to look like the optimizer that was explicitly cut. */
+export const MAX_SWEPT_INPUTS = 4;
+export const MAX_BATCH_VARIANTS = 1 + MAX_SWEPT_INPUTS * 2;
+
+function round6(n: number): number {
+  return Math.round(n * 1e6) / 1e6;
+}
+
+function formatNumber(n: number): string {
+  return Number.isInteger(n) ? String(n) : String(round6(n));
+}
+
+/**
+ * Baseline (script defaults) plus, for each of up to MAX_SWEPT_INPUTS
+ * numeric inputs (in script order), one variant nudged down and one nudged
+ * up by the input's own declared step (or 20% of its default when no step
+ * is declared), clamped to any declared min/max and deduped against the
+ * baseline value.
+ */
+export function buildBatchVariants(inputs: InputDef[]): BatchVariant[] {
+  const variants: BatchVariant[] = [{ label: 'Baseline (script defaults)', overrides: new Map() }];
+  const numeric = inputs.filter(i => i.type === 'number').slice(0, MAX_SWEPT_INPUTS);
+
+  for (const inp of numeric) {
+    const base = typeof inp.defaultValue === 'number' ? inp.defaultValue : 0;
+    const step = inp.step && inp.step > 0 ? inp.step : Math.max(Math.abs(base) * 0.2, 1e-6);
+    const seen = new Set<number>([round6(base)]);
+
+    for (const raw of [base - step, base + step]) {
+      let clamped = raw;
+      if (inp.min !== undefined) clamped = Math.max(inp.min, clamped);
+      if (inp.max !== undefined) clamped = Math.min(inp.max, clamped);
+      clamped = round6(clamped);
+      if (seen.has(clamped)) continue;
+      seen.add(clamped);
+      variants.push({
+        label: `${inp.title}: ${formatNumber(base)} → ${formatNumber(clamped)}`,
+        overrides: new Map([[inp.name, clamped]]),
+      });
+    }
+  }
+
+  // Belt-and-braces — the loop above can only ever reach 1 + 4*2 = 9, but
+  // this is the one line that actually GUARANTEES "small fixed N" holds
+  // regardless of future edits above.
+  return variants.slice(0, MAX_BATCH_VARIANTS);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Rewrites the numeric default-value literal of each named input(...) call
+ * directly in the source text, for both the `var NAME = input(...)` and
+ * `NAME = input(...)` forms detectInputs() recognizes (kept in lockstep
+ * with it — same two shapes). Used only by Strategy Lab's "Approve & Save":
+ * a saved script always runs with no runtime overrides, so a chosen
+ * variant's tuned values have to live in the text itself to survive being
+ * saved and reloaded later.
+ */
+export function applyOverridesToSource(source: string, overrides: Map<string, number>): string {
+  if (overrides.size === 0) return source;
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const [name, value] of overrides) {
+      const re = new RegExp(`^(\\s*(?:var\\s+)?${escapeRegExp(name)}\\s*=\\s*input\\s*\\(\\s*)(-?\\d+(?:\\.\\d+)?)`);
+      const m = lines[i].match(re);
+      if (m) {
+        lines[i] = m[1] + formatNumber(value) + lines[i].slice(m[0].length);
+        break;
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 function persistState(): void {
@@ -651,6 +756,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     }
     indSelect.value = prev;
   }
+  refreshIndicatorDropdownFn = refreshIndicatorDropdown;
   refreshIndicatorDropdown();
   indSelect.onchange = () => {
     const sel = indSelect.value; if (!sel) return;
@@ -683,6 +789,12 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(backtestBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   backtestBtn.onclick = () => toggleBacktest();
 
+  const strategyLabBtn = document.createElement('button');
+  strategyLabBtn.textContent = '🧪 Batch';
+  strategyLabBtn.title = 'Strategy Lab — run a small fixed batch of parameter variants against historical data';
+  Object.assign(strategyLabBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
+  strategyLabBtn.onclick = () => toggleStrategyLab();
+
   controls.appendChild(viewBtn);
   controls.appendChild(saveBtn);
   controls.appendChild(manageBtn);
@@ -690,6 +802,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   controls.appendChild(docsBtn);
   controls.appendChild(imagesBtn);
   controls.appendChild(backtestBtn);
+  controls.appendChild(strategyLabBtn);
 
   const applyBtn = document.createElement('button');
   applyBtn.textContent = '▶ Apply';
@@ -806,6 +919,16 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     flexShrink: '0',
   });
   editorPanel.appendChild(backtestPanel);
+
+  // ── Strategy Lab (batch variant sweep) Panel ──────────────────────
+  strategyLabPanel = document.createElement('div');
+  strategyLabPanel.id = 'oakscript-strategy-lab';
+  Object.assign(strategyLabPanel.style, {
+    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '420px',
+    borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
+    flexShrink: '0',
+  });
+  editorPanel.appendChild(strategyLabPanel);
 
   // ── Agent Chat Box ────────────────────────────────────────────
   const agentChat = document.createElement('div');
@@ -1446,65 +1569,45 @@ function formatBytes(bytes: number): string {
 const BT_IN_SAMPLE_COLOR = '#22cc88';
 const BT_OUT_OF_SAMPLE_COLOR = '#22aaff';
 
-function toggleBacktest(): void {
-  if (!backtestPanel) return;
-  const isVisible = backtestPanel.style.display !== 'none';
-  backtestPanel.style.display = isVisible ? 'none' : 'block';
-  if (!isVisible) renderBacktest();
+interface BacktestConfigFormHandle {
+  formEl: HTMLDivElement;
+  getConfig(baseUrl?: string): BacktestConfig;
 }
 
-function renderBacktest(): void {
-  if (!backtestPanel) return;
-  backtestPanel.innerHTML = '';
-
-  const header = document.createElement('div');
-  Object.assign(header.style, {
-    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
-    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
-    zIndex: '1',
-  });
-  const headerTitle = document.createElement('div');
-  headerTitle.textContent = '⏱️ Time Machine — Backtest';
-  Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '4px' });
-  header.appendChild(headerTitle);
-  backtestPanel.appendChild(header);
-
-  const chartCtx = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
-  const cfg = {
-    symbol: lastBacktestConfig?.symbol ?? chartCtx.symbol ?? 'SPY',
-    timeframe: lastBacktestConfig?.timeframe ?? chartCtx.timeframe ?? '1h',
-    barCount: lastBacktestConfig?.barCount ?? 500,
-    inSamplePct: lastBacktestConfig?.inSamplePct ?? 70,
-    qtyPerTrade: lastBacktestConfig?.qtyPerTrade ?? 1,
-    startingCash: lastBacktestConfig?.startingCash ?? 10000,
-    stopLossMode: lastBacktestConfig?.stopLossMode ?? 'none',
-    stopLossValue: lastBacktestConfig?.stopLossValue ?? 2,
-    takeProfitMode: lastBacktestConfig?.takeProfitMode ?? 'none',
-    takeProfitValue: lastBacktestConfig?.takeProfitValue ?? 4,
+function fieldInputStyle() {
+  return {
+    width: '100%', padding: '3px 5px', boxSizing: 'border-box' as const,
+    border: '1px solid rgba(180, 140, 255, 0.15)', borderRadius: '4px',
+    background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.7)',
+    fontSize: '10px', outline: 'none',
   };
+}
 
+function configField(labelText: string, input: HTMLInputElement | HTMLSelectElement, width: string): HTMLDivElement {
+  const wrap = document.createElement('div');
+  Object.assign(wrap.style, { display: 'flex', flexDirection: 'column', gap: '2px', width });
+  const label = document.createElement('label');
+  label.textContent = labelText;
+  Object.assign(label.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+  Object.assign(input.style, fieldInputStyle());
+  wrap.appendChild(label);
+  wrap.appendChild(input);
+  return wrap;
+}
+
+/**
+ * Symbol/timeframe/bars/in-sample%/qty/cash/SL/TP form shared by the Time
+ * Machine single-run panel and the Strategy Lab batch panel — same fields,
+ * same defaulting, same clamped parsing, so the two can never drift into
+ * reading a config differently.
+ */
+function buildBacktestConfigForm(cfg: {
+  symbol: string; timeframe: string; barCount: number; inSamplePct: number;
+  qtyPerTrade: number; startingCash: number; stopLossMode: StopLossMode;
+  stopLossValue: number; takeProfitMode: TakeProfitMode; takeProfitValue: number;
+}): BacktestConfigFormHandle {
   const formWrap = document.createElement('div');
   Object.assign(formWrap.style, { padding: '6px 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
-
-  function fieldInputStyle() {
-    return {
-      width: '100%', padding: '3px 5px', boxSizing: 'border-box' as const,
-      border: '1px solid rgba(180, 140, 255, 0.15)', borderRadius: '4px',
-      background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.7)',
-      fontSize: '10px', outline: 'none',
-    };
-  }
-  function field(labelText: string, input: HTMLInputElement | HTMLSelectElement, width: string): HTMLDivElement {
-    const wrap = document.createElement('div');
-    Object.assign(wrap.style, { display: 'flex', flexDirection: 'column', gap: '2px', width });
-    const label = document.createElement('label');
-    label.textContent = labelText;
-    Object.assign(label.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
-    Object.assign(input.style, fieldInputStyle());
-    wrap.appendChild(label);
-    wrap.appendChild(input);
-    return wrap;
-  }
 
   const symbolInput = document.createElement('input');
   symbolInput.type = 'text'; symbolInput.value = cfg.symbol;
@@ -1557,17 +1660,76 @@ function renderBacktest(): void {
   tpValueInput.value = String(cfg.takeProfitValue);
   tpValueInput.title = 'Interpreted as % or $ depending on the Take-Profit mode selected';
 
-  formWrap.appendChild(field('Symbol', symbolInput, '90px'));
-  formWrap.appendChild(field('Timeframe', timeframeInput, '70px'));
-  formWrap.appendChild(field(`Bars (max ${MAX_BACKTEST_BARS})`, barCountInput, '110px'));
-  formWrap.appendChild(field('In-sample %', inSampleInput, '90px'));
-  formWrap.appendChild(field('Qty/trade', qtyInput, '80px'));
-  formWrap.appendChild(field('Starting cash', cashInput, '100px'));
-  formWrap.appendChild(field('Stop-Loss', slModeSelect, '100px'));
-  formWrap.appendChild(field('SL Value', slValueInput, '80px'));
-  formWrap.appendChild(field('Take-Profit', tpModeSelect, '100px'));
-  formWrap.appendChild(field('TP Value', tpValueInput, '80px'));
-  backtestPanel.appendChild(formWrap);
+  formWrap.appendChild(configField('Symbol', symbolInput, '90px'));
+  formWrap.appendChild(configField('Timeframe', timeframeInput, '70px'));
+  formWrap.appendChild(configField(`Bars (max ${MAX_BACKTEST_BARS})`, barCountInput, '110px'));
+  formWrap.appendChild(configField('In-sample %', inSampleInput, '90px'));
+  formWrap.appendChild(configField('Qty/trade', qtyInput, '80px'));
+  formWrap.appendChild(configField('Starting cash', cashInput, '100px'));
+  formWrap.appendChild(configField('Stop-Loss', slModeSelect, '100px'));
+  formWrap.appendChild(configField('SL Value', slValueInput, '80px'));
+  formWrap.appendChild(configField('Take-Profit', tpModeSelect, '100px'));
+  formWrap.appendChild(configField('TP Value', tpValueInput, '80px'));
+
+  return {
+    formEl: formWrap,
+    getConfig(baseUrl?: string): BacktestConfig {
+      return {
+        symbol: symbolInput.value.trim().toUpperCase() || 'SPY',
+        timeframe: timeframeInput.value.trim() || '1h',
+        barCount: Math.max(50, Math.min(MAX_BACKTEST_BARS, parseInt(barCountInput.value, 10) || 500)),
+        inSamplePct: Math.max(10, Math.min(90, parseInt(inSampleInput.value, 10) || 70)),
+        qtyPerTrade: Math.max(1, parseFloat(qtyInput.value) || 1),
+        startingCash: Math.max(1, parseFloat(cashInput.value) || 10000),
+        stopLossMode: slModeSelect.value as StopLossMode,
+        stopLossValue: Math.max(0.01, parseFloat(slValueInput.value) || 2),
+        takeProfitMode: tpModeSelect.value as TakeProfitMode,
+        takeProfitValue: Math.max(0.01, parseFloat(tpValueInput.value) || 4),
+        baseUrl,
+      };
+    },
+  };
+}
+
+function toggleBacktest(): void {
+  if (!backtestPanel) return;
+  const isVisible = backtestPanel.style.display !== 'none';
+  backtestPanel.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) renderBacktest();
+}
+
+function renderBacktest(): void {
+  if (!backtestPanel) return;
+  backtestPanel.innerHTML = '';
+
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
+    zIndex: '1',
+  });
+  const headerTitle = document.createElement('div');
+  headerTitle.textContent = '⏱️ Time Machine — Backtest';
+  Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '4px' });
+  header.appendChild(headerTitle);
+  backtestPanel.appendChild(header);
+
+  const chartCtx = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const cfg = {
+    symbol: lastBacktestConfig?.symbol ?? chartCtx.symbol ?? 'SPY',
+    timeframe: lastBacktestConfig?.timeframe ?? chartCtx.timeframe ?? '1h',
+    barCount: lastBacktestConfig?.barCount ?? 500,
+    inSamplePct: lastBacktestConfig?.inSamplePct ?? 70,
+    qtyPerTrade: lastBacktestConfig?.qtyPerTrade ?? 1,
+    startingCash: lastBacktestConfig?.startingCash ?? 10000,
+    stopLossMode: lastBacktestConfig?.stopLossMode ?? 'none',
+    stopLossValue: lastBacktestConfig?.stopLossValue ?? 2,
+    takeProfitMode: lastBacktestConfig?.takeProfitMode ?? 'none',
+    takeProfitValue: lastBacktestConfig?.takeProfitValue ?? 4,
+  };
+
+  const formHandle = buildBacktestConfigForm(cfg);
+  backtestPanel.appendChild(formHandle.formEl);
 
   const actionsRow = document.createElement('div');
   Object.assign(actionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 8px' });
@@ -1676,19 +1838,7 @@ function renderBacktest(): void {
   }
 
   runBtn.onclick = async () => {
-    const config: BacktestConfig = {
-      symbol: symbolInput.value.trim().toUpperCase() || 'SPY',
-      timeframe: timeframeInput.value.trim() || '1h',
-      barCount: Math.max(50, Math.min(MAX_BACKTEST_BARS, parseInt(barCountInput.value, 10) || 500)),
-      inSamplePct: Math.max(10, Math.min(90, parseInt(inSampleInput.value, 10) || 70)),
-      qtyPerTrade: Math.max(1, parseFloat(qtyInput.value) || 1),
-      startingCash: Math.max(1, parseFloat(cashInput.value) || 10000),
-      stopLossMode: slModeSelect.value as StopLossMode,
-      stopLossValue: Math.max(0.01, parseFloat(slValueInput.value) || 2),
-      takeProfitMode: tpModeSelect.value as TakeProfitMode,
-      takeProfitValue: Math.max(0.01, parseFloat(tpValueInput.value) || 4),
-      baseUrl: chartCtx.baseUrl,
-    };
+    const config = formHandle.getConfig(chartCtx.baseUrl);
     lastBacktestConfig = config;
 
     const source = textarea ? textarea.value : '';
@@ -1740,6 +1890,322 @@ function renderBacktest(): void {
   };
 
   if (lastBacktestResult) renderResults(lastBacktestResult);
+}
+
+// ─── Strategy Lab (batch variant sweep) Panel ────────────────────────
+// Rescoped exactly per the adversarial review's mandated cuts on the
+// original "Overnight Strategy Lab" concept: no GA, no scheduling/idle-time
+// framing — a foreground "Run Batch" button only, a small fixed N of
+// variants (buildBatchVariants(), capped at MAX_BATCH_VARIANTS), the
+// existing single in-sample/out-of-sample Time Machine split (never
+// walk-forward), and a human-approval gate — the same prompt()-based save
+// flow as the editor's own Save button — before anything reaches the saved-
+// indicator library. Nothing here is ever applied or saved automatically.
+
+function toggleStrategyLab(): void {
+  if (!strategyLabPanel) return;
+  const isVisible = strategyLabPanel.style.display !== 'none';
+  strategyLabPanel.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) renderStrategyLab();
+}
+
+function renderStrategyLab(): void {
+  if (!strategyLabPanel) return;
+  strategyLabPanel.innerHTML = '';
+
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
+    zIndex: '1',
+  });
+  const headerTitle = document.createElement('div');
+  headerTitle.textContent = '🧪 Strategy Lab — Batch Run';
+  Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '2px' });
+  header.appendChild(headerTitle);
+  const headerSub = document.createElement('div');
+  headerSub.textContent = `Runs a fixed batch of up to ${MAX_BATCH_VARIANTS} parameter variants (baseline + up to ${MAX_SWEPT_INPUTS} numeric inputs, nudged one at a time) through Time Machine. You review and approve before anything is saved.`;
+  Object.assign(headerSub.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+  header.appendChild(headerSub);
+  strategyLabPanel.appendChild(header);
+
+  const chartCtx = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const cfg = {
+    symbol: lastStrategyLabConfig?.symbol ?? lastBacktestConfig?.symbol ?? chartCtx.symbol ?? 'SPY',
+    timeframe: lastStrategyLabConfig?.timeframe ?? lastBacktestConfig?.timeframe ?? chartCtx.timeframe ?? '1h',
+    barCount: lastStrategyLabConfig?.barCount ?? lastBacktestConfig?.barCount ?? 500,
+    inSamplePct: lastStrategyLabConfig?.inSamplePct ?? lastBacktestConfig?.inSamplePct ?? 70,
+    qtyPerTrade: lastStrategyLabConfig?.qtyPerTrade ?? lastBacktestConfig?.qtyPerTrade ?? 1,
+    startingCash: lastStrategyLabConfig?.startingCash ?? lastBacktestConfig?.startingCash ?? 10000,
+    stopLossMode: lastStrategyLabConfig?.stopLossMode ?? lastBacktestConfig?.stopLossMode ?? 'none',
+    stopLossValue: lastStrategyLabConfig?.stopLossValue ?? lastBacktestConfig?.stopLossValue ?? 2,
+    takeProfitMode: lastStrategyLabConfig?.takeProfitMode ?? lastBacktestConfig?.takeProfitMode ?? 'none',
+    takeProfitValue: lastStrategyLabConfig?.takeProfitValue ?? lastBacktestConfig?.takeProfitValue ?? 4,
+  };
+
+  const formHandle = buildBacktestConfigForm(cfg);
+  strategyLabPanel.appendChild(formHandle.formEl);
+
+  // Sweep preview — computed up front so the user knows exactly what's
+  // about to run before clicking, never a surprise. Recomputed at panel-
+  // open time and again right before running (in case the script changed
+  // in between); not live on every keystroke, same as the rest of this form.
+  const previewDiv = document.createElement('div');
+  Object.assign(previewDiv.style, { padding: '0 10px 6px', fontSize: '9px', color: 'rgba(255,255,255,0.55)' });
+  strategyLabPanel.appendChild(previewDiv);
+
+  let currentVariants: BatchVariant[] = [];
+  let sweepError: string | null = null;
+
+  function recomputeSweepPreview(): void {
+    const source = textarea ? textarea.value : '';
+    sweepError = null;
+    currentVariants = [];
+    previewDiv.style.color = 'rgba(255,255,255,0.55)';
+    if (!source.trim()) {
+      previewDiv.textContent = 'Editor is empty — nothing to run.';
+      return;
+    }
+    try {
+      const ast = parse(source);
+      const inputs = detectInputs(ast);
+      currentVariants = buildBatchVariants(inputs);
+      const numericCount = inputs.filter(i => i.type === 'number').length;
+      if (numericCount === 0) {
+        previewDiv.textContent = 'No numeric inputs detected in this script — batch will run the baseline only (1 variant).';
+      } else {
+        const swept = numericCount > MAX_SWEPT_INPUTS ? `first ${MAX_SWEPT_INPUTS} of ${numericCount}` : `${numericCount}`;
+        previewDiv.textContent = `Will run ${currentVariants.length} variants: ${currentVariants.map(v => v.label).join(' · ')} (sweeping ${swept} numeric input${numericCount === 1 ? '' : 's'}).`;
+      }
+    } catch (e: any) {
+      sweepError = e?.message ? String(e.message) : String(e);
+      previewDiv.textContent = `Script has a parse error — fix it before running a batch: ${sweepError}`;
+      previewDiv.style.color = '#ff4477';
+    }
+  }
+  recomputeSweepPreview();
+
+  const actionsRow = document.createElement('div');
+  Object.assign(actionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 8px' });
+
+  const runBatchBtn = document.createElement('button');
+  runBatchBtn.textContent = '▶ Run Batch';
+  Object.assign(runBatchBtn.style, {
+    padding: '4px 10px', border: '1px solid rgba(34,204,136,0.4)',
+    borderRadius: '4px', background: 'rgba(34,204,136,0.15)',
+    color: '#22cc88', cursor: 'pointer', fontSize: '10px', fontWeight: '700',
+  });
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = '✕ Cancel';
+  Object.assign(cancelBtn.style, {
+    padding: '4px 10px', border: '1px solid rgba(255,68,119,0.4)',
+    borderRadius: '4px', background: 'rgba(255,68,119,0.1)',
+    color: '#ff4477', cursor: 'pointer', fontSize: '10px', fontWeight: '600',
+    display: 'none',
+  });
+
+  const statusMsg = document.createElement('span');
+  Object.assign(statusMsg.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+
+  actionsRow.appendChild(runBatchBtn);
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(statusMsg);
+  strategyLabPanel.appendChild(actionsRow);
+
+  const resultsDiv = document.createElement('div');
+  Object.assign(resultsDiv.style, { padding: '0 10px 10px' });
+  strategyLabPanel.appendChild(resultsDiv);
+
+  function miniStatBlock(stats: BacktestResult['inSample'], color: string): HTMLDivElement {
+    const block = document.createElement('div');
+    Object.assign(block.style, { fontSize: '9px', color: 'rgba(255,255,255,0.65)' });
+    const title = document.createElement('span');
+    title.textContent = (stats.label === 'in-sample' ? 'IS ' : 'OOS ');
+    Object.assign(title.style, { color, fontWeight: '700' });
+    block.appendChild(title);
+    const text = document.createElement('span');
+    text.textContent = `Sharpe ${stats.sharpePerBar.toFixed(3)} · P&L ${(stats.netPnLPct * 100).toFixed(1)}% · DD ${(stats.maxDrawdownPct * 100).toFixed(1)}% · ${stats.totalTrades} trades`;
+    block.appendChild(text);
+    return block;
+  }
+
+  // Deliberately does NOT touch oakscript_active_name/originalSavedName —
+  // the editor is still editing the ORIGINAL script; approving a variant
+  // creates a new, separate saved indicator alongside it, never silently
+  // switches what a later Save/Apply click thinks it's editing.
+  function approveAndSaveVariant(variant: BatchVariant, btn: HTMLButtonElement): void {
+    const source = textarea ? textarea.value : '';
+    const rewritten = applyOverridesToSource(source, variant.overrides);
+    // applyOverridesToSource() matches input(...) calls line-by-line, but
+    // this DSL's lexer treats newlines as insignificant whitespace (see
+    // lexer.ts), so a multi-line `input(\n  9, "X"\n)` call — which
+    // detectInputs() (AST-based) sees fine — would silently fail to match
+    // here, saving a copy identical to the unmodified script instead of the
+    // tuned variant the user just reviewed. Only the empty-overrides
+    // (baseline) case is expected to leave the source byte-for-byte
+    // unchanged; any other case where nothing changed means the rewrite
+    // didn't find what it was looking for, so refuse to save silently-wrong
+    // content rather than let it pass as if it were the real variant.
+    if (variant.overrides.size > 0 && rewritten === source) {
+      alert(`Couldn't locate "${variant.label}" in the script text to update it (e.g. an unusually formatted input(...) call) — refusing to save a copy that wouldn't actually match what was tested.`);
+      return;
+    }
+    const currentName = localStorage.getItem('oakscript_active_name') || 'My Indicator';
+    const suggested = variant.overrides.size === 0
+      ? `${currentName} (batch baseline)`
+      : `${currentName} (${variant.label})`;
+    const name = prompt('Save this variant as a new indicator — nothing is saved until you confirm a name:', suggested);
+    if (!name) return;
+    saveUserIndicator(name, rewritten);
+    refreshIndicatorDropdownFn?.();
+    btn.textContent = '✓ Saved';
+    setTimeout(() => { btn.textContent = '💾 Approve & Save'; }, 1500);
+  }
+
+  function renderBatchResults(rows: BatchRunRow[]): void {
+    resultsDiv.innerHTML = '';
+
+    const disclaimer = document.createElement('div');
+    disclaimer.textContent = 'Same single fixed historical split and simplified next-bar-open fills as Time Machine. Ranked by in-sample Sharpe — out-of-sample is shown for reference only, never used to pick a "winner." Nothing is applied or saved automatically. Past performance on this data does not predict live results. This is not financial advice.';
+    Object.assign(disclaimer.style, {
+      fontSize: '9px', color: 'rgba(255,200,80,0.85)', background: 'rgba(255,200,80,0.08)',
+      border: '1px solid rgba(255,200,80,0.2)', borderRadius: '4px', padding: '5px 7px', marginBottom: '8px',
+    });
+    resultsDiv.appendChild(disclaimer);
+
+    const list = document.createElement('div');
+    Object.assign(list.style, { display: 'flex', flexDirection: 'column', gap: '5px' });
+
+    rows.forEach((row, idx) => {
+      const isBest = idx === 0;
+      const card = document.createElement('div');
+      Object.assign(card.style, {
+        border: isBest ? '1px solid rgba(34,204,136,0.35)' : '1px solid rgba(180,140,255,0.12)',
+        borderRadius: '5px', padding: '6px 8px',
+        background: isBest ? 'rgba(34,204,136,0.06)' : 'rgba(255,255,255,0.02)',
+      });
+
+      const top = document.createElement('div');
+      Object.assign(top.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', gap: '6px' });
+
+      const label = document.createElement('span');
+      label.textContent = (isBest ? '★ Best (in-sample): ' : `#${idx + 1} `) + row.variant.label;
+      Object.assign(label.style, {
+        fontSize: '10px', fontWeight: '700', color: isBest ? '#22cc88' : 'rgba(255,255,255,0.75)',
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      });
+      top.appendChild(label);
+
+      const rightSide = document.createElement('div');
+      Object.assign(rightSide.style, { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: '0' });
+
+      if (row.result.scriptErrors.length > 0) {
+        const warn = document.createElement('span');
+        warn.textContent = '⚠ errors';
+        warn.title = row.result.scriptErrors.slice(0, 3).join(' | ');
+        Object.assign(warn.style, { fontSize: '9px', color: '#ff4477' });
+        rightSide.appendChild(warn);
+      }
+
+      const saveBtnRow = document.createElement('button');
+      saveBtnRow.textContent = '💾 Approve & Save';
+      Object.assign(saveBtnRow.style, {
+        padding: '3px 8px', border: '1px solid rgba(34,204,136,0.4)', borderRadius: '4px',
+        background: 'rgba(34,204,136,0.12)', color: '#22cc88', cursor: 'pointer',
+        fontSize: '9px', fontWeight: '600', whiteSpace: 'nowrap',
+      });
+      saveBtnRow.onclick = () => approveAndSaveVariant(row.variant, saveBtnRow);
+      rightSide.appendChild(saveBtnRow);
+
+      top.appendChild(rightSide);
+      card.appendChild(top);
+
+      const statsRow = document.createElement('div');
+      Object.assign(statsRow.style, { display: 'flex', gap: '14px', flexWrap: 'wrap' });
+      statsRow.appendChild(miniStatBlock(row.result.inSample, BT_IN_SAMPLE_COLOR));
+      statsRow.appendChild(miniStatBlock(row.result.outOfSample, BT_OUT_OF_SAMPLE_COLOR));
+      card.appendChild(statsRow);
+
+      list.appendChild(card);
+    });
+
+    resultsDiv.appendChild(list);
+  }
+
+  runBatchBtn.onclick = async () => {
+    recomputeSweepPreview();
+    if (sweepError) {
+      statusMsg.textContent = 'Fix the script parse error above before running a batch.';
+      statusMsg.style.color = '#ff4477';
+      return;
+    }
+    if (currentVariants.length === 0) {
+      statusMsg.textContent = 'Editor is empty — nothing to run.';
+      statusMsg.style.color = '#ff4477';
+      return;
+    }
+
+    const source = textarea ? textarea.value : '';
+    const config = formHandle.getConfig(chartCtx.baseUrl);
+    lastStrategyLabConfig = config;
+
+    resultsDiv.innerHTML = '';
+    runBatchBtn.disabled = true;
+    runBatchBtn.textContent = 'Running...';
+    cancelBtn.style.display = 'inline-block';
+    statusMsg.style.color = 'rgba(255,255,255,0.4)';
+
+    const controller = new AbortController();
+    strategyLabAbortController = controller;
+    const variants = currentVariants;
+    const rows: BatchRunRow[] = [];
+
+    try {
+      statusMsg.textContent = 'Fetching historical bars...';
+      const rawBars = await fetchBacktestBars(config.symbol, config.timeframe, config.barCount, config.baseUrl);
+      if (controller.signal.aborted) throw new BacktestCancelledError();
+      const bars = barsToRuntimeBarData(rawBars);
+
+      for (let i = 0; i < variants.length; i++) {
+        const variant = variants[i];
+        statusMsg.textContent = `Running variant ${i + 1}/${variants.length} — ${variant.label}...`;
+        const result = await runBacktestOnBars(config, source, bars, {
+          signal: controller.signal,
+          inputOverrides: variant.overrides.size > 0 ? new Map<string, unknown>(variant.overrides) : undefined,
+        });
+        rows.push({ variant, result });
+      }
+
+      rows.sort((a, b) => b.result.inSample.sharpePerBar - a.result.inSample.sharpePerBar);
+      lastStrategyLabRows = rows;
+      statusMsg.textContent = `Done — ${rows.length} variants against ${bars.count} bars.`;
+      renderBatchResults(rows);
+    } catch (e: any) {
+      if (e instanceof BacktestCancelledError) {
+        statusMsg.textContent = `Cancelled — ${rows.length}/${variants.length} variants completed.`;
+        if (rows.length > 0) {
+          rows.sort((a, b) => b.result.inSample.sharpePerBar - a.result.inSample.sharpePerBar);
+          lastStrategyLabRows = rows;
+          renderBatchResults(rows);
+        }
+      } else {
+        statusMsg.textContent = `Batch failed: ${e?.message || e}`;
+        statusMsg.style.color = '#ff4477';
+      }
+    } finally {
+      runBatchBtn.disabled = false;
+      runBatchBtn.textContent = '▶ Run Batch';
+      cancelBtn.style.display = 'none';
+      strategyLabAbortController = null;
+    }
+  };
+
+  cancelBtn.onclick = () => {
+    strategyLabAbortController?.abort();
+  };
+
+  if (lastStrategyLabRows) renderBatchResults(lastStrategyLabRows);
 }
 
 export function showResults(errors: string[], _inputs: InputDef[]): void {
