@@ -78,6 +78,22 @@ export function visibleBarCount(view: ViewState, width: number): number {
   return Math.max(1, Math.floor(chartRight(width) / Math.max(0.5, view.barSpacing)) + 2);
 }
 
+/**
+ * CSS-pixel ("logical") size of a canvas — every layout/positioning
+ * calculation in this file and its callers (iso3d.ts, drawings.ts) is
+ * meant to operate in this space. Use this instead of reading the canvas's
+ * width/height off ctx.canvas directly: once the backing store is scaled by
+ * devicePixelRatio for sharpness (see main.ts's resize()), canvas.width
+ * stops being the on-screen size, and layout math built on it would
+ * silently double-count the DPR scale factor (bars rendered at a fraction
+ * of their intended size, hit-testing offset from what's drawn, etc.).
+ * clientWidth/clientHeight read the actual rendered CSS box instead, so
+ * they stay correct regardless of backing-store resolution.
+ */
+export function logicalSize(ctx: CanvasRenderingContext2D): { width: number; height: number } {
+  return { width: ctx.canvas.clientWidth, height: ctx.canvas.clientHeight };
+}
+
 export function getVisibleRange(view: ViewState, canvasWidth: number, totalBars: number): { start: number; end: number } {
   if (totalBars === 0) return { start: 0, end: -1 };
   const count = visibleBarCount(view, canvasWidth);
@@ -230,7 +246,7 @@ export function xToBarIndex(px: number, bars: BaseBar[], view: ViewState, width:
 let bgPhase = 0;
 export function drawBackground(ctx: CanvasRenderingContext2D, time: number): void {
   bgPhase += 0.003;
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
 
   // Richer deep-space gradient
   const grad = ctx.createRadialGradient(width * 0.35, height * 0.25, 0, width * 0.5, height * 0.55, width * 0.9);
@@ -282,7 +298,7 @@ export function drawBackground(ctx: CanvasRenderingContext2D, time: number): voi
 
 // ─── TIME AXIS LABELS ──────────────────────────────────────────────
 export function drawTimeAxis(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
@@ -315,7 +331,7 @@ export function drawTimeAxis(ctx: CanvasRenderingContext2D, bars: BaseBar[], vie
 // Pre-allocated price array to avoid per-frame allocations
 const _gridPrices: number[] = [];
 export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, time: number): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
@@ -379,7 +395,7 @@ export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
 // Pre-allocated arrays to reduce GC pressure per frame
 const _barPrices: number[] = [];
 export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, time: number, barType: BarType, perBarVol?: PerBarVolume[], barColorOverrides?: Map<number, string>): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
@@ -713,7 +729,7 @@ let volPulse = 0;
 export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin[], mode: VolumeProfileMode, time: number, vp?: VPComputed, profileWidth = 86): void {
   volPulse += 0.02;
   if (bins.length === 0) return;
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const maxVol = Math.max(...bins.map(b => b.volume));
   if (maxVol === 0) return;
   const cTop = height * 0.05;
@@ -837,21 +853,21 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
 
 // ─── OHLC TOOLTIP ─────────────────────────────────────────────────
 export function drawOHLCTooltip(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, mx: number, my: number, barType: BarType): void {
-  const { start, end } = getVisibleRange(view, ctx.canvas.width, bars.length);
+  const { start, end } = getVisibleRange(view, ctx.canvas.clientWidth, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
   if (visible.length === 0) return;
 
   const vLen = visible.length;
-  const right = chartRight(ctx.canvas.width);
+  const right = chartRight(ctx.canvas.clientWidth);
   const barIdx = Math.max(0, Math.min(vLen - 1, Math.round(vLen - 1 - (right - mx) / view.barSpacing)));
   const bar = visible[barIdx];
 
   const lineH = 15;
   const w = 170;
   const h = 7 * lineH + 8;
-  const tx = Math.min(mx + 16, ctx.canvas.width - w - 8);
-  const ty = Math.min(my - h / 2, ctx.canvas.height - h - 8);
+  const tx = Math.min(mx + 16, ctx.canvas.clientWidth - w - 8);
+  const ty = Math.min(my - h / 2, ctx.canvas.clientHeight - h - 8);
 
   ctx.shadowBlur = 12;
   ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
@@ -889,7 +905,7 @@ export interface TradeMarker {
 
 export function drawTradeMarkers(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, markers: TradeMarker[], is3D = false): void {
   if (markers.length === 0) return;
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
@@ -956,7 +972,7 @@ export function drawTradeMarkers(ctx: CanvasRenderingContext2D, bars: BaseBar[],
 
 // ─── CROSSHAIR ─────────────────────────────────────────────────────
 export function drawCrosshair(ctx: CanvasRenderingContext2D, mx: number, my: number): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   ctx.save();
   ctx.shadowBlur = 8;
   ctx.shadowColor = 'rgba(180, 140, 255, 0.2)';
@@ -1007,7 +1023,7 @@ export function drawParticles(ctx: CanvasRenderingContext2D): void {
 
 // ─── STATUS BAR ────────────────────────────────────────────────────
 export function drawStatusBar(ctx: CanvasRenderingContext2D, text: string): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const grad = ctx.createLinearGradient(0, height - 26, 0, height);
   grad.addColorStop(0, 'rgba(12, 12, 28, 0)');
   grad.addColorStop(0.3, 'rgba(12, 12, 28, 0.8)');
@@ -1022,7 +1038,7 @@ export function drawStatusBar(ctx: CanvasRenderingContext2D, text: string): void
 
 // ─── SECONDARY CHART (separate pane for oscillators) ──────────────
 export function drawSecondaryChart(ctx: CanvasRenderingContext2D, plots: OakPlot[], bars: BaseBar[], view: ViewState): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   if (height < 20 || plots.length === 0) return;
 
   // Background
@@ -1184,7 +1200,7 @@ export function drawSecondaryChart(ctx: CanvasRenderingContext2D, plots: OakPlot
 
 // ─── OAKSCRIPT PLOT RENDERER ──────────────────────────────────────
 export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot[], bars: BaseBar[], view: ViewState): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length || plots.length === 0) return;
 
@@ -1699,22 +1715,22 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
     const rows = p.rows || 0;
     if (cols <= 0 || rows <= 0 || !p.cells) continue;
     const cells = p.cells;
-    const cw = Math.min(TABLE_CELL_W, Math.max(30, (ctx.canvas.width - TABLE_PAD * 2) / cols));
-    const ch = Math.min(TABLE_CELL_H, Math.max(14, (ctx.canvas.height - TABLE_PAD * 2) / rows));
+    const cw = Math.min(TABLE_CELL_W, Math.max(30, (ctx.canvas.clientWidth - TABLE_PAD * 2) / cols));
+    const ch = Math.min(TABLE_CELL_H, Math.max(14, (ctx.canvas.clientHeight - TABLE_PAD * 2) / rows));
     const tblW = cw * cols;
     const tblH = ch * rows;
     const pos = p.position || 'top_right';
 
-    let ox = (ctx.canvas.width - tblW) / 2;
+    let ox = (ctx.canvas.clientWidth - tblW) / 2;
     if (pos.includes('left')) ox = TABLE_PAD;
-    else if (pos.includes('right')) ox = ctx.canvas.width - tblW - TABLE_PAD;
+    else if (pos.includes('right')) ox = ctx.canvas.clientWidth - tblW - TABLE_PAD;
 
-    let oy = (ctx.canvas.height - tblH) / 2;
+    let oy = (ctx.canvas.clientHeight - tblH) / 2;
     if (pos.includes('top')) oy = TABLE_PAD;
-    else if (pos.includes('bottom')) oy = ctx.canvas.height - tblH - TABLE_PAD;
+    else if (pos.includes('bottom')) oy = ctx.canvas.clientHeight - tblH - TABLE_PAD;
 
-    ox = Math.max(0, Math.min(ox, Math.max(0, ctx.canvas.width - tblW)));
-    oy = Math.max(0, Math.min(oy, Math.max(0, ctx.canvas.height - tblH)));
+    ox = Math.max(0, Math.min(ox, Math.max(0, ctx.canvas.clientWidth - tblW)));
+    oy = Math.max(0, Math.min(oy, Math.max(0, ctx.canvas.clientHeight - tblH)));
 
     ctx.fillStyle = p.bgColor || 'rgba(8,8,20,0.85)';
     ctx.fillRect(ox, oy, tblW, tblH);

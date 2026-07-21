@@ -1,7 +1,7 @@
 import type { BaseBar } from '@dafe/types';
 import {
   barX, priceToY, getPriceRange, xToBarIndex, yToPrice,
-  chartRight, type ViewState,
+  chartRight, logicalSize, type ViewState,
 } from './chart-renderer';
 
 export type DrawTool = 'none' | 'trend' | 'ray' | 'hline' | 'rect' | 'fib' | 'channel' | 'text';
@@ -99,7 +99,7 @@ export function onMove(px: number, py: number, bars: BaseBar[], view: ViewState,
 }
 
 export function drawAll(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { minP, pRange, start, vLen } = getPriceRange(bars, view, width);
   if (vLen === 0) return;
   const X = (bar: number) => barX(bar - start, vLen, width, view.barSpacing, view.scrollX);

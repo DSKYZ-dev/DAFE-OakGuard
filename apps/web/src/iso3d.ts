@@ -2,7 +2,7 @@ import type { BaseBar, VolumeBin, VolumeProfileMode } from '@dafe/types';
 import type { PerBarVolume } from './data-generator';
 import type { VisualEngine, VPComputed } from './volume-profile';
 import {
-  getVisibleRange, barX, chartRight, priceToY,
+  getVisibleRange, barX, chartRight, priceToY, logicalSize,
   TOP_FRAC, BOT_FRAC, RIGHT_MARGIN, type ViewState,
 } from './chart-renderer';
 
@@ -224,7 +224,7 @@ function draw3DKagiSeries(
 // it pans and scales WITH the chart under any zoom/pan/stretch/compress and
 // stays perfectly still when the chart is still.
 function drawGraph3DBackground(ctx: CanvasRenderingContext2D, view: ViewState): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   ctx.fillStyle = '#070713';
   ctx.fillRect(0, 0, width, height);
 
@@ -257,7 +257,7 @@ function drawGraph3DBackground(ctx: CanvasRenderingContext2D, view: ViewState): 
 // `stars` gates the twinkling starfield so non-star modes (particles) keep the
 // nebula glow without the stars.
 function drawAtmosphere(ctx: CanvasRenderingContext2D, time: number, stars: boolean = true): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
 
   // Deep space gradient
   const g = ctx.createRadialGradient(width * 0.5, height * 0.38, 0, width * 0.5, height * 0.5, width * 0.9);
@@ -330,7 +330,7 @@ function drawFloorGrid(
   ctx: CanvasRenderingContext2D,
   bars: BaseBar[], view: ViewState, minP: number, pRange: number,
 ): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   const vLen = Math.max(0, Math.min(end, bars.length - 1) - Math.max(0, start) + 1);
   if (vLen === 0) return;
@@ -621,7 +621,7 @@ function draw3DVolume(
   volumeMode: VolumeProfileMode, visualEngine: VisualEngine,
   profileWidth: number, vpComputed?: VPComputed,
 ): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const bs = view.barSpacing;
   const p2y = (p: number) => priceToY(p, minP, pRange, height, view);
 
@@ -704,7 +704,7 @@ export function draw3DScene(
   view: ViewState,
   opts: Scene3DOptions,
 ): void {
-  const { width, height } = ctx.canvas;
+  const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));

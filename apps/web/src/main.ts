@@ -577,10 +577,22 @@ let lowerHeight = 220; // dynamic for 3D pane and resizable divider
 function resize() {
   const w = window.innerWidth;
   const h = Math.max(100, window.innerHeight - lowerHeight);
-  canvas.width = w;
-  canvas.height = h;
-  secCanvas.width = w;
-  secCanvas.height = lowerHeight;
+  // Backing-store resolution is scaled by devicePixelRatio (clamped like
+  // every other renderer in this app — three-indicators.ts, webgl-renderer.ts
+  // — to cap GPU/fill cost on very-high-DPI displays) so the chart renders
+  // at native sharpness instead of a blurry 1x bitmap stretched to fill a
+  // Retina-size CSS box. The CSS display size (canvas is `width:100%;
+  // height:100%` of its container, unchanged) stays exactly w×h regardless,
+  // and setTransform makes every existing draw call — all written in
+  // CSS-pixel coordinates — land correctly on the higher-res buffer without
+  // having to rescale a single one of them by hand.
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  secCanvas.width = Math.round(w * dpr);
+  secCanvas.height = Math.round(lowerHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  secCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const pane3D = document.getElementById('three-lower-scene');
   if (pane3D) pane3D.style.height = `${lowerHeight}px`;
   (window as any).__dafeLowerHeight = lowerHeight;
@@ -611,15 +623,15 @@ function regenerate() {
 
 // ─── Mouse ─────────────────────────────────────────────────────────
 function getBarsThatFit(): number {
-  return visibleBarCount(view, canvas.width);
+  return visibleBarCount(view, canvas.clientWidth);
 }
 
 canvas.addEventListener('wheel', (e: WheelEvent) => {
   e.preventDefault();
   const oldBs = view.barSpacing;
-  const right = chartRight(canvas.width);
+  const right = chartRight(canvas.clientWidth);
 
-  const { start, end } = getVisibleRange(view, canvas.width, bars.length);
+  const { start, end } = getVisibleRange(view, canvas.clientWidth, bars.length);
   const vLen = end - start + 1;
   const localIdx = vLen - 1 - (right - e.clientX) / oldBs;
   const barUnderMouse = start + Math.round(localIdx);
@@ -627,7 +639,7 @@ canvas.addEventListener('wheel', (e: WheelEvent) => {
   view.barSpacing *= e.deltaY > 0 ? 0.9 : 1.1;
   view.barSpacing = Math.max(MIN_BAR_SPACING, Math.min(MAX_BAR_SPACING, view.barSpacing));
 
-  const newCount = visibleBarCount(view, canvas.width);
+  const newCount = visibleBarCount(view, canvas.clientWidth);
   const newLocalIdx = newCount - 1 - (right - e.clientX) / view.barSpacing;
   const newStart = Math.max(0, Math.min(bars.length - 1, barUnderMouse - Math.round(newLocalIdx)));
   const newEnd = newStart + newCount - 1;
@@ -640,11 +652,11 @@ canvas.addEventListener('wheel', (e: WheelEvent) => {
 let scaleYDragging = false;
 canvas.addEventListener('mousedown', (e) => {
   if (draw.isDrawing() && !is3DMode) {
-    draw.onClick(e.clientX, e.clientY, transformed, view, canvas.width, canvas.height);
+    draw.onClick(e.clientX, e.clientY, transformed, view, canvas.clientWidth, canvas.clientHeight);
     visualAdapter.logAction('draw', `Placed ${draw.getTool()} at (${e.clientX}, ${e.clientY})`);
     return;
   }
-  if (e.clientX > chartRight(canvas.width)) {
+  if (e.clientX > chartRight(canvas.clientWidth)) {
     scaleYDragging = true;
     canvas.style.cursor = 'ns-resize';
     lastMY = e.clientY;
@@ -659,7 +671,7 @@ canvas.addEventListener('mousemove', (e) => {
   showTooltip = false;
   tooltipTimer = setTimeout(() => { showTooltip = true; }, 2000);
   if (draw.isDrawing() && !is3DMode) {
-    draw.onMove(e.clientX, e.clientY, transformed, view, canvas.width, canvas.height);
+    draw.onMove(e.clientX, e.clientY, transformed, view, canvas.clientWidth, canvas.clientHeight);
   }
   if (scaleYDragging) {
     const dy = e.clientY - lastMY;
@@ -895,7 +907,7 @@ function captureChartSnapshot(): ChartSnapshot {
       mode: is3DMode ? '3D' : '2D',
       zoom: view.barSpacing,
       scrollOffset: view.scrollX,
-      visibleBars: visibleBarCount(view, canvas.width),
+      visibleBars: visibleBarCount(view, canvas.clientWidth),
       volumeProfile: vpSettings.mode,
       volumeEngine: vpSettings.visualEngine,
       vpiEnabled,
@@ -3244,7 +3256,7 @@ function frame(now: number) {
 
 function frameBody(now: number) {
   time = now;
-  const { width, height } = canvas;
+  const width = canvas.clientWidth, height = canvas.clientHeight;
 
   // Adaptive performance governor — samples FPS and retunes quality live.
   perfGovernor.sample(now);
@@ -3255,7 +3267,7 @@ function frameBody(now: number) {
   updateRegimeRibbon(now);
 
   // Compute visible range once per frame — shared by all drawing functions
-  const { start: visStart, end: visEnd } = getVisibleRange(view, canvas.width, transformed.length);
+  const { start: visStart, end: visEnd } = getVisibleRange(view, canvas.clientWidth, transformed.length);
 
   // Volume profile with cache
   const vpKey = `${visStart}_${visEnd}_${vpSettings.lookbackBars}_${vpSettings.binCount}_${vpSettings.valueAreaPct}_${vpSettings.mode}_${vpSettings.profileWidth}`;
@@ -3303,7 +3315,7 @@ function frameBody(now: number) {
     const shape3DForMain = combined3d
       ? [...combined3d.main, ...combined3d.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane === '3d')
       : [];
-    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.width, canvas.height, shape3DForMain);
+    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.clientWidth, canvas.clientHeight, shape3DForMain);
     // Draw time axis on the 2D canvas (always needed)
     drawTimeAxis(ctx, transformed, view);
   } else if (is3DMode) {
@@ -3373,7 +3385,7 @@ function frameBody(now: number) {
         const shape3DforSep = [...combined.main, ...combined.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane !== '3d');
         show3D(sep3D, shape3DforSep, transformed.length);
         const main3D = combined.plot3d.filter(p => p.pane !== 'separate') as OakPlot3D[];
-        if (main3D.length > 0 && !isViz3DActive()) toggle3DViz(transformed, view, canvas.width, canvas.height);
+        if (main3D.length > 0 && !isViz3DActive()) toggle3DViz(transformed, view, canvas.clientWidth, canvas.clientHeight);
         if (main3D.length === 0 && isViz3DActive()) { disposeViz(); }
       }
     }
@@ -3381,7 +3393,7 @@ function frameBody(now: number) {
       if (hasPane3d) {
         // 3D indicator active: clear secondary canvas, no 2D plots
         secCtx.fillStyle = '#0a0a18';
-        secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
+        secCtx.fillRect(0, 0, secCanvas.clientWidth, secCanvas.clientHeight);
       } else {
         if (oakPathCache.mainPlots.length > 0 && !isChart3DMode()) {
           drawOakScriptPlots(ctx, oakPathCache.mainPlots, transformed, view);
@@ -3390,14 +3402,14 @@ function frameBody(now: number) {
       }
     } else {
       secCtx.fillStyle = '#0a0a18';
-      secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
+      secCtx.fillRect(0, 0, secCanvas.clientWidth, secCanvas.clientHeight);
       if (isViz3DActive()) disposeViz();
       if (isChart3DMode()) dispose3DScene();
       hide3D();
     }
   } else {
     secCtx.fillStyle = '#0a0a18';
-    secCtx.fillRect(0, 0, secCanvas.width, secCanvas.height);
+    secCtx.fillRect(0, 0, secCanvas.clientWidth, secCanvas.clientHeight);
     if (isViz3DActive()) disposeViz();
     if (isChart3DMode()) dispose3DScene();
     hide3D();
