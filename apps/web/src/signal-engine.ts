@@ -1,8 +1,8 @@
 // ─── Signal Engine ──────────────────────────────────────────────────
-// The one shared signal layer between indicators and everything that acts
+// The one shared signal layer between Signal Analysis Models and everything that acts
 // on them:
 //
-//   Indicator (OakScript)
+//   Signal Analysis Model (OakScript)
 //         │
 //         ▼
 //    Signal Engine  ← this module
@@ -13,12 +13,12 @@
 //         ├── Paper Trader    (main.ts auto-trade consumer via onLiveSignal)
 //         ├── Live Automation (same live-edge stream; real-brokerage routing
 //         │                    is deliberately NOT auto-wired — paper only)
-//         └── Optimizer       (Strategy Lab batches run through the same
+//         └── Optimizer       (Model Lab batches run through the same
 //                              backtest path, so it consumes this too)
 //
 // A script expresses signals EITHER as explicit strategy.entry()/exit()
 // calls OR as plotted Buy/Sell markers (plotshape/plotshape_3d) — one
-// script serves as both an indicator and a strategy, no TradingView-style
+// script serves as both a chart study and an executable model, no TradingView-style
 // dual-script split. Explicit strategy.* intent always wins when present;
 // marker labels (then up/down marker style) classify the rest.
 

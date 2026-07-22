@@ -158,7 +158,7 @@ export const REGIME_COLORS: Record<RegimeType, string> = {
   volatile: '#ff4477',
 };
 
-// Suggested built-in indicator per regime. Deliberately drawn from names
+// Suggested built-in signal model per regime. Deliberately drawn from names
 // that ALREADY EXIST in oakscript/indicators.ts (never invented) — the
 // classic idiom the original pitch named: trend gets a trend-follower,
 // range gets mean-reversion bands, volatility gets an ATR-adaptive stop.
@@ -242,7 +242,7 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
     confidenceEl.textContent = `${Math.round(result.confidence * 100)}% · ADX ${result.adx.toFixed(0)} · ATR×${result.atrRatio.toFixed(2)}`;
     currentSuggestion = REGIME_SUGGESTIONS[result.regime];
     suggestBtn.textContent = `Suggest: ${currentSuggestion} →`;
-    suggestBtn.title = 'Advisory only — click to apply this preset indicator. Never applied automatically.';
+    suggestBtn.title = 'Advisory only — click to apply this preset signal model. Never applied automatically.';
   }
 
   return { el, update };

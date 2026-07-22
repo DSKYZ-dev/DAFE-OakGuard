@@ -870,13 +870,13 @@
         <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">Resets cash, positions, and open orders back to a fresh account. Chart execution markers are kept.</div>
       </div>
       <div class="settings-section">
-        <div class="settings-section-title">Indicators</div>
+        <div class="settings-section-title">Signal Analysis Models</div>
         <button id="set-open-editor" style="width:100%;padding:6px 12px;border:1px solid rgba(180,140,255,0.2);border-radius:5px;background:rgba(180,140,255,0.08);color:#b48cff;cursor:pointer;font-size:11px;">Open OakScript Editor</button>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Audit Trail</div>
         <button id="set-open-ledger" style="width:100%;padding:6px 12px;border:1px solid rgba(180,140,255,0.2);border-radius:5px;background:rgba(180,140,255,0.08);color:#b48cff;cursor:pointer;font-size:11px;">🔗 View Glass Ledger</button>
-        <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">A tamper-evident, hash-chained record of trade fills and indicator saves/deletes.</div>
+        <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">A tamper-evident, hash-chained record of trade fills and signal model saves/deletes.</div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Storyboard</div>
@@ -909,7 +909,7 @@
         <div class="hotkey-grid">
           <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input"></label>
           <label>Volume Profile <input type="text" id="hk-vp" value="Numpad1" class="hotkey-input"></label>
-          <label>Indicator Editor <input type="text" id="hk-oak" value="Numpad2" class="hotkey-input"></label>
+          <label>Model Editor <input type="text" id="hk-oak" value="Numpad2" class="hotkey-input"></label>
           <label>Frame All <input type="text" id="hk-frame" value="Numpad3" class="hotkey-input"></label>
           <label>Trend Line <input type="text" id="hk-trend" value="Numpad4" class="hotkey-input"></label>
           <label>Horizontal <input type="text" id="hk-hline" value="Numpad5" class="hotkey-input"></label>
@@ -1134,8 +1134,8 @@
     <div class="sep"></div>
 
     <button id="mode-toggle" style="display:none">2D <span class="key-hint">Np0</span></button>
-    <select id="indicator-select" title="Load Indicator" style="width:110px;padding:2px 4px;font-size:10px;background:rgba(12,12,28,0.9);color:rgba(255,255,255,0.7);border:1px solid rgba(180,140,255,0.15);border-radius:4px;cursor:pointer;">
-      <option value="" disabled selected>📊 Indicators</option>
+    <select id="indicator-select" title="Load Signal Analysis Model" style="width:110px;padding:2px 4px;font-size:10px;background:rgba(12,12,28,0.9);color:rgba(255,255,255,0.7);border:1px solid rgba(180,140,255,0.15);border-radius:4px;cursor:pointer;">
+      <option value="" disabled selected>📊 Signal Models</option>
     </select>
     <button id="vp-toggle">VP <span class="key-hint">Np1</span></button>
     <button id="regime-toggle" title="Toggle the Regime Ribbon (advisory market-state strip at the top of the chart)">◉ Regime</button>

@@ -620,7 +620,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   let indicatorVisible = true;
   const viewBtn = document.createElement('button');
   viewBtn.textContent = '👁 Hide';
-  viewBtn.title = 'Toggle indicator visibility on chart';
+  viewBtn.title = 'Toggle signal model visibility on chart';
   viewBtn.style.cssText = 'padding:3px 7px;border:1px solid rgba(255,184,0,0.25);border-radius:4px;background:rgba(255,184,0,0.12);color:#FFB800;cursor:pointer;font-size:10px;font-weight:600;';
   viewBtn.onclick = () => {
     indicatorVisible = !indicatorVisible;
@@ -652,7 +652,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
       const choice = confirm(
         `You are editing "${originalSavedName}".\n\n` +
         `OK = Replace "${originalSavedName}" with your changes\n` +
-        `Cancel = Save as a NEW indicator`
+        `Cancel = Save as a NEW signal model`
       );
       if (choice) {
         // Replace original
@@ -661,7 +661,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
         setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
       } else {
         // Save as new
-        const name = prompt('Save indicator as:', currentName);
+        const name = prompt('Save signal model as:', currentName);
         if (name) {
           saveUserIndicator(name, src);
           localStorage.setItem('oakscript_active_name', name);
@@ -672,7 +672,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
       }
     } else {
       // Not editing a saved script — just save as new
-      const name = prompt('Save indicator as:', currentName);
+      const name = prompt('Save signal model as:', currentName);
       if (name) {
         saveUserIndicator(name, src);
         localStorage.setItem('oakscript_active_name', name);
@@ -687,12 +687,12 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   // Manage saved scripts button (delete, view)
   const manageBtn = document.createElement('button');
   manageBtn.textContent = '🗑';
-  manageBtn.title = 'Manage saved indicators (delete, rename)';
+  manageBtn.title = 'Manage saved signal models (delete, rename)';
   Object.assign(manageBtn.style, btnStyle('rgba(255,68,119,0.5)', 'transparent'));
   manageBtn.onclick = () => {
     const userInds = getUserIndicators();
     if (userInds.length === 0) {
-      alert('No saved indicators to manage.');
+      alert('No saved signal models to manage.');
       return;
     }
     // Build a simple modal with delete buttons
@@ -704,7 +704,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
       boxShadow: '0 8px 40px rgba(0,0,0,0.8)',
     });
     const title = document.createElement('div');
-    title.textContent = 'Manage Saved Indicators';
+    title.textContent = 'Manage Saved Signal Models';
     Object.assign(title.style, { color: '#b48cff', fontSize: '14px', fontWeight: '600', marginBottom: '12px' });
     modal.appendChild(title);
 
@@ -757,7 +757,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
           row.remove();
           refreshIndicatorDropdown();
           if (originalSavedName === ind.name) originalSavedName = null;
-          if (userInds.length === 1) { modal.remove(); alert('All saved indicators deleted.'); }
+          if (userInds.length === 1) { modal.remove(); alert('All saved signal models deleted.'); }
         }
       };
       row.appendChild(delBtn);
@@ -830,7 +830,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
       let finalName = def.name;
       if (getUserIndicators().some(i => i.name === finalName)) {
-        if (!confirm(`"${finalName}" already exists in your saved indicators. Overwrite it?`)) {
+        if (!confirm(`"${finalName}" already exists in your saved signal models. Overwrite it?`)) {
           const renamed = prompt('Import under a different name:', `${finalName} (imported)`);
           if (!renamed) return;
           finalName = renamed;
@@ -911,7 +911,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   const strategyLabBtn = document.createElement('button');
   strategyLabBtn.textContent = '🧪 Batch';
-  strategyLabBtn.title = 'Strategy Lab — run a small fixed batch of parameter variants against historical data';
+  strategyLabBtn.title = 'Model Lab — run a small fixed batch of parameter variants against historical data';
   Object.assign(strategyLabBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   strategyLabBtn.onclick = () => toggleStrategyLab();
 
@@ -964,10 +964,10 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   const genBtn = document.createElement('button');
   genBtn.textContent = '✍️ New';
-  genBtn.title = 'Generate indicator from description';
+  genBtn.title = 'Generate signal model from description';
   Object.assign(genBtn.style, agentBtnStyle('#22cc88'));
   genBtn.onclick = () => {
-    const desc = prompt('Describe the indicator:');
+    const desc = prompt('Describe the signal analysis model:');
     if (desc && onAgentAction) {
       // Only clear to the placeholder when the editor is ALREADY empty/
       // placeholder — i.e. this really is a from-scratch request. If there's
@@ -1141,7 +1141,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   const chatInput = document.createElement('input');
   chatInput.type = 'text';
-  chatInput.placeholder = 'Ask agent about this indicator...';
+  chatInput.placeholder = 'Ask agent about this signal model...';
   Object.assign(chatInput.style, {
     flex: '1', padding: '3px 6px',
     border: '1px solid rgba(180, 140, 255, 0.12)',
@@ -2211,7 +2211,7 @@ function renderStrategyLab(): void {
     zIndex: '1',
   });
   const headerTitle = document.createElement('div');
-  headerTitle.textContent = '🧪 Strategy Lab — Batch Run';
+  headerTitle.textContent = '🧪 Model Lab — Batch Run';
   Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '2px' });
   header.appendChild(headerTitle);
   const headerSub = document.createElement('div');
@@ -2356,7 +2356,7 @@ function renderStrategyLab(): void {
     const suggested = variant.overrides.size === 0
       ? `${currentName} (batch baseline)`
       : `${currentName} (${variant.label})`;
-    const name = prompt('Save this variant as a new indicator — nothing is saved until you confirm a name:', suggested);
+    const name = prompt('Save this variant as a new signal model — nothing is saved until you confirm a name:', suggested);
     if (!name) return;
     saveUserIndicator(name, rewritten);
     refreshIndicatorDropdownFn?.();

@@ -1055,7 +1055,7 @@ async function sendAdvisorMessage(text?: string): Promise<void> {
 
     if (data.ok) {
       const reply = data.reply || '(empty response)';
-      appendAdvisorMessage('assistant', reply, currentAdvisorAgent === 'trade_advisor' ? 'Trade Advisor' : currentAdvisorAgent === 'market_intel' ? 'Market Intel' : 'Strategy Tuner', data.thinking || undefined);
+      appendAdvisorMessage('assistant', reply, currentAdvisorAgent === 'trade_advisor' ? 'Trade Advisor' : currentAdvisorAgent === 'market_intel' ? 'Market Intel' : 'Model Tuner', data.thinking || undefined);
       advisorMessages.push({ role: 'assistant', content: reply });
       voice.speak(reply.slice(0, 300));
 
@@ -1155,7 +1155,7 @@ function buildIndicatorList() {
     color: 'rgba(180,140,255,0.5)', fontSize: '9px', fontWeight: '600',
     textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px',
   });
-  title.textContent = `Active Indicators (${active.length})`;
+  title.textContent = `Active Signal Models (${active.length})`;
   indicatorListEl.appendChild(title);
 
   for (const inst of active) {
@@ -1338,7 +1338,7 @@ function updateUI() {
     // bars don't follow Heikin-Ashi/Renko/etc.), so lock it while active.
     const lock3D = hasPane3DActive();
     bt.disabled = lock3D;
-    bt.title = lock3D ? 'Bar type is locked while a 3D main-chart indicator is active' : '';
+    bt.title = lock3D ? 'Bar type is locked while a 3D main-chart signal model is active' : '';
   }
   const tfSelect = document.getElementById('tf-select') as HTMLSelectElement;
   if (tfSelect) {
@@ -1720,7 +1720,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const toggleLabel = document.createElement('label');
     toggleLabel.htmlFor = 'auto-trade-toggle';
     toggleLabel.textContent = '🤖 Auto-trade signals (paper)';
-    toggleLabel.title = 'When enabled, NEW entry/exit signals from active indicators place paper trades on the current symbol. Paper broker only — never sends real orders. Always starts off; not remembered across reloads.';
+    toggleLabel.title = 'When enabled, NEW entry/exit signals from active signal models place paper trades on the current symbol. Paper broker only — never sends real orders. Always starts off; not remembered across reloads.';
     Object.assign(toggleLabel.style, { fontSize: '10px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer' });
     const qtyInput = document.createElement('input');
     qtyInput.type = 'number'; qtyInput.min = '1'; qtyInput.step = '1'; qtyInput.value = '1';
@@ -1735,7 +1735,7 @@ document.addEventListener('DOMContentLoaded', () => {
     section.appendChild(row);
 
     const status = document.createElement('div');
-    status.textContent = 'Off — signals from active indicators are ignored.';
+    status.textContent = 'Off — signals from active signal models are ignored.';
     Object.assign(status.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginTop: '5px' });
     section.appendChild(status);
     autoTradeStatusEl = status;
@@ -1745,7 +1745,7 @@ document.addEventListener('DOMContentLoaded', () => {
       autoTradeQty = Math.max(1, parseInt(qtyInput.value, 10) || 1);
       setAutoTradeStatus(autoTradeEnabled
         ? `Armed — new entry/exit signals will paper-trade ${currentSymbol} (qty ${autoTradeQty}).`
-        : 'Off — signals from active indicators are ignored.');
+        : 'Off — signals from active signal models are ignored.');
       visualAdapter.logAction('auto-trade', `Auto-trade ${autoTradeEnabled ? 'armed' : 'disarmed'}`);
     });
     qtyInput.addEventListener('change', () => {
@@ -1867,7 +1867,7 @@ document.addEventListener('DOMContentLoaded', () => {
           name: 'Editor Script',
           category: 'Custom',
           source,
-          description: 'User-edited indicator',
+          description: 'User-edited signal model',
         });
       }
     } else {
@@ -2007,7 +2007,7 @@ document.addEventListener('DOMContentLoaded', () => {
         appendChat('agent', reply.slice(0, 300));
       });
     } else if (action === 'metrics') {
-      if (getActiveInstances().length === 0) { appendChat('agent', 'No active indicators.'); return; }
+      if (getActiveInstances().length === 0) { appendChat('agent', 'No active signal models.'); return; }
       appendChat('agent', 'Analyzing metrics...');
       await agentAnalyzeMetrics((reply: string) => {
         appendChat('agent', reply.slice(0, 300));
@@ -2049,7 +2049,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 2D/main-chart-only indicator — the user's words outrank the toggle.
         if (!has3D && prefer3D && !/\b(main chart only|2d only|no 3d|without 3d|remove( the)? 3d|flat chart)\b/i.test(msg)) stateInfo += '\nIssue: No 3D rendering.';
       } else {
-        stateInfo = 'No active indicator.';
+        stateInfo = 'No active signal model.';
       }
 
       // The state diagnostics above can flag "no signals generated," but that
@@ -2212,7 +2212,7 @@ CRITICAL RULES:
     {
       key: 'G', ctrl: true, alt: true,
       handler: () => {
-        const t = prompt('Describe the indicator:');
+        const t = prompt('Describe the signal analysis model:');
         if (t && osTextarea) {
           if (hasRealEditorScript()) {
             (window as any).__osAppendChat?.('agent', `Refining current script: "${t.slice(0, 50)}"...`);

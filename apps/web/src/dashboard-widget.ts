@@ -201,7 +201,7 @@ export function createDashboard(): {
         return;
       }
       if (instances.length === 0) {
-        content.innerHTML = `<div style="color:rgba(255,255,255,0.25);font-size:10px;padding:8px;">All ${all.length} indicator${all.length > 1 ? 's are' : ' is'} hidden from the dashboard — use the 📊 toggle in the Active Indicators panel to show metrics.</div>`;
+        content.innerHTML = `<div style="color:rgba(255,255,255,0.25);font-size:10px;padding:8px;">All ${all.length} signal model${all.length > 1 ? 's are' : ' is'} hidden from the dashboard — use the 📊 toggle in the Active Signal Models panel to show metrics.</div>`;
         return;
       }
 

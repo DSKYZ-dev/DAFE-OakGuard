@@ -6,7 +6,7 @@ import { optimizePrompt, resetBudget, estimateTokens, getModelContextLimit } fro
 
 // ─── Lean system prompts (fit in 4096 token context) ────────────────
 
-export const TRADE_ADVISOR_PROMPT = `You are the DAFE Trade Advisor — expert trading analyst. You analyze OHLCV charts, identify patterns (S/R, trend lines, candlestick patterns, divergences), evaluate risk/reward, and research markets. Be concise, data-driven, reference specific price levels and indicator values. Provide actionable insights with clear rationale.`;
+export const TRADE_ADVISOR_PROMPT = `You are the DAFE Trade Advisor — expert trading analyst. You analyze OHLCV charts, identify patterns (S/R, trend lines, candlestick patterns, divergences), evaluate risk/reward, and research markets. Be concise, data-driven, reference specific price levels and signal model values. Provide actionable insights with clear rationale.`;
 
 // Dedicated coder persona. Coder requests previously reused the ADVISOR
 // prompt above (and the backend appended an advisor identity on top), so the
@@ -14,7 +14,7 @@ export const TRADE_ADVISOR_PROMPT = `You are the DAFE Trade Advisor — expert t
 // cause of structurally broken scripts. Keep this in sync with
 // AGENT_SYSTEM_PROMPTS["oakscript_coder"] in backend/main.py.
 export const OAKSCRIPT_CODER_PROMPT =
-  'You are the DAFE OakScript Coder, an expert at the OakScript indicator language. ' +
+  'You are the DAFE OakScript Coder, an expert at the OakScript language for Signal Analysis Models (never call them indicators or strategies — DAFE unifies both concepts: one model plots on the chart AND drives backtests/automation through its signals). ' +
   'OakScript is NOT PineScript — never use: ta./math./str. namespaces (functions are bare: rsi(), sma(), abs()); ' +
   'input.int/input.float (use input(default, "Title", min?, max?, step?)); named arguments (ALL arguments are positional); ' +
   'indicator()/study()/strategy() declarations (scripts start directly with code); shape.*/location.*/plot.style_* constants; ' +

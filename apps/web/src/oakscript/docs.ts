@@ -8,8 +8,8 @@ export function getDocumentation(): DocSection[] {
     // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Overview',
-      content: `OakScript is the DAFE Charts indicator scripting language — a PineScript-inspired
-bar-by-bar execution engine that computes technical indicators and renders them on
+      content: `OakScript is the DAFE Charts signal analysis model scripting language — a PineScript-inspired
+bar-by-bar execution engine that computes technical signal analysis models and renders them on
 the chart in both 2D and 3D.
 
 KEY PRINCIPLES:
@@ -29,7 +29,7 @@ KEY PRINCIPLES:
 /* Multi-line
    comment — C-style block comments */
 
-Use comments to document your indicator logic. The Trade Advisor agent can
+Use comments to document your signal analysis model logic. The Trade Advisor agent can
 read your comments to understand intent when fixing or enhancing code.`,
     },
     // ═══════════════════════════════════════════════════════════════════
@@ -90,7 +90,7 @@ Logical:     and  or  not  !
 Unary:       -  !
 
 Ternary (conditional) — cond ? valueIfTrue : valueIfFalse
-  Evaluated every bar. The KEY to dynamic, data-driven indicators:
+  Evaluated every bar. The KEY to dynamic, data-driven signal analysis models:
     trend = close > ema(close,50) ? 1 : -1
     col   = rsi(close,14) > 70 ? "#ff4477" : "#22cc88"
   Ternaries nest (right-associative):
@@ -166,7 +166,7 @@ they have no indentation requirement and cannot misparse this way.`,
     // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Arrays — Complete Reference',
-      content: `Arrays are the foundation of advanced indicator logic — order queues, scale-in
+      content: `Arrays are the foundation of advanced signal analysis model logic — order queues, scale-in
 levels, performance histories, adaptive metrics, and state machines all use arrays.
 
 ═══════════════════════════════════════════════════════════════════
@@ -472,7 +472,7 @@ USE CASES
     // ═══════════════════════════════════════════════════════════════════
     {
       title: 'Input Parameters',
-      content: `input() makes your indicator adjustable through the UI settings panel.
+      content: `input() makes your signal analysis model adjustable through the UI settings panel.
 
 Number input:
     len = input(14, "Length")
@@ -487,7 +487,7 @@ String input:
     label = input("Custom", "Label Text")
 
 Inputs appear as interactive sliders/toggles in the inputs panel when
-the indicator is selected. Users can adjust them without touching code.`,
+the signal analysis model is selected. Users can adjust them without touching code.`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {
@@ -511,7 +511,7 @@ PLOT RENDER STYLES (use the quoted string):
   "circles"    — a dot at each bar
   "cross"      — a plus mark at each bar
 
-CONDITIONAL / PER-BAR COLOR (the heart of expressive indicators):
+CONDITIONAL / PER-BAR COLOR (the heart of expressive signal analysis models):
   Because plot() runs every bar, pass a color expression and the line is
   painted segment-by-segment in that bar's color:
     c = close > open ? "#22cc88" : "#ff4477"
@@ -534,7 +534,7 @@ hline(value, color, pane?)
   CONSTANTS ONLY (e.g. RSI 70/30) — for DYNAMIC levels (fibs, pivots,
   moving S/R) use plot(level, "Title", "#hex", 1, "stepline") so the
   line follows the level instead of leaving old copies behind.
-  - value: number — price level or indicator threshold
+  - value: number — price level or signal analysis model threshold
   - color: hex string
   - pane: "main" or "separate"
 
@@ -561,7 +561,7 @@ EXAMPLES:
     {
       title: 'Combining, Layering & Manipulating — Cookbook',
       content: `OakScript rewards composition. Stack plots, drive colors from data,
-and blend translucent layers to build expressive, "works-of-art" indicators —
+and blend translucent layers to build expressive, "works-of-art" signal analysis models —
 the same way you would in PineScript. Recipes:
 
 ── 1. Heatmap line (per-bar color from value) ──
@@ -606,12 +606,12 @@ the same way you would in PineScript. Recipes:
 
 ── 6. 2D + 3D fusion ──  (see the 3D Plotting section)
   Combine any of the above with plot3d(series, name, style, color, "separate")
-  to project the indicator into an orbitable 3D scene beneath the chart.
+  to project the signal analysis model into an orbitable 3D scene beneath the chart.
 
 LAYERING PRINCIPLES:
   • Order matters — later plot() calls draw on top.
   • Use color.new(c, 80..95) for fills/backgrounds so layers stay readable.
-  • Drive color/linewidth/value from ternaries on indicators for "living" plots.
+  • Drive color/linewidth/value from ternaries on signal analysis models for "living" plots.
   • Keep heavy fills subtle; let one bright line lead the eye.`,
     },
     // ═══════════════════════════════════════════════════════════════════
@@ -674,7 +674,7 @@ TIPS:
     {
       title: '3D Plotting — plot3d() Complete Reference',
       content: `plot3d(series, name, style, color, pane?, z_level?)
-  Renders indicator data as a 3D visualization using Three.js (WebGL).
+  Renders signal analysis model data as a 3D visualization using Three.js (WebGL).
   - series: any number array — rsi(), macd.macd, volume, custom formula
   - name:   string — title displayed in the 3D scene
   - style:  string — must be one of the 15 styles below (QUOTED)
@@ -761,7 +761,7 @@ label3d(bar_index, price, text, color?, size?, z_level?, pane?)
   - Upper band: green (#22cc88) — tracks price above center
   - Lower band: red (#ff4477) — tracks price below center
   - Center line: purple (#b48cff) emissive core
-  - Best for: MACD lines, moving averages, trend indicators, centerlines
+  - Best for: MACD lines, moving averages, trend signal analysis models, centerlines
   - Requires: 3+ bars (more = smoother spline)
   - Pane: works on both "main" and "separate"
 
@@ -809,7 +809,7 @@ label3d(bar_index, price, text, color?, size?, z_level?, pane?)
   - Strand 2 (red #ff4477): reverse phase (π offset)
   - Rungs: purple (#b48cff) lines connecting strands every Nth bar
   - Core: white emissive tube running through the center
-  - Best for: sine waves, cyclic indicators, Elliott wave overlays
+  - Best for: sine waves, cyclic signal analysis models, Elliott wave overlays
   - Requires: 3+ bars; 20+ recommended for visible helix structure
   - Pane: both "main" and "separate"
 
@@ -912,7 +912,7 @@ PANE BEHAVIOR — Critical Details
   - Multiple plot3d("main") calls layer in a single 3D scene
   - Uses a shared Three.js scene with perspective camera
   - Aligned to the chart's bar positions using barX() mapping
-  - The scene is cleared when no 3D indicators are active
+  - The scene is cleared when no 3D signal analysis models are active
   - Grid helper + ambient/directional lighting included
 
 ═══════════════════════════════════════════════════════════════════
@@ -1097,11 +1097,11 @@ RULES FOR COMBINING 2D & 3D
     // ═══════════════════════════════════════════════════════════════════
     {
       title: '3D Creative Visual Vocabulary — Kinematic & Topological Techniques',
-      content: `When you need the agent to generate cutting-edge 3D indicators, use
+      content: `When you need the agent to generate cutting-edge 3D signal analysis models, use
       these visual vocabularies. They transform math into geometry.
       
       ═══════════════════════════════════════════════════════════════════
-      HIGHER-ORDER CALCULUS — 2nd & 3rd Derivative Indicators
+      HIGHER-ORDER CALCULUS — 2nd & 3rd Derivative Signal Analysis Models
       ═══════════════════════════════════════════════════════════════════
       These are not MACD/RSI — they measure CHANGE OF CHANGE of momentum.
       
@@ -1135,7 +1135,7 @@ RULES FOR COMBINING 2D & 3D
       ═══════════════════════════════════════════════════════════════════
       TOPOLOGICAL SIGNATURES — Knots, Wraps & Vortices
       ═══════════════════════════════════════════════════════════════════
-      Cross-indicator wraps detect regime changes:
+      Cross-signal analysis model wraps detect regime changes:
       
       r = rsi(close, 14)
       m = macd(close, 12, 26, 9)
@@ -1178,9 +1178,9 @@ RULES FOR COMBINING 2D & 3D
       
       1. ALWAYS use plotshape_3d() instead of plotshape() when chart is in
          3D mode — 2D shapes do NOT render in 3D mode
-      2. Use z_level to layer signals: lowest indicator at level 0,
+      2. Use z_level to layer signals: lowest signal analysis model at level 0,
          overlays at level 1-3, shapes at level 2-4
-      3. Normalize indicators to [0,1] range before comparing across types
+      3. Normalize signal analysis models to [0,1] range before comparing across types
       4. Higher-order derivatives (jerk, snap) produce noisier series —
          smooth them: ema(jerk, 5)
       5. Phase-space plots work best with scatter or line style, not surface
@@ -1195,7 +1195,7 @@ wma(source, length)         — Weighted Moving Average (linear weights)
 hma(source, length)         — Hull Moving Average (fast + smooth)
 rma(source, length)         — Wilder's smoothed MA (as used inside RSI/ATR)
 vwma(source, length)        — Volume-Weighted Moving Average
-macd(source, fast, slow, signal) — MACD indicator
+macd(source, fast, slow, signal) — MACD signal analysis model
   Returns an object with THREE properties:
     .macd   — MACD line array (fast EMA - slow EMA)
     .signal — Signal line array (EMA of MACD line)
@@ -1547,7 +1547,7 @@ style bloom post-processing. This adds a natural glow to bright
 areas of the chart:
 - Candle bodies emit color-specific glow (green for bull, red for bear)
 - 3D volume extrusions produce atmospheric radiance
-- Indicator ribbons and surfaces glow with their assigned colors
+- Model ribbons and surfaces glow with their assigned colors
 - Bloom strength auto-adapts to performance mode
 
 ═══════════════════════════════════════════════════════════════════
@@ -1582,11 +1582,11 @@ behind UI elements for a cinematic look.`,
     {
       title: 'Agent Integration (AI-Powered Editor)',
       content: `The Agent is an expert OakScript coder that can:
-- 💡 Brainstorm — suggest indicator ideas based on your chart
-- ✍️ Generate — create indicators from natural language descriptions
-- ✏️ Edit — modify existing indicator code
+- 💡 Brainstorm — suggest signal analysis model ideas based on your chart
+- ✍️ Generate — create signal analysis models from natural language descriptions
+- ✏️ Edit — modify existing signal analysis model code
 - 🔧 Fix — diagnose and auto-correct syntax/runtime errors
-- 📊 Analyze — review indicator metrics and suggest improvements
+- 📊 Analyze — review signal analysis model metrics and suggest improvements
 
 How it works:
 1. Your message + chart state + current source code → sent to LLM
@@ -1720,7 +1720,7 @@ expands to a name built from the object type and the firing bar (something
 like "line:auto:482"), and each object type has its own rolling cap (30
 for line/box/circle/arrow, 20 for polyline/linefill/image, 6 for table) —
 the oldest is silently evicted once the cap is hit, so "one per signal"
-indicators never need manual cleanup.
+signal analysis models never need manual cleanup.
 
   Worked example — mark every confirmed pivot with a small circle:
     ph = pivothigh(high, 3, 3)
@@ -1936,7 +1936,7 @@ EXAMPLE:
     fill(rc.upper, rc.lower, "rgba(34,170,255,0.08)")
 
 This is built from the exact same plot()/fill() primitives as any other
-band indicator (compare the "Gradient cloud" recipe earlier) —
+band signal analysis model (compare the "Gradient cloud" recipe earlier) —
 regression.channel just supplies the three series; there is no auto-drawn
 channel object to reach for instead.`,
     },
@@ -1947,7 +1947,7 @@ strategy.exit(id?)
   Order-EVENT builtins consumed by the Time Machine backtest engine (the
   ⏱️ Backtest panel in the editor) — NOT rendering calls, and NOT active in
   the live chart/paper-trading path. A script that calls these can still be
-  used as a normal indicator (plot()/plotshape() etc. keep working exactly
+  used as a normal signal analysis model (plot()/plotshape() etc. keep working exactly
   as before); the strategy.* calls simply do nothing outside a backtest run.
 
   - direction: "long" or "short"
@@ -1969,7 +1969,7 @@ strategy.exit(id?)
 
   EXECUTION MODEL: the backtest runs your script ONCE over the full
   historical range exactly like a normal chart render (persist/var state
-  and indicator warmup carry across the whole run, unbroken). Every
+  and signal analysis model warmup carry across the whole run, unbroken). Every
   strategy.entry/exit call your script makes is recorded as a signal on the
   bar it fired; the backtest engine then fills it at the FOLLOWING bar's
   open price (never the same bar's close) — the standard no-lookahead

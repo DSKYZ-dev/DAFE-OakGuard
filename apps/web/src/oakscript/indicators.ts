@@ -17,8 +17,8 @@ const INDICATORS: IndicatorDef[] = [
   // indicator that plots Buy/Sell markers is backtestable too.
   {
     name: 'Quantum Reversion Engine',
-    description: 'Auto strategy: buys band-reclaim dips in a non-crashing market, exits at the mean. Full indicator visuals + strategy.* execution in one script.',
-    category: '⚡ Automated Strategies',
+    description: 'Automated model: buys band-reclaim dips in a non-crashing market, exits at the mean. Full chart visuals + strategy.* execution in one script.',
+    category: '⚡ Automated Signal Models',
     source: `// Quantum Reversion Engine — Automated Mean-Reversion Strategy
 // Entry: close crosses back ABOVE the lower Bollinger band (a reclaim,
 // not a falling knife) while the basis isn't in freefall.
@@ -62,8 +62,8 @@ if exitSig
   },
   {
     name: 'Aurora Momentum Rider',
-    description: 'Auto strategy: rides EMA-cross momentum with an RSI confirmation gate. Full indicator visuals + strategy.* execution in one script.',
-    category: '⚡ Automated Strategies',
+    description: 'Automated model: rides EMA-cross momentum with an RSI confirmation gate. Full chart visuals + strategy.* execution in one script.',
+    category: '⚡ Automated Signal Models',
     source: `// Aurora Momentum Rider — Automated Trend-Following Strategy
 // Entry: fast EMA crosses above slow EMA with RSI confirming momentum.
 // Exit: fast EMA crosses back under slow EMA, or momentum dies.
@@ -2347,7 +2347,7 @@ export function saveUserIndicator(name: string, source: string): void {
   const existing = userInds.findIndex(i => i.name === name);
   const def: IndicatorDef = {
     name,
-    description: 'User-created indicator',
+    description: 'User-created signal model',
     category: 'User Created',
     source,
   };

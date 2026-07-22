@@ -78,7 +78,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
     padding: '8px 12px', borderBottom: '1px solid rgba(180, 140, 255, 0.1)',
     cursor: 'move', userSelect: 'none', flexShrink: '0',
   });
-  header.innerHTML = '<span style="color:#b48cff;font-size:12px;font-weight:600;">⚙ Indicator Inputs</span>';
+  header.innerHTML = '<span style="color:#b48cff;font-size:12px;font-weight:600;">⚙ Model Inputs</span>';
 
   const btnGroup = document.createElement('div');
   Object.assign(btnGroup.style, { display: 'flex', gap: '4px' });
