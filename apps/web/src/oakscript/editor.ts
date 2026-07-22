@@ -9,11 +9,12 @@ import {
 import { getDocumentation, type DocSection } from './docs';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
-import { runBacktest, runBacktestOnBars, BacktestCancelledError } from '../backtest/engine';
+import { runBacktestOnBars, BacktestCancelledError, DEFAULT_ENTRY_MATCH, DEFAULT_EXIT_MATCH } from '../backtest/engine';
 import { playTone } from '../accessibility';
 import { addStoryboardEntry } from '../storyboard';
 import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
+import type { BaseBar } from '@dafe/types';
 import { renderEquityCurve } from '../backtest/chart';
 
 export interface OakscriptResult {
@@ -57,6 +58,10 @@ let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
 let alertHistory: OakAlert[] = [];
 let lastBacktestConfig: Partial<BacktestConfig> | null = null;
+// Human-readable description of the bars the last backtest ACTUALLY ran on
+// (e.g. "fetched 500 bars (SPY 1h)" vs "fetch failed → chart bars ×500
+// (SPY 1m, synthetic)") — rendered with results so provenance is explicit.
+let lastBacktestDataLabel: string | null = null;
 let lastBacktestResult: BacktestResult | null = null;
 let backtestAbortController: AbortController | null = null;
 let lastStrategyLabConfig: Partial<BacktestConfig> | null = null;
@@ -399,8 +404,21 @@ export function setImageAssetsChangedCallback(cb: () => void): void {
 // live chart's current state instead of starting blank every time. A
 // synchronous getter (not a push callback) since the panel only needs the
 // value at the moment it opens.
-let onGetChartContext: (() => { symbol: string; timeframe: string; baseUrl?: string }) | null = null;
-export function setChartContextCallback(cb: () => { symbol: string; timeframe: string; baseUrl?: string }): void {
+export interface EditorChartContext {
+  symbol: string;
+  timeframe: string;
+  baseUrl?: string;
+  /** Valid timeframe values (mirrors the chart's own #tf-select options). */
+  timeframes?: string[];
+  /** Symbol universe for datalist suggestions (not a hard restriction). */
+  symbols?: string[];
+  /** Label of the chart's active data provider (e.g. 'yahoo', 'synthetic'). */
+  provider?: string;
+  /** The bars currently loaded in the chart, for dataSource='chart'/'auto'. */
+  getChartBars?: () => BaseBar[];
+}
+let onGetChartContext: (() => EditorChartContext) | null = null;
+export function setChartContextCallback(cb: () => EditorChartContext): void {
   onGetChartContext = cb;
 }
 
@@ -1736,18 +1754,76 @@ function configField(labelText: string, input: HTMLInputElement | HTMLSelectElem
  * same defaulting, same clamped parsing, so the two can never drift into
  * reading a config differently.
  */
+// Fallback TF list if the chart context is unavailable — mirrors index.html's
+// #tf-select. The form NEVER offers free-text timeframes anymore: a stray
+// value like "1" used to persist in lastBacktestConfig and fail every
+// subsequent data fetch with "No historical data returned".
+const FALLBACK_TIMEFRAMES = ['1s', '5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '4h', '1d', '1w'];
+let backtestDatalistSeq = 0;
+
 function buildBacktestConfigForm(cfg: {
   symbol: string; timeframe: string; barCount: number; inSamplePct: number;
   qtyPerTrade: number; startingCash: number; stopLossMode: StopLossMode;
   stopLossValue: number; takeProfitMode: TakeProfitMode; takeProfitValue: number;
+  timeframes: string[]; symbols: string[];
+  dataSource: 'auto' | 'fetch' | 'chart';
+  signalSource: 'auto' | 'strategy' | 'shapes';
+  entryMatch: string; exitMatch: string;
 }): BacktestConfigFormHandle {
   const formWrap = document.createElement('div');
   Object.assign(formWrap.style, { padding: '6px 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
 
+  // Symbol: free text (any ticker the data source knows) with datalist
+  // suggestions drawn from the same universe the toolbar's symbol search
+  // uses — mirrors the chart's current symbol on every panel open.
   const symbolInput = document.createElement('input');
   symbolInput.type = 'text'; symbolInput.value = cfg.symbol;
-  const timeframeInput = document.createElement('input');
-  timeframeInput.type = 'text'; timeframeInput.value = cfg.timeframe;
+  const datalistId = `bt-symbols-${++backtestDatalistSeq}`;
+  const symbolDatalist = document.createElement('datalist');
+  symbolDatalist.id = datalistId;
+  for (const sym of cfg.symbols) {
+    const opt = document.createElement('option');
+    opt.value = sym;
+    symbolDatalist.appendChild(opt);
+  }
+  symbolInput.setAttribute('list', datalistId);
+  formWrap.appendChild(symbolDatalist);
+
+  // Timeframe: strict dropdown mirroring the chart's own TF options.
+  const timeframeSelect = document.createElement('select');
+  const tfList = cfg.timeframes.length > 0 ? cfg.timeframes : FALLBACK_TIMEFRAMES;
+  for (const tf of tfList) {
+    const opt = document.createElement('option');
+    opt.value = tf; opt.textContent = tf;
+    if (tf === cfg.timeframe) opt.selected = true;
+    timeframeSelect.appendChild(opt);
+  }
+
+  // Data source + signal source (the one-script-both-roles bridge controls).
+  const dataSourceSelect = document.createElement('select');
+  for (const [val, label] of [
+    ['auto', 'Auto (fetch → chart)'], ['fetch', 'Fetch historical'], ['chart', 'Chart (loaded bars)'],
+  ] as const) {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (val === cfg.dataSource) opt.selected = true;
+    dataSourceSelect.appendChild(opt);
+  }
+  const signalSourceSelect = document.createElement('select');
+  for (const [val, label] of [
+    ['auto', 'Auto (strategy.* → shapes)'], ['strategy', 'strategy.* only'], ['shapes', 'Plotted shapes'],
+  ] as const) {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (val === cfg.signalSource) opt.selected = true;
+    signalSourceSelect.appendChild(opt);
+  }
+  const entryMatchInput = document.createElement('input');
+  entryMatchInput.type = 'text'; entryMatchInput.value = cfg.entryMatch;
+  entryMatchInput.title = 'Pipe-separated, case-insensitive label substrings that count a plotted shape as an ENTRY signal';
+  const exitMatchInput = document.createElement('input');
+  exitMatchInput.type = 'text'; exitMatchInput.value = cfg.exitMatch;
+  exitMatchInput.title = 'Pipe-separated, case-insensitive label substrings that count a plotted shape as an EXIT signal';
   const barCountInput = document.createElement('input');
   barCountInput.type = 'number'; barCountInput.min = '50'; barCountInput.max = String(MAX_BACKTEST_BARS);
   barCountInput.value = String(cfg.barCount);
@@ -1796,7 +1872,8 @@ function buildBacktestConfigForm(cfg: {
   tpValueInput.title = 'Interpreted as % or $ depending on the Take-Profit mode selected';
 
   formWrap.appendChild(configField('Symbol', symbolInput, '90px'));
-  formWrap.appendChild(configField('Timeframe', timeframeInput, '70px'));
+  formWrap.appendChild(configField('Timeframe', timeframeSelect, '70px'));
+  formWrap.appendChild(configField('Data', dataSourceSelect, '130px'));
   formWrap.appendChild(configField(`Bars (max ${MAX_BACKTEST_BARS})`, barCountInput, '110px'));
   formWrap.appendChild(configField('In-sample %', inSampleInput, '90px'));
   formWrap.appendChild(configField('Qty/trade', qtyInput, '80px'));
@@ -1805,13 +1882,16 @@ function buildBacktestConfigForm(cfg: {
   formWrap.appendChild(configField('SL Value', slValueInput, '80px'));
   formWrap.appendChild(configField('Take-Profit', tpModeSelect, '100px'));
   formWrap.appendChild(configField('TP Value', tpValueInput, '80px'));
+  formWrap.appendChild(configField('Signals', signalSourceSelect, '150px'));
+  formWrap.appendChild(configField('Entry labels', entryMatchInput, '110px'));
+  formWrap.appendChild(configField('Exit labels', exitMatchInput, '130px'));
 
   return {
     formEl: formWrap,
     getConfig(baseUrl?: string): BacktestConfig {
       return {
         symbol: symbolInput.value.trim().toUpperCase() || 'SPY',
-        timeframe: timeframeInput.value.trim() || '1h',
+        timeframe: timeframeSelect.value || '1h',
         barCount: Math.max(50, Math.min(MAX_BACKTEST_BARS, parseInt(barCountInput.value, 10) || 500)),
         inSamplePct: Math.max(10, Math.min(90, parseInt(inSampleInput.value, 10) || 70)),
         qtyPerTrade: Math.max(1, parseFloat(qtyInput.value) || 1),
@@ -1821,9 +1901,48 @@ function buildBacktestConfigForm(cfg: {
         takeProfitMode: tpModeSelect.value as TakeProfitMode,
         takeProfitValue: Math.max(0.01, parseFloat(tpValueInput.value) || 4),
         baseUrl,
+        dataSource: dataSourceSelect.value as 'auto' | 'fetch' | 'chart',
+        signalSource: signalSourceSelect.value as 'auto' | 'strategy' | 'shapes',
+        entryMatch: entryMatchInput.value.trim(),
+        exitMatch: exitMatchInput.value.trim(),
       };
     },
   };
+}
+
+/**
+ * Resolves the bars a backtest runs against, per config.dataSource:
+ * 'fetch' fails hard when the backend has nothing; 'chart' replays the bars
+ * currently loaded in the chart (whatever symbol/provider that is — incl.
+ * synthetic, so the backtester works fully offline); 'auto' tries fetch and
+ * falls back to chart bars. Returns a human-readable label of what was
+ * actually used so results can never silently misrepresent their data.
+ */
+async function resolveBacktestBars(
+  config: BacktestConfig,
+  chartCtx: EditorChartContext,
+): Promise<{ raw: BaseBar[]; label: string }> {
+  const mode = config.dataSource ?? 'auto';
+  let fetchError: unknown = null;
+  if (mode !== 'chart') {
+    try {
+      const raw = await fetchBacktestBars(config.symbol, config.timeframe, config.barCount, config.baseUrl);
+      return { raw, label: `fetched ${raw.length} bars (${config.symbol} ${config.timeframe})` };
+    } catch (e) {
+      if (mode === 'fetch') throw e;
+      fetchError = e;
+    }
+  }
+  const chartBars = chartCtx.getChartBars?.() ?? [];
+  if (chartBars.length < 50) {
+    throw fetchError instanceof Error
+      ? new Error(`${fetchError.message} Chart fallback unavailable too (only ${chartBars.length} bars loaded).`)
+      : new Error(`Chart has only ${chartBars.length} bars loaded — not enough to backtest.`);
+  }
+  const raw = chartBars.slice(-config.barCount);
+  const provider = chartCtx.provider ? `, ${chartCtx.provider}` : '';
+  const fellBack = mode === 'auto' && fetchError !== null ? 'fetch failed → ' : '';
+  return { raw, label: `${fellBack}chart bars ×${raw.length} (${chartCtx.symbol} ${chartCtx.timeframe}${provider})` };
 }
 
 function toggleBacktest(): void {
@@ -1849,18 +1968,30 @@ function renderBacktest(): void {
   header.appendChild(headerTitle);
   backtestPanel.appendChild(header);
 
-  const chartCtx = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const chartCtx: EditorChartContext = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const tfList = chartCtx.timeframes?.length ? chartCtx.timeframes : FALLBACK_TIMEFRAMES;
+  // Symbol and timeframe LIVE-MIRROR the chart on every panel open (per
+  // explicit user request) — the old lastBacktestConfig-first precedence let
+  // a stale or invalid value (e.g. timeframe "1") shadow the chart's state
+  // forever. Everything else still remembers the last run's settings.
+  const chartTf = tfList.includes(chartCtx.timeframe) ? chartCtx.timeframe : (tfList.includes('1h') ? '1h' : tfList[0]);
   const cfg = {
-    symbol: lastBacktestConfig?.symbol ?? chartCtx.symbol ?? 'SPY',
-    timeframe: lastBacktestConfig?.timeframe ?? chartCtx.timeframe ?? '1h',
+    symbol: chartCtx.symbol || 'SPY',
+    timeframe: chartTf,
     barCount: lastBacktestConfig?.barCount ?? 500,
     inSamplePct: lastBacktestConfig?.inSamplePct ?? 70,
     qtyPerTrade: lastBacktestConfig?.qtyPerTrade ?? 1,
     startingCash: lastBacktestConfig?.startingCash ?? 10000,
-    stopLossMode: lastBacktestConfig?.stopLossMode ?? 'none',
+    stopLossMode: lastBacktestConfig?.stopLossMode ?? 'none' as const,
     stopLossValue: lastBacktestConfig?.stopLossValue ?? 2,
-    takeProfitMode: lastBacktestConfig?.takeProfitMode ?? 'none',
+    takeProfitMode: lastBacktestConfig?.takeProfitMode ?? 'none' as const,
     takeProfitValue: lastBacktestConfig?.takeProfitValue ?? 4,
+    timeframes: tfList,
+    symbols: chartCtx.symbols ?? [],
+    dataSource: lastBacktestConfig?.dataSource ?? 'auto' as const,
+    signalSource: lastBacktestConfig?.signalSource ?? 'auto' as const,
+    entryMatch: lastBacktestConfig?.entryMatch || DEFAULT_ENTRY_MATCH,
+    exitMatch: lastBacktestConfig?.exitMatch || DEFAULT_EXIT_MATCH,
   };
 
   const formHandle = buildBacktestConfigForm(cfg);
@@ -1945,6 +2076,22 @@ function renderBacktest(): void {
     });
     resultsDiv.appendChild(disclaimer);
 
+    // Provenance — which bars and which signal source this result came from,
+    // so a shape-derived run on synthetic chart bars can never be mistaken
+    // for an explicit-strategy run on fetched market data.
+    const provenance = document.createElement('div');
+    const signalDesc = result.signalSourceUsed === 'shapes'
+      ? `derived from plotted signal shapes (${result.orderCount} orders, long-flat)`
+      : result.signalSourceUsed === 'strategy'
+        ? `explicit strategy.entry/exit calls (${result.orderCount} orders)`
+        : 'none — the script emitted no strategy.* calls and no matchable signal shapes';
+    provenance.textContent = `Signals: ${signalDesc}${lastBacktestDataLabel ? ` · Data: ${lastBacktestDataLabel}` : ''}`;
+    Object.assign(provenance.style, {
+      fontSize: '9px', color: 'rgba(180,140,255,0.8)', background: 'rgba(180,140,255,0.07)',
+      border: '1px solid rgba(180,140,255,0.18)', borderRadius: '4px', padding: '5px 7px', marginBottom: '6px',
+    });
+    resultsDiv.appendChild(provenance);
+
     if (result.scriptErrors.length > 0) {
       const errBox = document.createElement('div');
       const shown = result.scriptErrors.slice(0, 3).join(' | ');
@@ -1993,17 +2140,26 @@ function renderBacktest(): void {
     backtestAbortController = controller;
 
     try {
-      const result = await runBacktest(config, source, {
+      statusMsg.textContent = 'Resolving historical bars...';
+      const { raw, label: dataLabel } = await resolveBacktestBars(config, chartCtx);
+      if (controller.signal.aborted) throw new BacktestCancelledError();
+      lastBacktestDataLabel = dataLabel;
+      const bars = barsToRuntimeBarData(raw);
+      const result = await runBacktestOnBars(config, source, bars, {
         signal: controller.signal,
         onProgress: (stage) => {
           statusMsg.textContent =
-            stage === 'fetching' ? 'Fetching historical bars...' :
             stage === 'running-script' ? 'Running script (signal collection)...' :
-            stage === 'replaying' ? 'Replaying fills...' : 'Done.';
+            stage === 'replaying' ? 'Replaying fills...' : statusMsg.textContent;
         },
       });
       lastBacktestResult = result;
-      statusMsg.textContent = `Done — ${result.totalBars} bars, ${result.trades.length} trades.`;
+      const signalNote = result.signalSourceUsed === 'shapes'
+        ? `${result.orderCount} orders derived from plotted signals`
+        : result.signalSourceUsed === 'strategy'
+          ? `${result.orderCount} strategy.* orders`
+          : 'no signals found (add strategy.* calls or plotted Buy/Sell shapes)';
+      statusMsg.textContent = `Done — ${result.totalBars} bars, ${result.trades.length} trades · ${signalNote} · data: ${dataLabel}`;
       renderResults(result);
     } catch (e: any) {
       if (e instanceof BacktestCancelledError) {
@@ -2064,18 +2220,28 @@ function renderStrategyLab(): void {
   header.appendChild(headerSub);
   strategyLabPanel.appendChild(header);
 
-  const chartCtx = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const chartCtx: EditorChartContext = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const labTfList = chartCtx.timeframes?.length ? chartCtx.timeframes : FALLBACK_TIMEFRAMES;
+  // Same live-mirror rule as the Backtest panel: symbol/timeframe always
+  // track the chart; only run-shape settings are remembered between opens.
+  const labChartTf = labTfList.includes(chartCtx.timeframe) ? chartCtx.timeframe : (labTfList.includes('1h') ? '1h' : labTfList[0]);
   const cfg = {
-    symbol: lastStrategyLabConfig?.symbol ?? lastBacktestConfig?.symbol ?? chartCtx.symbol ?? 'SPY',
-    timeframe: lastStrategyLabConfig?.timeframe ?? lastBacktestConfig?.timeframe ?? chartCtx.timeframe ?? '1h',
+    symbol: chartCtx.symbol || 'SPY',
+    timeframe: labChartTf,
     barCount: lastStrategyLabConfig?.barCount ?? lastBacktestConfig?.barCount ?? 500,
     inSamplePct: lastStrategyLabConfig?.inSamplePct ?? lastBacktestConfig?.inSamplePct ?? 70,
     qtyPerTrade: lastStrategyLabConfig?.qtyPerTrade ?? lastBacktestConfig?.qtyPerTrade ?? 1,
     startingCash: lastStrategyLabConfig?.startingCash ?? lastBacktestConfig?.startingCash ?? 10000,
-    stopLossMode: lastStrategyLabConfig?.stopLossMode ?? lastBacktestConfig?.stopLossMode ?? 'none',
+    stopLossMode: lastStrategyLabConfig?.stopLossMode ?? lastBacktestConfig?.stopLossMode ?? 'none' as const,
     stopLossValue: lastStrategyLabConfig?.stopLossValue ?? lastBacktestConfig?.stopLossValue ?? 2,
-    takeProfitMode: lastStrategyLabConfig?.takeProfitMode ?? lastBacktestConfig?.takeProfitMode ?? 'none',
+    takeProfitMode: lastStrategyLabConfig?.takeProfitMode ?? lastBacktestConfig?.takeProfitMode ?? 'none' as const,
     takeProfitValue: lastStrategyLabConfig?.takeProfitValue ?? lastBacktestConfig?.takeProfitValue ?? 4,
+    timeframes: labTfList,
+    symbols: chartCtx.symbols ?? [],
+    dataSource: lastStrategyLabConfig?.dataSource ?? lastBacktestConfig?.dataSource ?? 'auto' as const,
+    signalSource: lastStrategyLabConfig?.signalSource ?? lastBacktestConfig?.signalSource ?? 'auto' as const,
+    entryMatch: lastStrategyLabConfig?.entryMatch || lastBacktestConfig?.entryMatch || DEFAULT_ENTRY_MATCH,
+    exitMatch: lastStrategyLabConfig?.exitMatch || lastBacktestConfig?.exitMatch || DEFAULT_EXIT_MATCH,
   };
 
   const formHandle = buildBacktestConfigForm(cfg);
@@ -2297,8 +2463,8 @@ function renderStrategyLab(): void {
     const rows: BatchRunRow[] = [];
 
     try {
-      statusMsg.textContent = 'Fetching historical bars...';
-      const rawBars = await fetchBacktestBars(config.symbol, config.timeframe, config.barCount, config.baseUrl);
+      statusMsg.textContent = 'Resolving historical bars...';
+      const { raw: rawBars, label: dataLabel } = await resolveBacktestBars(config, chartCtx);
       if (controller.signal.aborted) throw new BacktestCancelledError();
       const bars = barsToRuntimeBarData(rawBars);
 
@@ -2314,7 +2480,8 @@ function renderStrategyLab(): void {
 
       rows.sort((a, b) => b.result.inSample.sharpePerBar - a.result.inSample.sharpePerBar);
       lastStrategyLabRows = rows;
-      statusMsg.textContent = `Done — ${rows.length} variants against ${bars.count} bars.`;
+      const sigNote = rows[0]?.result.signalSourceUsed === 'shapes' ? ' · signals derived from plotted shapes' : '';
+      statusMsg.textContent = `Done — ${rows.length} variants against ${bars.count} bars · data: ${dataLabel}${sigNote}`;
       renderBatchResults(rows);
     } catch (e: any) {
       if (e instanceof BacktestCancelledError) {

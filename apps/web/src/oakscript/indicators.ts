@@ -9,6 +9,101 @@ export interface IndicatorDef {
 }
 
 const INDICATORS: IndicatorDef[] = [
+  // ─── Automated Strategies ──────────────────────────────────────
+  // Dual-role scripts: on the chart they're full indicators (plots, fills,
+  // markers); in Time Machine / Strategy Lab / the paper auto-trader their
+  // strategy.entry()/exit() calls drive real fills. One script, both roles —
+  // and via the Signal Engine's shape-derivation bridge, every OTHER
+  // indicator that plots Buy/Sell markers is backtestable too.
+  {
+    name: 'Quantum Reversion Engine',
+    description: 'Auto strategy: buys band-reclaim dips in a non-crashing market, exits at the mean. Full indicator visuals + strategy.* execution in one script.',
+    category: '⚡ Automated Strategies',
+    source: `// Quantum Reversion Engine — Automated Mean-Reversion Strategy
+// Entry: close crosses back ABOVE the lower Bollinger band (a reclaim,
+// not a falling knife) while the basis isn't in freefall.
+// Exit: price tags the basis (mean) or the upper band.
+bbLen = input(20, "Band Length", 5, 60, 1)
+mult = input(2.0, "StdDev Mult", 0.5, 4.0, 0.25)
+slideGuard = input(0.6, "Max Basis Slide %", 0.0, 5.0, 0.1)
+showSignals = input(true, "Show Signals")
+
+basis = sma(close, bbLen)
+dev = stdev(close, bbLen)
+upper = basis + dev * mult
+lower = basis - dev * mult
+
+plot(basis, "Basis", "#b48cff", 2)
+plot(upper, "Upper", "#22cc88", 1)
+plot(lower, "Lower", "#ff4477", 1)
+fill(upper, lower, "rgba(180,140,255,0.07)")
+
+// Basis-freefall guard: skip entries when the mean itself dropped more
+// than slideGuard% over the last 5 bars (catching knives in a crash).
+basisOk = basis >= basis[5] * (1 - slideGuard / 100)
+
+reclaim = crossover(close, lower)
+tagUpper = close >= upper
+
+var inPos = false
+enterSig = reclaim and basisOk and not inPos
+exitSig = inPos and (close >= basis or tagUpper)
+
+if enterSig
+    inPos := true
+    strategy.entry("long", "qre")
+    if showSignals
+        plotshape(bar_index, low, "BUY reclaim", "triangleup", "#22cc88")
+if exitSig
+    inPos := false
+    strategy.exit("qre")
+    if showSignals
+        plotshape(bar_index, high, "EXIT mean", "triangledown", "#ffd166")`,
+  },
+  {
+    name: 'Aurora Momentum Rider',
+    description: 'Auto strategy: rides EMA-cross momentum with an RSI confirmation gate. Full indicator visuals + strategy.* execution in one script.',
+    category: '⚡ Automated Strategies',
+    source: `// Aurora Momentum Rider — Automated Trend-Following Strategy
+// Entry: fast EMA crosses above slow EMA with RSI confirming momentum.
+// Exit: fast EMA crosses back under slow EMA, or momentum dies.
+fastLen = input(9, "Fast EMA", 2, 50, 1)
+slowLen = input(21, "Slow EMA", 5, 100, 1)
+rsiLen = input(14, "RSI Length", 2, 50, 1)
+rsiGate = input(52, "RSI Entry Gate", 40, 70, 1)
+rsiFloor = input(42, "RSI Exit Floor", 20, 60, 1)
+showSignals = input(true, "Show Signals")
+
+fastMA = ema(close, fastLen)
+slowMA = ema(close, slowLen)
+r = rsi(close, rsiLen)
+
+plot(fastMA, "Fast EMA", "#4cc9f0", 2)
+plot(slowMA, "Slow EMA", "#b48cff", 2)
+fill(fastMA, slowMA, "rgba(76,201,240,0.08)")
+plot(r, "RSI", "#ffd166", 1, "separate")
+hline(rsiGate, "rgba(34,204,136,0.4)", "separate")
+hline(rsiFloor, "rgba(255,68,119,0.4)", "separate")
+
+crossUp = crossover(fastMA, slowMA)
+crossDn = crossunder(fastMA, slowMA)
+
+var inPos = false
+enterSig = crossUp and r > rsiGate and not inPos
+exitSig = inPos and (crossDn or r < rsiFloor)
+
+if enterSig
+    inPos := true
+    strategy.entry("long", "amr")
+    if showSignals
+        plotshape(bar_index, low, "BUY momentum", "triangleup", "#22cc88")
+if exitSig
+    inPos := false
+    strategy.exit("amr")
+    if showSignals
+        plotshape(bar_index, high, "EXIT momentum", "triangledown", "#ff4477")`,
+  },
+
   // ─── Moving Averages ───────────────────────────────────────────
   {
     name: 'Simple Moving Average Crossover',

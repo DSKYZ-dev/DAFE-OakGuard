@@ -8,6 +8,7 @@ import type { OakPlot, OakAlert } from './oakscript/runtime';
 import type { Program } from './oakscript/ast';
 import { getIndicators, type IndicatorDef } from './oakscript/indicators';
 import { getStoredOverrides, sendAlert, type InputDef } from './oakscript/editor';
+import { extractSignals, emitLiveSignal } from './signal-engine';
 
 export interface IndicatorInstance {
   id: string;
@@ -132,6 +133,7 @@ export function removeIndicator(id: string): void {
   instances.delete(id);
   instanceOrder = instanceOrder.filter(i => i !== id);
   lastForwardedAlertCount.delete(id);
+  lastForwardedSignalCount.delete(id);
   circuitState.delete(id);
 }
 
@@ -147,6 +149,10 @@ export function updateInstanceSource(id: string, source: string): IndicatorInsta
   // carried over from whatever the PREVIOUS version of this source did.
   circuitState.delete(id);
   inst.autoDisabledReason = null;
+  // Same reasoning for the signal stream: the next evaluation of a CHANGED
+  // script re-backfills (no live emission) instead of diffing its signal
+  // count against an unrelated previous script's history.
+  lastForwardedSignalCount.delete(id);
   return inst;
 }
 
@@ -214,6 +220,9 @@ const circuitState = new Map<string, CircuitState>();
 // (requires editing inputs on a script that also alerts) and never worse
 // than the pre-existing behavior of forwarding nothing at all.
 const lastForwardedAlertCount = new Map<string, number>();
+// Per-instance count of signals already seen (Signal Engine live edge) —
+// same newness model as alert forwarding: count-based, first run backfills.
+const lastForwardedSignalCount = new Map<string, number>();
 // undefined (not just 0) marks "never seen this instance" so the very
 // first run — which can already contain hundreds of historical alerts,
 // since executeScript() processes the full bar range in one pass — records
@@ -262,6 +271,21 @@ export function runAllInstances(barData: {
         for (let i = prevCount; i < result.alerts.length; i++) sendAlert(result.alerts[i]);
       }
       lastForwardedAlertCount.set(id, result.alerts.length);
+
+      // ── Signal Engine live edge ──
+      // Same first-run-backfill discipline as alert forwarding above: the
+      // first evaluation of an instance yields the FULL historical signal
+      // stream (hundreds of entries/exits) — record the count, emit nothing.
+      // Only signals appearing in later evaluations are genuinely live and
+      // reach subscribed consumers (the paper auto-trader).
+      const { signals } = extractSignals({ plots: result.plots, strategyOrders: result.strategyOrders });
+      const prevSignals = lastForwardedSignalCount.get(id);
+      if (prevSignals !== undefined) {
+        for (let i = prevSignals; i < signals.length; i++) {
+          emitLiveSignal({ instanceId: id, indicatorName: inst.name, signal: signals[i] });
+        }
+      }
+      lastForwardedSignalCount.set(id, signals.length);
 
       // executeScript() has its OWN per-bar try/catch (see interpreter.ts)
       // that recovers from most runtime errors — including hitting

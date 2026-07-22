@@ -30,6 +30,7 @@ import {
   classifyRegime, createRegimeRibbon, createInitialRegimeState, applyHysteresis,
   type RegimeResult,
 } from './regime-ribbon';
+import { onLiveSignal } from './signal-engine';
 import * as draw from './drawings';
 import type { DrawTool } from './drawings';
 import {
@@ -467,6 +468,17 @@ const dashboard = createDashboard();
 const regimeRibbon = createRegimeRibbon();
 document.getElementById('chart-area')?.appendChild(regimeRibbon.el);
 const regimeState = createInitialRegimeState();
+// Discoverability toggle (toolbar "◉ Regime" button + Indicators dropdown
+// entry) — the ribbon itself stays advisory-only; this just shows/hides it.
+// Persisted; default ON (matches the always-on behavior it shipped with).
+let regimeRibbonEnabled = (() => { try { return localStorage.getItem('dafe_regime_ribbon') !== '0'; } catch { return true; } })();
+function setRegimeRibbonEnabled(enabled: boolean): void {
+  regimeRibbonEnabled = enabled;
+  try { localStorage.setItem('dafe_regime_ribbon', enabled ? '1' : '0'); } catch {}
+  if (!enabled) regimeRibbon.el.style.display = 'none';
+  document.getElementById('regime-toggle')?.classList.toggle('active', enabled);
+  visualAdapter.logAction('toggle', `Regime Ribbon ${enabled ? 'shown' : 'hidden'}`);
+}
 let lastRegimeComputeAt = 0;
 const REGIME_RECOMPUTE_THROTTLE_MS = 3000; // ADX/ATR over up to 300 bars — cheap, but no reason to redo it every rAF frame
 
@@ -486,6 +498,7 @@ function getBarData() {
 // window) that this throttle exists purely to avoid pointless repeat work at
 // 60fps, not because the computation itself is expensive.
 function updateRegimeRibbon(now: number): void {
+  if (!regimeRibbonEnabled) { regimeRibbon.el.style.display = 'none'; return; }
   if (now - lastRegimeComputeAt < REGIME_RECOMPUTE_THROTTLE_MS) return;
   lastRegimeComputeAt = now;
   if (transformed.length === 0) { regimeRibbon.update(null, applyIndicatorByName); return; }
@@ -1510,6 +1523,36 @@ function closeAllPositions(): void {
   for (const pos of broker.getPositions()) closePosition(pos.symbol);
 }
 
+// ─── Signal Engine → Paper Trader (Live Automation, paper only) ─────
+// Consumes the live-edge signal stream (see signal-engine.ts): when armed,
+// an entry signal buys qty on the CURRENT chart symbol if flat, an exit
+// signal flattens. Strictly opt-in and session-only — it always starts OFF
+// and is deliberately not persisted, so auto-trading can never be something
+// the user discovers already running. Paper broker only; fills flow through
+// the existing onFill hooks (chart markers, Glass Ledger entry, sound cue).
+// Real-brokerage routing is intentionally NOT wired here.
+let autoTradeEnabled = false;
+let autoTradeQty = 1;
+let autoTradeStatusEl: HTMLElement | null = null;
+function setAutoTradeStatus(text: string): void {
+  if (autoTradeStatusEl) autoTradeStatusEl.textContent = text;
+}
+onLiveSignal((e) => {
+  if (!autoTradeEnabled) return;
+  const pos = broker.getPositions().find(p => p.symbol === currentSymbol && p.qty !== 0);
+  if (e.signal.kind === 'entry' && !pos) {
+    broker.placeOrder({ symbol: currentSymbol, side: 'buy', type: 'market', qty: autoTradeQty });
+    setAutoTradeStatus(`⚡ ${e.indicatorName} entry → bought ${autoTradeQty} ${currentSymbol} (paper)`);
+  } else if (e.signal.kind === 'exit' && pos) {
+    broker.placeOrder({ symbol: currentSymbol, side: pos.qty > 0 ? 'sell' : 'buy', type: 'market', qty: Math.abs(pos.qty) });
+    setAutoTradeStatus(`⚡ ${e.indicatorName} exit → flattened ${currentSymbol} (paper)`);
+  } else {
+    return;
+  }
+  renderTradePositions();
+  visualAdapter.logAction('auto-trade', `${e.indicatorName} ${e.signal.kind} signal executed (paper)`);
+});
+
 function renderTradeAccount(): void {
   const acct = broker.getAccount();
   const cashEl = document.getElementById('tradeCash');
@@ -1657,11 +1700,69 @@ document.addEventListener('DOMContentLoaded', () => {
     el.addEventListener('click', () => setDrawTool((el.dataset.tool as DrawTool) || 'none'));
   });
 
+  // ── Signal Engine automation section (Trading panel) ──
+  // Injected instead of hand-edited into index.html's large panel markup;
+  // see the onLiveSignal consumer above for the actual trading logic.
+  const tradingBody = document.getElementById('tradingPanelBody');
+  if (tradingBody) {
+    const section = document.createElement('div');
+    Object.assign(section.style, { padding: '8px 12px', borderTop: '1px solid rgba(180,140,255,0.12)' });
+    const title = document.createElement('div');
+    title.textContent = 'AUTOMATION';
+    Object.assign(title.style, { fontSize: '9px', letterSpacing: '1px', color: 'rgba(255,255,255,0.35)', marginBottom: '6px' });
+    section.appendChild(title);
+
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' });
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.id = 'auto-trade-toggle';
+    const toggleLabel = document.createElement('label');
+    toggleLabel.htmlFor = 'auto-trade-toggle';
+    toggleLabel.textContent = '🤖 Auto-trade signals (paper)';
+    toggleLabel.title = 'When enabled, NEW entry/exit signals from active indicators place paper trades on the current symbol. Paper broker only — never sends real orders. Always starts off; not remembered across reloads.';
+    Object.assign(toggleLabel.style, { fontSize: '10px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer' });
+    const qtyInput = document.createElement('input');
+    qtyInput.type = 'number'; qtyInput.min = '1'; qtyInput.step = '1'; qtyInput.value = '1';
+    Object.assign(qtyInput.style, {
+      width: '52px', padding: '2px 5px', fontSize: '10px', background: 'rgba(12,12,28,0.9)',
+      color: 'rgba(255,255,255,0.75)', border: '1px solid rgba(180,140,255,0.2)', borderRadius: '4px',
+    });
+    qtyInput.title = 'Quantity per auto entry';
+    row.appendChild(toggle);
+    row.appendChild(toggleLabel);
+    row.appendChild(qtyInput);
+    section.appendChild(row);
+
+    const status = document.createElement('div');
+    status.textContent = 'Off — signals from active indicators are ignored.';
+    Object.assign(status.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginTop: '5px' });
+    section.appendChild(status);
+    autoTradeStatusEl = status;
+
+    toggle.addEventListener('change', () => {
+      autoTradeEnabled = toggle.checked;
+      autoTradeQty = Math.max(1, parseInt(qtyInput.value, 10) || 1);
+      setAutoTradeStatus(autoTradeEnabled
+        ? `Armed — new entry/exit signals will paper-trade ${currentSymbol} (qty ${autoTradeQty}).`
+        : 'Off — signals from active indicators are ignored.');
+      visualAdapter.logAction('auto-trade', `Auto-trade ${autoTradeEnabled ? 'armed' : 'disarmed'}`);
+    });
+    qtyInput.addEventListener('change', () => {
+      autoTradeQty = Math.max(1, parseInt(qtyInput.value, 10) || 1);
+    });
+    tradingBody.appendChild(section);
+  }
+
   // Chart controls
   document.getElementById('vp-toggle')?.addEventListener('click', () => {
     document.getElementById('vp-settings-panel')?.classList.toggle('active');
     visualAdapter.logAction('toggle', 'Volume profile settings panel');
   });
+  document.getElementById('regime-toggle')?.addEventListener('click', () => {
+    setRegimeRibbonEnabled(!regimeRibbonEnabled);
+  });
+  document.getElementById('regime-toggle')?.classList.toggle('active', regimeRibbonEnabled);
   document.getElementById('live-tick-toggle')?.addEventListener('click', () => {
     if (liveTicksEnabled) {
       stopLiveTicks();
@@ -1684,6 +1785,17 @@ document.addEventListener('DOMContentLoaded', () => {
   // Indicator select menu — populate from OakScript indicator library
   const indSelect = document.getElementById('indicator-select') as HTMLSelectElement;
   if (indSelect) {
+    // Chart widgets first — non-OakScript overlays toggled from the same
+    // menu so they're discoverable next to the indicators themselves.
+    const REGIME_TOGGLE_VALUE = '__regime_ribbon__';
+    const widgetGroup = document.createElement('optgroup');
+    widgetGroup.label = 'Chart Widgets';
+    const regimeOpt = document.createElement('option');
+    regimeOpt.value = REGIME_TOGGLE_VALUE;
+    regimeOpt.textContent = 'Regime Ribbon (show/hide)';
+    widgetGroup.appendChild(regimeOpt);
+    indSelect.appendChild(widgetGroup);
+
     const categories2 = getCategories();
     for (const cat of categories2) {
       const group = document.createElement('optgroup');
@@ -1699,7 +1811,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     indSelect.addEventListener('change', () => {
       const name = indSelect.value;
-      if (name) applyIndicatorByName(name);
+      if (name === REGIME_TOGGLE_VALUE) {
+        setRegimeRibbonEnabled(!regimeRibbonEnabled);
+      } else if (name) {
+        applyIndicatorByName(name);
+      }
       indSelect.value = '';
     });
   }
@@ -2060,6 +2176,18 @@ CRITICAL RULES:
     symbol: currentSymbol,
     timeframe,
     baseUrl: (window as any).__DAFE_BACKEND_URL || 'http://localhost:8788',
+    // The chart's own timeframe options — the backtest TF dropdown mirrors
+    // this list exactly so it can never hold a value the data layer doesn't
+    // understand (the old free-text field let e.g. "1" persist forever and
+    // fail every fetch).
+    timeframes: Array.from(document.querySelectorAll<HTMLOptionElement>('#tf-select option')).map(o => o.value),
+    // Same symbol universe the toolbar's search dropdown uses (set below in
+    // the securities-combo init) — datalist suggestions, not a hard limit.
+    symbols: ((window as any).__dafeSymbolUniverse as string[] | undefined) ?? [],
+    provider: dataProviderLabel,
+    // Live bars currently on the chart — lets the backtester run against
+    // exactly what the user is looking at (incl. synthetic data offline).
+    getChartBars: () => transformed.slice(),
   }));
 
   // ── Register editor keyboard shortcuts ──
@@ -2174,6 +2302,10 @@ CRITICAL RULES:
     {symbol:'ZC=F',name:'Corn Futures'},{symbol:'ZW=F',name:'Wheat Futures'},{symbol:'CT=F',name:'Cotton Futures'},
     {symbol:'HG=F',name:'Copper Futures'},{symbol:'PA=F',name:'Palladium Futures'},{symbol:'PL=F',name:'Platinum Futures'},
   ];
+  // Published for the backtest panel's symbol datalist (see
+  // setChartContextCallback above) — the list lives inside this
+  // DOMContentLoaded closure, the context callback registers at module init.
+  (window as any).__dafeSymbolUniverse = securitiesCache.map(s => s.symbol);
   let selectedIdx = -1;
 
   function renderDropdown(filter: string) {

@@ -37,6 +37,26 @@ export interface BacktestConfig {
   /** Interpreted as a percent (fixed-pct) or an absolute $ distance
    * (fixed-amount) depending on takeProfitMode. */
   takeProfitValue: number;
+  /** Where the historical bars come from. 'fetch' = the backend historical
+   * endpoint (fails hard when it has no data); 'chart' = the bars currently
+   * loaded in the chart (works offline / with synthetic data, always uses
+   * the chart's own symbol+timeframe); 'auto' (default) = try fetch, fall
+   * back to chart bars so the backtester always has something to run on.
+   * The UI surfaces which source was actually used with every result. */
+  dataSource?: 'auto' | 'fetch' | 'chart';
+  /** Where trade signals come from — the one-script-both-roles bridge.
+   * 'strategy' = only explicit strategy.entry()/strategy.exit() calls;
+   * 'shapes' = derive entries/exits from plotted signal markers
+   * (plotshape/plotshape_3d) by matching their labels; 'auto' (default) =
+   * strategy.* calls when the script makes any, otherwise fall back to
+   * shape-derived signals — so ANY indicator that plots Buy/Sell markers is
+   * backtestable as-is, no separate strategy version of the script needed. */
+  signalSource?: 'auto' | 'strategy' | 'shapes';
+  /** Pipe-separated, case-insensitive substrings that mark a shape label as
+   * an ENTRY signal when deriving from shapes (default: buy|long|bull). */
+  entryMatch?: string;
+  /** Same, for EXIT signals (default: sell|short|exit|bear|close). */
+  exitMatch?: string;
 }
 
 export interface EquityPoint {
@@ -79,12 +99,27 @@ export interface BacktestResult {
   scriptAlertCount: number;
   splitBarIdx: number;
   totalBars: number;
+  /** Which signal source actually produced the replayed orders ('none' when
+   * the script emitted nothing usable) — surfaced in the UI so a derived
+   * (shape-based) run is never mistaken for an explicit strategy.* run. */
+  signalSourceUsed: 'strategy' | 'shapes' | 'none';
+  /** Orders that entered the replay, after any shape derivation. */
+  orderCount: number;
+}
+
+/** Compact projection of a plotted signal marker (plotshape/plotshape_3d) —
+ * just enough for the engine to derive entry/exit orders from labels. */
+export interface SignalShape {
+  barIdx: number;
+  name: string;
+  style?: string;
 }
 
 // ─── Worker message contract ────────────────────────────────────────────
 // The worker runs executeScript() ONCE over the full contiguous bar range
-// (signal-collection pass only) and hands back order events — never plots,
-// which the backtest doesn't use and aren't worth the serialization cost.
+// (signal-collection pass only) and hands back order events plus a COMPACT
+// list of plotted signal markers (for shape-derived signals) — never full
+// plots, whose per-bar series aren't worth the serialization cost.
 export interface BacktestWorkerRequest {
   source: string;
   bars: RuntimeBarData;
@@ -94,6 +129,7 @@ export interface BacktestWorkerRequest {
 export interface BacktestWorkerResponse {
   ok: boolean;
   strategyOrders: OakStrategyOrder[];
+  signalShapes: SignalShape[];
   alerts: OakAlert[];
   errors: string[];
   parseError?: string;

@@ -1,8 +1,29 @@
 import type { OakStrategyOrder } from '../oakscript/runtime';
 import { PaperBroker, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE, type PaperBrokerConfig } from '../trading/paper-broker';
-import type { BacktestConfig, BacktestResult, EquityPoint, ClosedTrade, BacktestWorkerRequest, BacktestWorkerResponse } from './types';
+import type { BacktestConfig, BacktestResult, EquityPoint, ClosedTrade, BacktestWorkerRequest, BacktestWorkerResponse, SignalShape } from './types';
 import { fetchBacktestBars, barsToRuntimeBarData } from './data';
 import { computeSampleStats } from './stats';
+import { deriveSignalsFromMarkers, DEFAULT_ENTRY_MATCH, DEFAULT_EXIT_MATCH } from '../signal-engine';
+
+// ─── Signal-to-strategy bridge ──────────────────────────────────────────
+// The classification logic lives in the shared Signal Engine
+// (src/signal-engine.ts) so the live chart's signal stream and this
+// backtest replay can never drift apart. This wrapper just projects the
+// derived TradeSignals into the OakStrategyOrder shape the replay indexes.
+export { DEFAULT_ENTRY_MATCH, DEFAULT_EXIT_MATCH };
+
+export function deriveOrdersFromShapes(
+  shapes: SignalShape[],
+  entryMatch?: string,
+  exitMatch?: string,
+): OakStrategyOrder[] {
+  return deriveSignalsFromMarkers(shapes, entryMatch, exitMatch).map(s => ({
+    kind: s.kind,
+    direction: s.direction,
+    id: 'signal-derived',
+    barIdx: s.barIdx,
+  }));
+}
 
 // Defense-in-depth beyond the interpreter's own internal MAX_EXECUTION_WALL_MS
 // (20s) deadline check — in case that check is somehow bypassed (e.g. a
@@ -205,10 +226,28 @@ export async function runBacktestOnBars(
     }
   });
 
+  // ── Signal source resolution (one-script-both-roles bridge) ──
+  // Explicit strategy.entry()/exit() calls always win under 'auto'; scripts
+  // that only plot Buy/Sell markers fall back to shape-derived orders, and
+  // 'shapes'/'strategy' force one side. The replay below is identical either
+  // way — derivation only decides WHICH order stream is replayed.
+  const signalMode = config.signalSource ?? 'auto';
+  let replayOrders: OakStrategyOrder[] = workerResult.strategyOrders;
+  let signalSourceUsed: BacktestResult['signalSourceUsed'] = replayOrders.length > 0 ? 'strategy' : 'none';
+  if (signalMode === 'shapes' || (signalMode === 'auto' && replayOrders.length === 0)) {
+    const derived = deriveOrdersFromShapes(workerResult.signalShapes ?? [], config.entryMatch, config.exitMatch);
+    if (signalMode === 'shapes' || derived.length > 0) {
+      replayOrders = derived;
+      signalSourceUsed = derived.length > 0 ? 'shapes' : 'none';
+    }
+  } else if (signalMode === 'strategy') {
+    signalSourceUsed = replayOrders.length > 0 ? 'strategy' : 'none';
+  }
+
   // Index by the bar an order was EMITTED on, so each bar's open-tick can
   // look up "orders queued from the previous bar" in O(1).
   const ordersByBarIdx = new Map<number, OakStrategyOrder[]>();
-  for (const order of workerResult.strategyOrders) {
+  for (const order of replayOrders) {
     const list = ordersByBarIdx.get(order.barIdx) ?? [];
     list.push(order);
     ordersByBarIdx.set(order.barIdx, list);
@@ -272,5 +311,7 @@ export async function runBacktestOnBars(
     scriptAlertCount: workerResult.alerts.length,
     splitBarIdx,
     totalBars: bars.count,
+    signalSourceUsed,
+    orderCount: replayOrders.length,
   };
 }
