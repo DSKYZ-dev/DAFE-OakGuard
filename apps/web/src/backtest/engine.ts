@@ -228,25 +228,55 @@ export async function runBacktestOnBars(
   let prevRealizedPnL = 0;
   let currentBarIdx = 0;
 
+  // Tracks the currently-open entry's fill detail so a later closing fill
+  // (signal-driven exit OR a bracket order) can be recorded as a full
+  // entry+exit trade record, not just a bare P&L delta. Safe as a single
+  // mutable slot: the replay loop below only ever holds 0 or 1 open
+  // position per symbol (entries are skipped while one is open, exits
+  // while flat — see the 'no pyramiding' note in types.ts), so there is
+  // never more than one entry in flight to track.
+  let openEntry: { side: 'long' | 'short'; barIdx: number; time: number; price: number; qty: number } | null = null;
+
   // Unified fill handling — covers BOTH script-driven market orders (entry/
   // exit) AND bracket orders (stop-loss/take-profit), which can fill on any
-  // LATER bar via tick(), not just bars with a queued script signal. Two
+  // LATER bar via tick(), not just bars with a queued script signal. Three
   // responsibilities per fill:
   //  1. Record the realized-P&L delta as a closed trade, attributed to
-  //     whichever bar is currently being processed.
+  //     whichever bar is currently being processed. Entry fills never
+  //     realize P&L (delta === 0 opening from flat), so this only fires on
+  //     the matching EXIT fill for openEntry — which order id closed it
+  //     (looked up via getOrders()) says whether it was the script's own
+  //     exit ('market') or a bracket ('stop'/'trailing-stop'/'limit').
   //  2. Once the position is flat again, sweep-cancel any other 'working'
   //     order for the symbol — handles both a bracket firing (cancel its
   //     sibling) and the script's own strategy.exit firing (cancel both
   //     remaining brackets), so a leftover order can never later
   //     flip/reopen a position while genuinely flat.
-  broker.onFill(() => {
+  //  3. Clear openEntry once flat, so the NEXT entry fill (set by the
+  //     replay loop right after this callback returns) starts clean.
+  broker.onFill((fill) => {
     const acct = broker.getAccount();
     const delta = acct.realizedPnL - prevRealizedPnL;
-    if (delta !== 0) trades.push({ barIdx: currentBarIdx, pnl: delta });
+    if (delta !== 0 && openEntry) {
+      const closingOrder = broker.getOrders().find(o => o.id === fill.orderId);
+      const exitReason: ClosedTrade['exitReason'] =
+        closingOrder?.type === 'stop' ? 'stop-loss' :
+        closingOrder?.type === 'trailing-stop' ? 'trailing-stop' :
+        closingOrder?.type === 'limit' ? 'take-profit' :
+        closingOrder?.type === 'market' ? 'signal' : 'unknown';
+      trades.push({
+        barIdx: currentBarIdx, pnl: delta,
+        side: openEntry.side, qty: openEntry.qty,
+        entryBarIdx: openEntry.barIdx, entryTime: openEntry.time, entryPrice: openEntry.price,
+        exitBarIdx: currentBarIdx, exitTime: fill.timestamp, exitPrice: fill.price,
+        exitReason,
+      });
+    }
     prevRealizedPnL = acct.realizedPnL;
 
     const openPos = broker.getPositions().find(p => p.symbol === symbol && p.qty !== 0);
     if (!openPos) {
+      openEntry = null;
       for (const o of broker.getOrders()) {
         if (o.symbol === symbol && o.status === 'working') broker.cancelOrder(o.id);
       }
@@ -303,6 +333,7 @@ export async function runBacktestOnBars(
           const qty = order.qty ?? config.qtyPerTrade;
           const filled = broker.placeOrder({ symbol, side, type: 'market', qty });
           if (filled.status === 'filled' && filled.fillPrice !== undefined) {
+            openEntry = { side: side === 'buy' ? 'long' : 'short', barIdx: i, time: bars.time[i], price: filled.fillPrice, qty };
             placeBracketOrders(broker, symbol, side, qty, filled.fillPrice, config, order.stopLoss, order.takeProfit);
           }
         } else {

@@ -480,15 +480,18 @@ const regimeRibbon = createRegimeRibbon();
 document.getElementById('chart-area')?.appendChild(regimeRibbon.el);
 const regimeState = createInitialRegimeState();
 // Discoverability toggle (toolbar "◉ Regime" button + Indicators dropdown
-// entry) — the ribbon itself stays advisory-only; this just shows/hides it.
+// entry) — the ribbon itself stays advisory-only; this only shows/hides
+// the classification readout (dot/label/confidence/ADX/ATR/"advisory").
+// The "Suggest: X" button is a distinct feature, NOT gated by this toggle
+// (see regimeRibbon.update()'s infoVisible param) — visibility for both is
+// actually applied on the next updateRegimeRibbon() tick, not here.
 // Persisted; default ON (matches the always-on behavior it shipped with).
 let regimeRibbonEnabled = (() => { try { return localStorage.getItem('dafe_regime_ribbon') !== '0'; } catch { return true; } })();
 function setRegimeRibbonEnabled(enabled: boolean): void {
   regimeRibbonEnabled = enabled;
   try { localStorage.setItem('dafe_regime_ribbon', enabled ? '1' : '0'); } catch {}
-  if (!enabled) regimeRibbon.el.style.display = 'none';
   document.getElementById('regime-toggle')?.classList.toggle('active', enabled);
-  visualAdapter.logAction('toggle', `Regime Ribbon ${enabled ? 'shown' : 'hidden'}`);
+  visualAdapter.logAction('toggle', `Regime classification display ${enabled ? 'shown' : 'hidden'} (suggestion button unaffected)`);
 }
 let lastRegimeComputeAt = 0;
 const REGIME_RECOMPUTE_THROTTLE_MS = 3000; // ADX/ATR over up to 300 bars — cheap, but no reason to redo it every rAF frame
@@ -509,17 +512,21 @@ function getBarData() {
 // window) that this throttle exists purely to avoid pointless repeat work at
 // 60fps, not because the computation itself is expensive.
 function updateRegimeRibbon(now: number): void {
-  if (!regimeRibbonEnabled) { regimeRibbon.el.style.display = 'none'; return; }
+  // The toggle controls ONLY the classification display (dot/label/
+  // confidence/ADX/ATR/"advisory") via infoVisible below — it must NOT
+  // early-return and skip computing/calling update() entirely, or the
+  // "Suggest: X" button (a separate feature per the toggle's own scope)
+  // would go stale/hidden along with it instead of continuing to work.
   if (now - lastRegimeComputeAt < REGIME_RECOMPUTE_THROTTLE_MS) return;
   lastRegimeComputeAt = now;
-  if (transformed.length === 0) { regimeRibbon.update(null, applyIndicatorByName); return; }
+  if (transformed.length === 0) { regimeRibbon.update(null, applyIndicatorByName, regimeRibbonEnabled); return; }
   const high = transformed.map(b => b.high);
   const low = transformed.map(b => b.low);
   const close = transformed.map(b => b.close);
   const fresh = classifyRegime(high, low, close);
-  if (!fresh) { regimeRibbon.update(null, applyIndicatorByName); return; }
+  if (!fresh) { regimeRibbon.update(null, applyIndicatorByName, regimeRibbonEnabled); return; }
   const displayed: RegimeResult = applyHysteresis(regimeState, fresh, now);
-  regimeRibbon.update(displayed, applyIndicatorByName);
+  regimeRibbon.update(displayed, applyIndicatorByName, regimeRibbonEnabled);
 }
 
 // Programmatically apply a built-in indicator by name — the same direct path

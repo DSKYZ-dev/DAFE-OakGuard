@@ -2053,6 +2053,174 @@ function renderBacktest(): void {
     return block;
   }
 
+  const TRADE_LOG_HEADERS = ['#', 'Side', 'Entry Time', 'Entry Price', 'Exit Time', 'Exit Price', 'Exit Reason', 'Qty', 'P&L', 'Sample'];
+  const EXIT_REASON_LABEL: Record<BacktestResult['trades'][number]['exitReason'], string> = {
+    signal: 'Signal exit', 'stop-loss': 'Stop-loss', 'take-profit': 'Take-profit',
+    'trailing-stop': 'Trailing stop', unknown: 'Unknown',
+  };
+
+  function tradeSample(t: BacktestResult['trades'][number], splitBarIdx: number): 'In-Sample' | 'Out-of-Sample' {
+    return t.barIdx <= splitBarIdx ? 'In-Sample' : 'Out-of-Sample';
+  }
+
+  /** Row cells match TRADE_LOG_HEADERS 1:1 — shared by the on-screen table,
+   * CSV export, and print view so the three can never drift apart. */
+  function tradeLogRows(result: BacktestResult): string[][] {
+    return result.trades.map((t, i) => [
+      String(i + 1),
+      t.side === 'long' ? 'Long' : 'Short',
+      new Date(t.entryTime).toLocaleString(),
+      t.entryPrice.toFixed(4),
+      new Date(t.exitTime).toLocaleString(),
+      t.exitPrice.toFixed(4),
+      EXIT_REASON_LABEL[t.exitReason] ?? t.exitReason,
+      String(t.qty),
+      (t.pnl >= 0 ? '+' : '') + t.pnl.toFixed(2),
+      tradeSample(t, result.splitBarIdx),
+    ]);
+  }
+
+  function tradeLogToCSV(result: BacktestResult): string {
+    const esc = (v: string) => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const lines = [TRADE_LOG_HEADERS, ...tradeLogRows(result)].map(row => row.map(esc).join(','));
+    return lines.join('\n');
+  }
+
+  function openTradeLogPrintView(result: BacktestResult): void {
+    const win = window.open('', '_blank', 'width=980,height=720');
+    if (!win) return;
+    const cfg = result.config;
+    const rows = tradeLogRows(result);
+    const theadHtml = `<tr>${TRADE_LOG_HEADERS.map(h => `<th>${h}</th>`).join('')}</tr>`;
+    const tbodyHtml = rows.map((r, i) => {
+      const pnl = result.trades[i].pnl;
+      return `<tr>${r.map((cell, ci) => `<td class="${ci === 8 ? (pnl >= 0 ? 'pos' : 'neg') : ''}">${cell}</td>`).join('')}</tr>`;
+    }).join('');
+    const slDesc = cfg.stopLossMode === 'none' ? 'none' : `${cfg.stopLossMode} ${cfg.stopLossValue}`;
+    const tpDesc = cfg.takeProfitMode === 'none' ? 'none' : `${cfg.takeProfitMode} ${cfg.takeProfitValue}`;
+    win.document.write(`<!doctype html><html><head><title>Trade Log — ${cfg.symbol} ${cfg.timeframe}</title><style>
+      body { font-family: -apple-system, Segoe UI, Arial, sans-serif; padding: 24px; color: #111; }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      .meta { font-size: 11px; color: #555; margin-bottom: 16px; }
+      table { border-collapse: collapse; width: 100%; font-size: 11px; }
+      th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; white-space: nowrap; }
+      th:nth-child(1), th:nth-child(2), th:nth-child(3), th:nth-child(5), th:nth-child(7), th:nth-child(10),
+      td:nth-child(1), td:nth-child(2), td:nth-child(3), td:nth-child(5), td:nth-child(7), td:nth-child(10) { text-align: left; }
+      thead { background: #eee; }
+      tr:nth-child(even) { background: #fafafa; }
+      .pos { color: #0a7d3a; font-weight: 600; } .neg { color: #b3261e; font-weight: 600; }
+      @media print { body { padding: 8px; } }
+      </style></head><body>
+      <h1>Trade Log — ${cfg.symbol} ${cfg.timeframe}</h1>
+      <div class="meta">${result.trades.length} trades · ${cfg.barCount} bars · SL: ${slDesc} · TP: ${tpDesc} · generated ${new Date().toLocaleString()}</div>
+      <table><thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody></table>
+      </body></html>`);
+    win.document.close();
+    win.focus();
+    setTimeout(() => win.print(), 250);
+  }
+
+  function smallActionBtn(label: string): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    Object.assign(btn.style, {
+      padding: '3px 8px', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '4px',
+      background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.7)',
+      cursor: 'pointer', fontSize: '9px', fontWeight: '600',
+    });
+    return btn;
+  }
+
+  /** Every closed trade with full entry/exit fill detail — the level of
+   * detail the aggregate stat blocks above can't show, e.g. whether a
+   * bracket order ever actually fired (Exit Reason) versus every exit
+   * being signal-driven regardless of the configured SL/TP. */
+  function buildTradeLogSection(result: BacktestResult): HTMLDivElement {
+    const wrap = document.createElement('div');
+    Object.assign(wrap.style, { marginTop: '10px' });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' });
+    const title = document.createElement('div');
+    title.textContent = `Trade Log (${result.trades.length})`;
+    Object.assign(title.style, { fontSize: '10px', fontWeight: '700', color: 'rgba(255,255,255,0.7)' });
+    header.appendChild(title);
+
+    if (result.trades.length > 0) {
+      const btnRow = document.createElement('div');
+      Object.assign(btnRow.style, { display: 'flex', gap: '6px' });
+
+      const csvBtn = smallActionBtn('⬇ CSV');
+      csvBtn.onclick = () => {
+        const cfg = result.config;
+        downloadTextFile(`trade-log_${cfg.symbol}_${cfg.timeframe}_${Date.now()}.csv`, tradeLogToCSV(result), 'text/csv');
+      };
+      const printBtn = smallActionBtn('🖨 Print');
+      printBtn.onclick = () => openTradeLogPrintView(result);
+
+      btnRow.appendChild(csvBtn);
+      btnRow.appendChild(printBtn);
+      header.appendChild(btnRow);
+    }
+    wrap.appendChild(header);
+
+    if (result.trades.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No trades were closed in this run.';
+      Object.assign(empty.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', padding: '6px 0' });
+      wrap.appendChild(empty);
+      return wrap;
+    }
+
+    const scrollBox = document.createElement('div');
+    Object.assign(scrollBox.style, {
+      maxHeight: '220px', overflowY: 'auto', border: '1px solid rgba(255,255,255,0.12)', borderRadius: '5px',
+    });
+
+    const table = document.createElement('table');
+    Object.assign(table.style, { width: '100%', borderCollapse: 'collapse', fontSize: '9px' });
+
+    const thead = document.createElement('thead');
+    const headRow = document.createElement('tr');
+    for (const h of TRADE_LOG_HEADERS) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      Object.assign(th.style, {
+        position: 'sticky', top: '0', background: '#1a1d29', color: 'rgba(255,255,255,0.5)',
+        textAlign: 'left', padding: '4px 6px', borderBottom: '1px solid rgba(255,255,255,0.15)', whiteSpace: 'nowrap',
+      });
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    tradeLogRows(result).forEach((r, i) => {
+      const trade = result.trades[i];
+      const tr = document.createElement('tr');
+      if (i % 2 === 1) tr.style.background = 'rgba(255,255,255,0.03)';
+      r.forEach((cell, ci) => {
+        const td = document.createElement('td');
+        td.textContent = cell;
+        Object.assign(td.style, { padding: '3px 6px', whiteSpace: 'nowrap', color: 'rgba(255,255,255,0.65)' });
+        if (ci === 8) td.style.color = trade.pnl >= 0 ? '#22cc88' : '#ff4477';
+        if (ci === 6) {
+          td.style.color = trade.exitReason === 'stop-loss' ? '#ff4477'
+            : trade.exitReason === 'take-profit' ? '#22cc88'
+            : trade.exitReason === 'trailing-stop' ? '#ffaa44'
+            : 'rgba(255,255,255,0.5)';
+        }
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    scrollBox.appendChild(table);
+    wrap.appendChild(scrollBox);
+
+    return wrap;
+  }
+
   function renderResults(result: BacktestResult): void {
     resultsDiv.innerHTML = '';
 
@@ -2107,6 +2275,8 @@ function renderBacktest(): void {
     statsRow.appendChild(statBlock(result.inSample, BT_IN_SAMPLE_COLOR));
     statsRow.appendChild(statBlock(result.outOfSample, BT_OUT_OF_SAMPLE_COLOR));
     resultsDiv.appendChild(statsRow);
+
+    resultsDiv.appendChild(buildTradeLogSection(result));
   }
 
   runBtn.onclick = async () => {

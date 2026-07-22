@@ -170,8 +170,16 @@ export const REGIME_SUGGESTIONS: Record<RegimeType, string> = {
 
 export interface RegimeRibbonWidget {
   el: HTMLDivElement;
-  /** Renders (or hides, if result is null) the ribbon for the latest classification. */
-  update(result: RegimeResult | null, onApply: (indicatorName: string) => void): void;
+  /**
+   * Renders (or hides, if result is null) the ribbon for the latest
+   * classification. infoVisible controls ONLY the regime classification
+   * display (dot/label/confidence/ADX/ATR + the "advisory" tag) — the
+   * "Suggest: X" button is a separate, always-shown-when-data-exists
+   * feature, not gated by it. When result is null there's no regime to
+   * suggest FROM either way, so the whole ribbon hides regardless of
+   * infoVisible.
+   */
+  update(result: RegimeResult | null, onApply: (indicatorName: string) => void, infoVisible: boolean): void;
 }
 
 export function createRegimeRibbon(): RegimeRibbonWidget {
@@ -185,6 +193,13 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
     borderBottom: '1px solid rgba(180,140,255,0.08)',
     zIndex: '5', pointerEvents: 'none',
   });
+
+  // The regime CLASSIFICATION display — dot/label/confidence/ADX/ATR + the
+  // "advisory" disclaimer tag. This whole group is what the toolbar's
+  // Regime toggle controls; it's a separate flex item from suggestBtn so
+  // hiding it doesn't touch the suggestion button at all.
+  const infoGroup = document.createElement('span');
+  Object.assign(infoGroup.style, { display: 'flex', alignItems: 'center', gap: '10px' });
 
   const dot = document.createElement('span');
   Object.assign(dot.style, {
@@ -208,6 +223,11 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
   });
   advisoryTag.title = 'Regime Ribbon never applies anything automatically — it only suggests.';
 
+  infoGroup.appendChild(dot);
+  infoGroup.appendChild(label);
+  infoGroup.appendChild(confidenceEl);
+  infoGroup.appendChild(advisoryTag);
+
   const suggestBtn = document.createElement('button');
   Object.assign(suggestBtn.style, {
     marginLeft: 'auto', pointerEvents: 'auto', cursor: 'pointer',
@@ -218,10 +238,7 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
   suggestBtn.addEventListener('mouseenter', () => { suggestBtn.style.background = 'rgba(180,140,255,0.2)'; });
   suggestBtn.addEventListener('mouseleave', () => { suggestBtn.style.background = 'rgba(180,140,255,0.1)'; });
 
-  el.appendChild(dot);
-  el.appendChild(label);
-  el.appendChild(confidenceEl);
-  el.appendChild(advisoryTag);
+  el.appendChild(infoGroup);
   el.appendChild(suggestBtn);
 
   let currentOnApply: ((name: string) => void) | null = null;
@@ -230,10 +247,11 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
     if (currentOnApply && currentSuggestion) currentOnApply(currentSuggestion);
   });
 
-  function update(result: RegimeResult | null, onApply: (name: string) => void): void {
+  function update(result: RegimeResult | null, onApply: (name: string) => void, infoVisible: boolean): void {
     currentOnApply = onApply;
     if (!result) { el.style.display = 'none'; return; }
     el.style.display = 'flex';
+    infoGroup.style.display = infoVisible ? 'flex' : 'none';
     const color = REGIME_COLORS[result.regime];
     dot.style.background = color;
     dot.style.boxShadow = `0 0 6px ${color}`;

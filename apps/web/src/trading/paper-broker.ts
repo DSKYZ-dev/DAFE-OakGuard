@@ -50,6 +50,7 @@ export class PaperBroker implements IBroker {
   private orders = new Map<string, Order>();
   private positions = new Map<string, Position>();
   private lastPrice = new Map<string, number>();
+  private lastTimestamp = new Map<string, number>();
   private cash: number;
   private realizedPnL = 0;
   private fillCbs: ((f: Fill) => void)[] = [];
@@ -97,8 +98,12 @@ export class PaperBroker implements IBroker {
         this.emitOrder(order);
         return order;
       }
-      this.fill(order, px);
+      // Register BEFORE filling — fill() synchronously invokes onFill
+      // callbacks, and a callback that looks up this order by id via
+      // getOrders() (e.g. the backtest engine's exit-reason classification)
+      // must find it already present, not mid-registration.
       this.orders.set(id, order);
+      this.fill(order, px, this.lastTimestamp.get(req.symbol));
       this.emitOrder(order);
       return order;
     }
@@ -141,8 +146,9 @@ export class PaperBroker implements IBroker {
     };
   }
 
-  tick(symbol: string, price: number, _timestamp: number): void {
+  tick(symbol: string, price: number, timestamp: number): void {
     this.lastPrice.set(symbol, price);
+    this.lastTimestamp.set(symbol, timestamp);
     for (const o of this.orders.values()) {
       if (o.status !== 'working' || o.symbol !== symbol) continue;
 
@@ -154,29 +160,29 @@ export class PaperBroker implements IBroker {
           if (price > best) o.trailReference = price;
           const trail = o.trailIsPercent ? (o.trailReference ?? price) * ((o.trailAmount ?? 0) / 100) : (o.trailAmount ?? 0);
           const stopLevel = (o.trailReference ?? price) - trail;
-          if (price <= stopLevel) this.fill(o, price);
+          if (price <= stopLevel) this.fill(o, price, timestamp);
         } else {
           if (price < best) o.trailReference = price;
           const trail = o.trailIsPercent ? (o.trailReference ?? price) * ((o.trailAmount ?? 0) / 100) : (o.trailAmount ?? 0);
           const stopLevel = (o.trailReference ?? price) + trail;
-          if (price >= stopLevel) this.fill(o, price);
+          if (price >= stopLevel) this.fill(o, price, timestamp);
         }
         continue;
       }
 
       if (o.type === 'limit') {
         const crossed = o.side === 'buy' ? price <= (o.limitPrice ?? -Infinity) : price >= (o.limitPrice ?? Infinity);
-        if (crossed) this.fill(o, o.limitPrice ?? price);
+        if (crossed) this.fill(o, o.limitPrice ?? price, timestamp);
         continue;
       }
 
       if (o.type === 'stop' || o.type === 'stop-limit') {
         const triggered = o.side === 'buy' ? price >= (o.stopPrice ?? Infinity) : price <= (o.stopPrice ?? -Infinity);
         if (!triggered) continue;
-        if (o.type === 'stop') { this.fill(o, price); continue; }
+        if (o.type === 'stop') { this.fill(o, price, timestamp); continue; }
         // stop-limit: once triggered, only fills if the limit condition also holds this tick
         const limitOk = o.side === 'buy' ? price <= (o.limitPrice ?? Infinity) : price >= (o.limitPrice ?? -Infinity);
-        if (limitOk) this.fill(o, o.limitPrice ?? price);
+        if (limitOk) this.fill(o, o.limitPrice ?? price, timestamp);
       }
     }
   }
@@ -204,7 +210,7 @@ export class PaperBroker implements IBroker {
    * reached before a pullback), THEN check whether the bar's unfavorable
    * extreme would have triggered the resulting stop level.
    */
-  tickBar(symbol: string, bar: { open: number; high: number; low: number; close: number }, _timestamp: number): void {
+  tickBar(symbol: string, bar: { open: number; high: number; low: number; close: number }, timestamp: number): void {
     for (const o of this.orders.values()) {
       if (o.status !== 'working' || o.symbol !== symbol || o.type !== 'trailing-stop') continue;
       if (o.side === 'sell') {
@@ -229,10 +235,10 @@ export class PaperBroker implements IBroker {
         const trail = o.trailIsPercent ? ref * ((o.trailAmount ?? 0) / 100) : (o.trailAmount ?? 0);
         if (o.side === 'sell') {
           const stopLevel = ref - trail;
-          if (bar.low <= stopLevel) this.fill(o, bar.open < stopLevel ? bar.open : stopLevel);
+          if (bar.low <= stopLevel) this.fill(o, bar.open < stopLevel ? bar.open : stopLevel, timestamp);
         } else {
           const stopLevel = ref + trail;
-          if (bar.high >= stopLevel) this.fill(o, bar.open > stopLevel ? bar.open : stopLevel);
+          if (bar.high >= stopLevel) this.fill(o, bar.open > stopLevel ? bar.open : stopLevel, timestamp);
         }
         continue;
       }
@@ -246,9 +252,9 @@ export class PaperBroker implements IBroker {
         // level the market skipped past overnight.
         const gapped = o.side === 'buy' ? bar.open >= stopPrice : bar.open <= stopPrice;
         const fillPx = gapped ? bar.open : stopPrice;
-        if (o.type === 'stop') { this.fill(o, fillPx); continue; }
+        if (o.type === 'stop') { this.fill(o, fillPx, timestamp); continue; }
         const limitOk = o.side === 'buy' ? fillPx <= (o.limitPrice ?? Infinity) : fillPx >= (o.limitPrice ?? -Infinity);
-        if (limitOk) this.fill(o, o.limitPrice ?? fillPx);
+        if (limitOk) this.fill(o, o.limitPrice ?? fillPx, timestamp);
         continue;
       }
 
@@ -257,21 +263,26 @@ export class PaperBroker implements IBroker {
         const triggered = o.side === 'buy' ? bar.low <= limitPrice : bar.high >= limitPrice;
         if (!triggered) continue;
         const gapped = o.side === 'buy' ? bar.open <= limitPrice : bar.open >= limitPrice;
-        this.fill(o, gapped ? bar.open : limitPrice);
+        this.fill(o, gapped ? bar.open : limitPrice, timestamp);
       }
     }
 
     this.lastPrice.set(symbol, bar.close);
+    this.lastTimestamp.set(symbol, timestamp);
   }
 
-  private fill(order: Order, marketPrice: number): void {
+  /** timestamp defaults to real wall-clock time for any future caller that
+   * doesn't have a simulated one to pass — correct for live paper trading,
+   * and what this unconditionally did before backtest replay needed its
+   * fills stamped with simulated bar time instead. */
+  private fill(order: Order, marketPrice: number, timestamp: number = Date.now()): void {
     const { perUnit: slipPerUnit } = describeSlippage(this.config.slippage, marketPrice);
     const slipSign = order.side === 'buy' ? 1 : -1; // buys pay up, sells receive less
     const fillPrice = marketPrice + slipSign * slipPerUnit;
     const { amount: commission } = describeCommission(this.config.commission, order.qty);
 
     order.status = 'filled';
-    order.filledAt = Date.now();
+    order.filledAt = timestamp;
     order.fillPrice = fillPrice;
     order.avgFillPrice = fillPrice;
     order.filledQty = order.qty;

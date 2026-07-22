@@ -65,10 +65,26 @@ export interface EquityPoint {
   equity: number;
 }
 
-/** One closed (or partially closed) position, attributed to the bar it closed on. */
+/** What closed the trade — which working order type actually filled. Lets
+ * the trade log show, per-trade, whether a bracket ever fired at all
+ * instead of only inferring it from aggregate stats. */
+export type TradeExitReason = 'signal' | 'stop-loss' | 'take-profit' | 'trailing-stop' | 'unknown';
+
+/** One closed position, attributed to the bar it closed on (barIdx/pnl —
+ * the original fields stats.ts and optimizer.ts key off) plus full
+ * entry/exit fill detail for the trade log and CSV/print export. */
 export interface ClosedTrade {
   barIdx: number;
   pnl: number;
+  side: 'long' | 'short';
+  qty: number;
+  entryBarIdx: number;
+  entryTime: number;
+  entryPrice: number;
+  exitBarIdx: number;
+  exitTime: number;
+  exitPrice: number;
+  exitReason: TradeExitReason;
 }
 
 export interface SampleStats {
