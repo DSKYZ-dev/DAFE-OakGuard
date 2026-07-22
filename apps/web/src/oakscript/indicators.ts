@@ -1181,7 +1181,7 @@ structSc = (abs(cpv) + abs(cpm) + abs(cpa) + abs(cvm) + abs(cva) + abs(cma)) / 6
 alignSig = (cpv + cpm + cpa + cvm + cva + cma) / 6
 
 // ─── Feature-space entropy (dimensionality expansion) ────────────
-var sos = 0.0
+sos = 0.0
 k = 0
 while k < n {
     pv = featMat.get(k, 0)
