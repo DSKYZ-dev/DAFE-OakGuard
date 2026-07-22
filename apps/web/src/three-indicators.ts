@@ -50,20 +50,77 @@ function getCanvas(): HTMLCanvasElement {
   return c;
 }
 
-// All scene geometry is normalized to a fixed world-space span (buildBarGroup
-// etc. map bar index to roughly x in [-5, 5]) regardless of container size.
-// A plain fixed vertical FOV only widens the HORIZONTAL frame as the
-// container gets wider relative to its height — which this chart's layout
-// always is — so that fixed-size content was stranded in a narrow strip
-// down the middle instead of filling the width, the wider the window the
-// worse it got. Solving for the vertical FOV that keeps the HORIZONTAL FOV
-// pinned at BASE_FOV_DEG (its value at aspect 1:1, where horizontal and
-// vertical FOV are the same) makes the framing aspect-independent instead.
+// ─── Content-fit framing ───────────────────────────────────────────
+// Scene geometry is normalized to a fixed world-space span (buildBarGroup
+// maps bar index to roughly x in [-5, 5]) regardless of container size.
+// Framing history: a fixed vertical FOV strands that content in a narrow
+// centered strip on wide windows; pinning the HORIZONTAL FOV instead (the
+// previous approach) fills the width but crushes the vertical FOV at high
+// aspect ratios, cropping tall content. The robust model, applied after
+// each chart-3D rebuild: (1) stretch content x so its box matches the
+// viewport aspect (bars spread out; text sprites are counter-scaled so
+// glyphs keep their designed aspect), then (2) on CONTENT-identity change
+// only, refit the orbit distance/target to the resulting box — filling
+// both axes with no cropping, while user orbiting stays authoritative
+// during pans of the same indicator.
 const BASE_FOV_DEG = 45;
-function fovForAspect(aspect: number): number {
-  const targetHalfHFovRad = (BASE_FOV_DEG * Math.PI / 180) / 2;
-  const vHalfRad = Math.atan(Math.tan(targetHalfHFovRad) / Math.max(aspect, 0.001));
-  return vHalfRad * 2 * 180 / Math.PI;
+// Gentle — spreads bar spacing on wide windows without visibly distorting
+// curved geometry (helix/vortex/torus layers).
+const X_STRETCH_CLAMP: [number, number] = [0.85, 1.8];
+let _lastMainFitSig: string | null = null;
+
+function isSceneDecoration(obj: THREE.Object3D): boolean {
+  return obj instanceof THREE.Light || obj instanceof THREE.GridHelper;
+}
+
+function mainContentBox(): THREE.Box3 | null {
+  if (!_scene) return null;
+  const box = new THREE.Box3();
+  let has = false;
+  for (const child of _scene.children) {
+    if (isSceneDecoration(child)) continue;
+    box.expandByObject(child);
+    has = true;
+  }
+  return has && !box.isEmpty() ? box : null;
+}
+
+function stretchMainContentX(k: number): void {
+  if (!_scene) return;
+  for (const child of _scene.children) {
+    if (isSceneDecoration(child)) continue;
+    child.position.x *= k;
+    child.scale.x *= k;
+    child.traverse(o => { if (o instanceof THREE.Sprite) o.scale.x /= k; });
+  }
+}
+
+function fitAndStretchMainScene(contentSig: string): void {
+  if (!_scene || !_camera) return;
+  const aspect = _camera.aspect;
+  const box = mainContentBox();
+  if (!box) return;
+  const size = box.getSize(new THREE.Vector3());
+  if (size.x > 0.001 && size.y > 0.001) {
+    const k = Math.max(X_STRETCH_CLAMP[0], Math.min(X_STRETCH_CLAMP[1], (size.y * aspect) / size.x));
+    stretchMainContentX(k);
+  }
+  if (contentSig === _lastMainFitSig) return;
+  _lastMainFitSig = contentSig;
+  const fitted = mainContentBox();
+  if (!fitted) return;
+  // Box-face fit + 0.75×depth margin — fills the frame while keeping the
+  // tilted orbit camera outside the content's front face (see the lower
+  // pane's twin of this logic for why both fit extremes failed).
+  const s = fitted.getSize(new THREE.Vector3());
+  const center = fitted.getCenter(new THREE.Vector3());
+  const vHalf = (_camera.fov * Math.PI / 180) / 2;
+  const hHalf = Math.atan(Math.tan(vHalf) * aspect);
+  const dV = (s.y / 2) / Math.tan(vHalf);
+  const dH = (s.x / 2) / Math.tan(hHalf);
+  _orbitDist = Math.max(4, Math.min(50, Math.max(dV, dH) * 1.1 + s.z * 0.75));
+  _orbitTarget.copy(center);
+  applyOrbitCam();
 }
 
 function init(): void {
@@ -83,7 +140,7 @@ function init(): void {
   _scene = new THREE.Scene();
   _scene.background = null;
 
-  _camera = new THREE.PerspectiveCamera(fovForAspect(w / Math.max(h, 1)), w / Math.max(h, 1), 0.1, 1000);
+  _camera = new THREE.PerspectiveCamera(BASE_FOV_DEG, w / Math.max(h, 1), 0.1, 1000);
   _camera.position.set(0, 6, 18);
   _camera.lookAt(0, 0, 0);
 
@@ -733,9 +790,7 @@ export function render3DViz(bars: BaseBar[], view: ViewState, width: number, hei
   const canvas = getCanvas();
   if (canvas.width !== width || canvas.height !== height) {
     _renderer.setSize(width, height, false);
-    const aspect = width / Math.max(height, 1);
-    _camera.aspect = aspect;
-    _camera.fov = fovForAspect(aspect);
+    _camera.aspect = width / Math.max(height, 1);
     _camera.updateProjectionMatrix();
   }
   _renderTime = performance.now();
@@ -1250,9 +1305,7 @@ export function renderMain3DScene(
   const canvas = getCanvas();
   if (canvas.width !== width || canvas.height !== height) {
     _renderer.setSize(width, height, false);
-    const aspect = width / Math.max(height, 1);
-    _camera.aspect = aspect;
-    _camera.fov = fovForAspect(aspect);
+    _camera.aspect = width / Math.max(height, 1);
     _camera.updateProjectionMatrix();
   }
 
@@ -1269,6 +1322,7 @@ export function renderMain3DScene(
     if (_barGroup) { _scene.remove(_barGroup); disposeMesh(_barGroup); _barGroup = null; }
   }
 
+  const didRebuild = _rebuildNeeded;
   if (_rebuildNeeded) {
     _rebuildNeeded = false;
     clearViz();
@@ -1414,6 +1468,13 @@ export function renderMain3DScene(
     }
   }
 
+  // Content-fit AFTER the rebuild placed everything: aspect-stretch always
+  // (children are freshly created each rebuild), camera refit only when the
+  // content identity changed (see fitAndStretchMainScene).
+  if (didRebuild) {
+    fitAndStretchMainScene(plots.map(p => `${p.name}|${p.style}|${p.pane}`).join(';'));
+  }
+
   applyOrbitCam();
   _renderTime = performance.now();
   _renderer.render(_scene, _camera);
@@ -1424,6 +1485,7 @@ export function dispose3DScene(): void {
   _rebuildNeeded = true;
   _barGroup = null;
   _lastVisibleRangeKey = null;
+  _lastMainFitSig = null;
   _orbitTheta = 0; _orbitPhi = 1.0; _orbitDist = 18;
   _orbitTarget.set(0, 0, 0);
   disableOrbitMain();

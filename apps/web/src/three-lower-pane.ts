@@ -14,19 +14,48 @@ let _renderer: THREE.WebGLRenderer | null = null;
 let _scene: THREE.Scene | null = null;
 let _camera: THREE.PerspectiveCamera | null = null;
 
-// Plot geometry is normalized to a fixed world-space span (e.g. the
-// point-mapping below uses roughly x in [-5, 5]) regardless of container
-// size. A plain fixed vertical FOV only widens the HORIZONTAL frame as the
-// container gets wider relative to its height, which this pane always is,
-// stranding that fixed-size content in a narrow strip instead of filling
-// the width. Solving for the vertical FOV that keeps the HORIZONTAL FOV
-// pinned at BASE_FOV_DEG (its value at aspect 1:1) makes framing
-// aspect-independent instead.
+// ─── Content-fit framing ───────────────────────────────────────────
+// Plot geometry is normalized to a fixed world-space span (roughly x in
+// [-5, 5]) regardless of container size, while this pane is extremely wide
+// and short (aspect 5+). Two failed framing models preceded this one: a
+// fixed vertical FOV strands the content in a narrow strip in the middle
+// (unused width), and pinning the HORIZONTAL FOV instead crushes the
+// vertical FOV so far at this aspect that content clips top/bottom. The
+// robust model: keep a normal fixed FOV, then (1) stretch content
+// x-positions so the content box's aspect matches the viewport's — bars
+// just spread out; text sprites are counter-scaled so glyphs don't distort
+// — and (2) fit the camera distance to the resulting box, so the scene
+// fills the pane edge-to-edge on BOTH axes with no cropping at any size.
 const BASE_FOV_DEG = 35;
-function fovForAspect(aspect: number): number {
-  const targetHalfHFovRad = (BASE_FOV_DEG * Math.PI / 180) / 2;
-  const vHalfRad = Math.atan(Math.tan(targetHalfHFovRad) / Math.max(aspect, 0.001));
-  return vHalfRad * 2 * 180 / Math.PI;
+// Gentle: spreads bar-like content across wide panes without visibly
+// mangling organic geometry (helixes, tori, wireframe terrains) — the
+// first cut allowed 3.5× and stretched those into unrecognizable spikes.
+const X_STRETCH_CLAMP: [number, number] = [0.9, 1.5];
+
+function isDecoration(obj: THREE.Object3D): boolean {
+  return obj instanceof THREE.Light || obj instanceof THREE.GridHelper;
+}
+
+function stretchContentX(scene: THREE.Scene, k: number): void {
+  for (const child of scene.children) {
+    if (isDecoration(child)) continue;
+    child.position.x *= k;
+    child.scale.x *= k;
+    // Keep text glyphs at their designed aspect — the group-level stretch
+    // above already moved them to the right place.
+    child.traverse(o => { if (o instanceof THREE.Sprite) o.scale.x /= k; });
+  }
+}
+
+function contentBox(scene: THREE.Scene): THREE.Box3 | null {
+  const box = new THREE.Box3();
+  let has = false;
+  for (const child of scene.children) {
+    if (isDecoration(child)) continue;
+    box.expandByObject(child);
+    has = true;
+  }
+  return has && !box.isEmpty() ? box : null;
 }
 
 function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: THREE.PerspectiveCamera; canvas: HTMLCanvasElement } | null {
@@ -43,10 +72,9 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   // If we already have cached resources, just resize and return
   if (_renderer && _scene && _camera) {
     const pw = c.parentElement?.clientWidth || 1200;
-    const aspect = pw / h;
     _renderer.setSize(pw, h, false);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    _camera.aspect = aspect; _camera.fov = fovForAspect(aspect); _camera.updateProjectionMatrix();
+    _camera.aspect = pw / h; _camera.updateProjectionMatrix();
     return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   }
   try {
@@ -59,8 +87,7 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     const d = new THREE.DirectionalLight(0xffffff, 0.7);
     d.position.set(3, 6, 5); _scene.add(d);
     _scene.add(new THREE.GridHelper(16, 12, 0x222244, 0x111122));
-    const initAspect = (c.parentElement?.clientWidth || 1200) / h;
-    _camera = new THREE.PerspectiveCamera(fovForAspect(initAspect), initAspect, 0.1, 100);
+    _camera = new THREE.PerspectiveCamera(BASE_FOV_DEG, (c.parentElement?.clientWidth || 1200) / h, 0.1, 100);
     _camera.position.set(0, 3.5, 10);
     _camera.lookAt(0, 1.8, 0);
     enableOrbit(c, _camera);
@@ -518,6 +545,42 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
   r.camera.aspect = w / h; r.camera.updateProjectionMatrix();
 
   // Start continuous render loop so camera orbit works
+  // ── Content-fit: stretch to the pane's aspect, then frame the box ──
+  const aspect = r.camera.aspect;
+  const box = contentBox(r.scene);
+  if (box) {
+    const size = box.getSize(new THREE.Vector3());
+    if (size.x > 0.001 && size.y > 0.001) {
+      const k = Math.max(X_STRETCH_CLAMP[0], Math.min(X_STRETCH_CLAMP[1], (size.y * aspect) / size.x));
+      stretchContentX(r.scene, k);
+    }
+    // Camera refit only when the CONTENT identity changes (different plots),
+    // never on a same-indicator rebuild — the user's orbit must win there.
+    const sig = plots.map(p => `${p.name}|${p.style}`).join(';') + `#${shapePlots?.length ?? 0}`;
+    if (sig !== _lastLowerFitSig && _lowerOrbitFit) {
+      _lastLowerFitSig = sig;
+      const fitted = contentBox(r.scene);
+      if (fitted) {
+        // Box-face fit (fills the limiting axis) plus a strong z-margin.
+        // Two failed extremes bracket this: distance from face-fit + s.z/2
+        // alone let the tilted orbit camera sit inside deep terrain (huge
+        // clipped wedges), while a full bounding-sphere fit banished wide
+        // content so far away it became an invisible sliver on this pane's
+        // extreme aspect. Face-fit with a 0.75×depth margin keeps the
+        // camera outside the front face at the default tilt while staying
+        // close enough that content actually fills the pane.
+        const s = fitted.getSize(new THREE.Vector3());
+        const center = fitted.getCenter(new THREE.Vector3());
+        const vHalf = (r.camera.fov * Math.PI / 180) / 2;
+        const hHalf = Math.atan(Math.tan(vHalf) * aspect);
+        const dV = (s.y / 2) / Math.tan(vHalf);
+        const dH = (s.x / 2) / Math.tan(hHalf);
+        const dist = Math.max(dV, dH) * 1.1 + s.z * 0.75;
+        _lowerOrbitFit(dist, center);
+      }
+    }
+  }
+
   if (_rafId) cancelAnimationFrame(_rafId);
   const loop = () => {
     if (!document.getElementById(ID)) { _rafId = 0; return; }
@@ -565,12 +628,20 @@ export function hide3D(): void {
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
   if (_renderer) { _renderer.dispose(); _renderer = null; }
   _scene = null; _camera = null;
+  _lowerOrbitFit = null;
+  _lastLowerFitSig = null;
   const c = document.getElementById(ID); if (c) { c.onpointerdown = null; c.onpointermove = null; c.onpointerup = null; c.onwheel = null; c.remove(); }
   const sec = document.getElementById('secondary-canvas');
   if (sec) sec.style.display = '';
 }
 
 // ─── Inline camera orbit (plain events, no class) ──────────────────
+// Content-fit hook into the orbit closure's own state, so a programmatic
+// refit and a subsequent user drag agree on distance/target instead of the
+// drag snapping back to stale values.
+let _lowerOrbitFit: ((dist: number, target: THREE.Vector3) => void) | null = null;
+let _lastLowerFitSig: string | null = null;
+
 function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): void {
   let dragging = false, lx = 0, ly = 0, theta = 0, phi = 0.8, dist = 10;
   const target = new THREE.Vector3(0, 1.8, 0);
@@ -582,6 +653,12 @@ function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): v
       target.z + dist * Math.sin(phi) * Math.cos(theta),
     );
     camera.lookAt(target);
+  };
+
+  _lowerOrbitFit = (d: number, t: THREE.Vector3) => {
+    dist = Math.max(4, Math.min(60, d));
+    target.copy(t);
+    apply();
   };
 
   dom.onpointerdown = (e: PointerEvent) => {
@@ -597,7 +674,7 @@ function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): v
   };
   dom.onpointerup = () => { dragging = false; };
   dom.onwheel = (e: WheelEvent) => {
-    dist = Math.max(4, Math.min(25, dist + e.deltaY * 0.02));
+    dist = Math.max(4, Math.min(60, dist + e.deltaY * 0.02));
     apply(); e.preventDefault();
   };
 }
