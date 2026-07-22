@@ -20,6 +20,11 @@ import {
   buildOptimizerGrid, objectiveScore, objectiveLabel, formatObjectiveScore, formatNumber, OPTIMIZER_OBJECTIVES,
   type OptimizerVariant, type OptimizerRunRow, type OptimizerObjective,
 } from '../backtest/optimizer';
+import {
+  detectMlRefs, fetchMlPredictionsMap, fetchRlActionsMap,
+  trainMlModel, listMlModels, deleteMlModel, trainRlPolicy, listRlPolicies, deleteRlPolicy,
+  type MlModelMeta, type RlPolicyMeta,
+} from '../ml-client';
 
 export interface OakscriptResult {
   plots: OakPlot[];
@@ -57,6 +62,7 @@ let docPanel: HTMLDivElement | null = null;
 let imagesPanel: HTMLDivElement | null = null;
 let backtestPanel: HTMLDivElement | null = null;
 let strategyLabPanel: HTMLDivElement | null = null;
+let mlLabPanel: HTMLDivElement | null = null;
 let alertsPanel: HTMLDivElement | null = null;
 let persistKey = 'oakscript_persist';
 let webhookUrl = localStorage.getItem('oakscript_webhook') || '';
@@ -861,6 +867,12 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(strategyLabBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   strategyLabBtn.onclick = () => toggleStrategyLab();
 
+  const mlLabBtn = document.createElement('button');
+  mlLabBtn.textContent = '🧠 ML Lab';
+  mlLabBtn.title = 'Train ML signal models and RL trading policies for ml.predict()/rl.action()';
+  Object.assign(mlLabBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
+  mlLabBtn.onclick = () => toggleMlLab();
+
   const alertsBtn = document.createElement('button');
   alertsBtn.textContent = '🔔 Alerts';
   alertsBtn.title = 'Alert History — Explain This Signal shows the script\'s own variable values at the moment each alert fired';
@@ -877,6 +889,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   controls.appendChild(imagesBtn);
   controls.appendChild(backtestBtn);
   controls.appendChild(strategyLabBtn);
+  controls.appendChild(mlLabBtn);
   controls.appendChild(alertsBtn);
 
   const applyBtn = document.createElement('button');
@@ -1004,6 +1017,16 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     flexShrink: '0',
   });
   editorPanel.appendChild(strategyLabPanel);
+
+  // ── ML Lab (ml.predict / rl.action training) Panel ─────────────────
+  mlLabPanel = document.createElement('div');
+  mlLabPanel.id = 'oakscript-ml-lab';
+  Object.assign(mlLabPanel.style, {
+    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '420px',
+    borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
+    flexShrink: '0',
+  });
+  editorPanel.appendChild(mlLabPanel);
 
   // ── Alert History (Explain This Signal) Panel ──────────────────────
   alertsPanel = document.createElement('div');
@@ -1891,6 +1914,27 @@ async function resolveBacktestBars(
   return { raw, label: `${fellBack}chart bars ×${raw.length} (${chartCtx.symbol} ${chartCtx.timeframe}${provider})` };
 }
 
+/**
+ * Scans a script for ml.predict("id")/rl.action("id") literal calls and, if
+ * any are found, awaits their predictions/actions for the given bar range
+ * up front — a one-shot backtest replay has no render loop to retry an
+ * async fetch on (unlike the live chart's resolveMlPrediction/resolveRlAction,
+ * which resolve in the background against a synchronous read). Returns {}
+ * (no keys) when the script makes no ml.predict/rl.action calls at all, so
+ * spreading the result into RunBacktestOptions is always safe.
+ */
+async function resolveMlRefsForScript(
+  source: string, bars: ReturnType<typeof barsToRuntimeBarData>, baseUrl?: string,
+): Promise<{ mlPredictions?: Map<string, number[]>; rlActions?: Map<string, number[]> }> {
+  const { modelIds, policyIds } = detectMlRefs(source);
+  if (modelIds.length === 0 && policyIds.length === 0) return {};
+  const [mlPredictions, rlActions] = await Promise.all([
+    modelIds.length > 0 ? fetchMlPredictionsMap(modelIds, bars, baseUrl) : Promise.resolve(undefined),
+    policyIds.length > 0 ? fetchRlActionsMap(policyIds, bars, baseUrl) : Promise.resolve(undefined),
+  ]);
+  return { mlPredictions, rlActions };
+}
+
 function toggleBacktest(): void {
   if (!backtestPanel) return;
   const isVisible = backtestPanel.style.display !== 'none';
@@ -2091,8 +2135,11 @@ function renderBacktest(): void {
       if (controller.signal.aborted) throw new BacktestCancelledError();
       lastBacktestDataLabel = dataLabel;
       const bars = barsToRuntimeBarData(raw);
+      const mlRefs = await resolveMlRefsForScript(source, bars, chartCtx.baseUrl);
+      if (controller.signal.aborted) throw new BacktestCancelledError();
       const result = await runBacktestOnBars(config, source, bars, {
         signal: controller.signal,
+        ...mlRefs,
         onProgress: (stage) => {
           statusMsg.textContent =
             stage === 'running-script' ? 'Running script (signal collection)...' :
@@ -2453,12 +2500,15 @@ function renderStrategyLab(): void {
       const { raw: rawBars, label: dataLabel } = await resolveBacktestBars(config, chartCtx);
       if (controller.signal.aborted) throw new BacktestCancelledError();
       const bars = barsToRuntimeBarData(rawBars);
+      const mlRefs = await resolveMlRefsForScript(source, bars, chartCtx.baseUrl);
+      if (controller.signal.aborted) throw new BacktestCancelledError();
 
       for (let i = 0; i < variants.length; i++) {
         const variant = variants[i];
         statusMsg.textContent = `Running combination ${i + 1}/${variants.length} — ${variant.label}...`;
         const result = await runBacktestOnBars(config, source, bars, {
           signal: controller.signal,
+          ...mlRefs,
           inputOverrides: variant.overrides.size > 0 ? new Map<string, unknown>(variant.overrides) : undefined,
         });
         rows.push({ variant, result, score: objectiveScore(result, objective) });
@@ -2495,6 +2545,381 @@ function renderStrategyLab(): void {
   };
 
   if (lastStrategyLabRows) renderBatchResults(lastStrategyLabRows);
+}
+
+// ─── ML Lab Panel ─────────────────────────────────────────────────────
+// Trains the models/policies ml.predict("id")/rl.action("id") reference.
+// ML: gradient boosting / a real 2-hidden-layer MLP / logistic regression
+// via scikit-learn, chronologically split (no shuffle) so validation never
+// sees future bars the way training did. RL: a from-scratch tabular
+// Q-learning agent — genuine trial-and-error learning against a reward
+// signal (mark-to-market P&L), not supervised learning wearing an RL name.
+// See backend/ml_engine.py. No PyTorch/deep-RL framework here — this
+// sandbox has no GPU and the default PyTorch wheel bundles ~2GB of CUDA
+// runtime it couldn't use; scikit-learn's MLP is a genuine backprop-trained
+// net, appropriately scoped for tabular financial features.
+
+let lastMlLabConfig: { symbol: string; timeframe: string; barCount: number; dataSource: 'auto' | 'fetch' | 'chart' } | null = null;
+
+function toggleMlLab(): void {
+  if (!mlLabPanel) return;
+  const isVisible = mlLabPanel.style.display !== 'none';
+  mlLabPanel.style.display = isVisible ? 'none' : 'block';
+  if (!isVisible) renderMlLab();
+}
+
+function mlLabSectionHeader(text: string): HTMLDivElement {
+  const h = document.createElement('div');
+  h.textContent = text;
+  Object.assign(h.style, {
+    fontSize: '10px', fontWeight: '700', color: '#b48cff',
+    padding: '10px 10px 4px', textTransform: 'uppercase', letterSpacing: '0.04em',
+  });
+  return h;
+}
+
+function mlLabBtnStyle(color: string): Partial<CSSStyleDeclaration> {
+  return {
+    padding: '4px 10px', border: `1px solid ${color}66`, borderRadius: '4px',
+    background: `${color}26`, color, cursor: 'pointer', fontSize: '10px', fontWeight: '700',
+  };
+}
+
+function renderMlLab(): void {
+  if (!mlLabPanel) return;
+  mlLabPanel.innerHTML = '';
+
+  const header = document.createElement('div');
+  Object.assign(header.style, {
+    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px', zIndex: '1',
+  });
+  const headerTitle = document.createElement('div');
+  headerTitle.textContent = '🧠 ML Lab';
+  Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '2px' });
+  header.appendChild(headerTitle);
+  const headerSub = document.createElement('div');
+  headerSub.textContent = 'Train ML signal models and RL trading policies against historical bars. Reference them in a script via ml.predict("modelId") / rl.action("policyId"). Classical ML (gradient boosting / a real neural net / logistic regression) and tabular Q-learning RL — no GPU deep-learning framework in this environment.';
+  Object.assign(headerSub.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+  header.appendChild(headerSub);
+  mlLabPanel.appendChild(header);
+
+  const chartCtx: EditorChartContext = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
+  const tfList = chartCtx.timeframes?.length ? chartCtx.timeframes : FALLBACK_TIMEFRAMES;
+  const chartTf = tfList.includes(chartCtx.timeframe) ? chartCtx.timeframe : (tfList.includes('1h') ? '1h' : tfList[0]);
+
+  // ── Mini data-source form (symbol/timeframe/bars/source only — no
+  // SL/TP/qty/signal fields, none of which mean anything for training) ──
+  const formWrap = document.createElement('div');
+  Object.assign(formWrap.style, { padding: '6px 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
+  const symbolInput = document.createElement('input');
+  symbolInput.type = 'text'; symbolInput.value = lastMlLabConfig?.symbol || chartCtx.symbol || 'SPY';
+  const tfSelect = document.createElement('select');
+  for (const tf of tfList) {
+    const opt = document.createElement('option');
+    opt.value = tf; opt.textContent = tf;
+    if (tf === (lastMlLabConfig?.timeframe || chartTf)) opt.selected = true;
+    tfSelect.appendChild(opt);
+  }
+  const barCountInput = document.createElement('input');
+  barCountInput.type = 'number'; barCountInput.min = '50'; barCountInput.max = String(MAX_BACKTEST_BARS);
+  barCountInput.value = String(lastMlLabConfig?.barCount ?? 500);
+  const dataSourceSelect = document.createElement('select');
+  for (const [val, label] of [
+    ['auto', 'Auto (fetch → chart)'], ['fetch', 'Fetch historical'], ['chart', 'Chart (loaded bars)'],
+  ] as const) {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if (val === (lastMlLabConfig?.dataSource ?? 'auto')) opt.selected = true;
+    dataSourceSelect.appendChild(opt);
+  }
+  formWrap.appendChild(configField('Symbol', symbolInput, '90px'));
+  formWrap.appendChild(configField('Timeframe', tfSelect, '70px'));
+  formWrap.appendChild(configField(`Bars (max ${MAX_BACKTEST_BARS})`, barCountInput, '110px'));
+  formWrap.appendChild(configField('Data', dataSourceSelect, '130px'));
+  mlLabPanel.appendChild(formWrap);
+
+  function currentDataConfig(): BacktestConfig {
+    const cfg: {
+      symbol: string; timeframe: string; barCount: number;
+      dataSource: 'auto' | 'fetch' | 'chart';
+    } = {
+      symbol: symbolInput.value.trim().toUpperCase() || 'SPY',
+      timeframe: tfSelect.value || '1h',
+      barCount: Math.max(50, Math.min(MAX_BACKTEST_BARS, parseInt(barCountInput.value, 10) || 500)),
+      dataSource: dataSourceSelect.value as 'auto' | 'fetch' | 'chart',
+    };
+    lastMlLabConfig = cfg;
+    // Unused-by-resolveBacktestBars fields still need to satisfy the type —
+    // sensible constants, never read for training.
+    return {
+      ...cfg, inSamplePct: 70, qtyPerTrade: 1, startingCash: 10000,
+      stopLossMode: 'none', stopLossValue: 2, takeProfitMode: 'none', takeProfitValue: 4,
+      baseUrl: chartCtx.baseUrl,
+    };
+  }
+
+  // ── Train ML model ──
+  mlLabPanel.appendChild(mlLabSectionHeader('Train ML Signal Model'));
+  const mlFormRow = document.createElement('div');
+  Object.assign(mlFormRow.style, { padding: '0 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
+  const modelTypeSelect = document.createElement('select');
+  for (const [v, l] of [['gbm', 'Gradient Boosting'], ['mlp', 'Neural Net (MLP)'], ['logistic', 'Logistic/Ridge']] as const) {
+    const opt = document.createElement('option'); opt.value = v; opt.textContent = l; modelTypeSelect.appendChild(opt);
+  }
+  const targetTypeSelect = document.createElement('select');
+  for (const [v, l] of [['direction', 'Direction (up/down)'], ['return', 'Return (%)']] as const) {
+    const opt = document.createElement('option'); opt.value = v; opt.textContent = l; targetTypeSelect.appendChild(opt);
+  }
+  const horizonInput = document.createElement('input');
+  horizonInput.type = 'number'; horizonInput.min = '1'; horizonInput.max = '50'; horizonInput.value = '3';
+  const mlTrainPctInput = document.createElement('input');
+  mlTrainPctInput.type = 'number'; mlTrainPctInput.min = '50'; mlTrainPctInput.max = '90'; mlTrainPctInput.value = '70';
+  mlFormRow.appendChild(configField('Model', modelTypeSelect, '140px'));
+  mlFormRow.appendChild(configField('Target', targetTypeSelect, '150px'));
+  mlFormRow.appendChild(configField('Horizon (bars)', horizonInput, '90px'));
+  mlFormRow.appendChild(configField('Train %', mlTrainPctInput, '70px'));
+  mlLabPanel.appendChild(mlFormRow);
+
+  const mlActionsRow = document.createElement('div');
+  Object.assign(mlActionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px' });
+  const trainMlBtn = document.createElement('button');
+  trainMlBtn.textContent = '▶ Train ML Model';
+  Object.assign(trainMlBtn.style, mlLabBtnStyle('#22cc88'));
+  const mlStatus = document.createElement('span');
+  Object.assign(mlStatus.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+  mlActionsRow.appendChild(trainMlBtn);
+  mlActionsRow.appendChild(mlStatus);
+  mlLabPanel.appendChild(mlActionsRow);
+
+  // ── Train RL policy ──
+  mlLabPanel.appendChild(mlLabSectionHeader('Train RL Trading Policy'));
+  const rlFormRow = document.createElement('div');
+  Object.assign(rlFormRow.style, { padding: '0 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
+  const episodesInput = document.createElement('input');
+  episodesInput.type = 'number'; episodesInput.min = '20'; episodesInput.max = '2000'; episodesInput.value = '150';
+  const rlTrainPctInput = document.createElement('input');
+  rlTrainPctInput.type = 'number'; rlTrainPctInput.min = '50'; rlTrainPctInput.max = '90'; rlTrainPctInput.value = '70';
+  rlFormRow.appendChild(configField('Episodes', episodesInput, '90px'));
+  rlFormRow.appendChild(configField('Train %', rlTrainPctInput, '70px'));
+  mlLabPanel.appendChild(rlFormRow);
+
+  const rlActionsRow = document.createElement('div');
+  Object.assign(rlActionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px' });
+  const trainRlBtn = document.createElement('button');
+  trainRlBtn.textContent = '▶ Train RL Policy';
+  Object.assign(trainRlBtn.style, mlLabBtnStyle('#22cc88'));
+  const rlStatus = document.createElement('span');
+  Object.assign(rlStatus.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
+  rlActionsRow.appendChild(trainRlBtn);
+  rlActionsRow.appendChild(rlStatus);
+  mlLabPanel.appendChild(rlActionsRow);
+
+  // ── Lists ──
+  const modelsListDiv = document.createElement('div');
+  Object.assign(modelsListDiv.style, { padding: '0 10px 10px' });
+  const policiesListDiv = document.createElement('div');
+  Object.assign(policiesListDiv.style, { padding: '0 10px 10px' });
+
+  function idBadgeRow(id: string, meta: string): HTMLDivElement {
+    const top = document.createElement('div');
+    Object.assign(top.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', marginBottom: '4px' });
+    const label = document.createElement('span');
+    label.textContent = id;
+    label.title = meta;
+    Object.assign(label.style, { fontSize: '10px', fontWeight: '700', color: '#b48cff', fontFamily: 'monospace' });
+    top.appendChild(label);
+    const btnGroup = document.createElement('div');
+    Object.assign(btnGroup.style, { display: 'flex', gap: '4px', flexShrink: '0' });
+    const copyBtn = document.createElement('button');
+    copyBtn.textContent = '📋 Copy ID';
+    Object.assign(copyBtn.style, { padding: '2px 6px', fontSize: '8px', border: '1px solid rgba(180,140,255,0.3)', borderRadius: '3px', background: 'rgba(180,140,255,0.1)', color: '#b48cff', cursor: 'pointer' });
+    copyBtn.onclick = () => {
+      navigator.clipboard?.writeText(id).catch(() => {});
+      copyBtn.textContent = '✓ Copied'; setTimeout(() => { copyBtn.textContent = '📋 Copy ID'; }, 1200);
+    };
+    btnGroup.appendChild(copyBtn);
+    top.appendChild(btnGroup);
+    return top;
+  }
+
+  async function refreshModelsList(): Promise<void> {
+    modelsListDiv.innerHTML = '';
+    modelsListDiv.appendChild(mlLabSectionHeader('Trained ML Models'));
+    let models: MlModelMeta[];
+    try { models = await listMlModels(chartCtx.baseUrl); } catch (e: any) {
+      const err = document.createElement('div');
+      err.textContent = `Couldn't reach the backend for the model list: ${e?.message || e}`;
+      Object.assign(err.style, { fontSize: '9px', color: '#ff4477', padding: '0 10px' });
+      modelsListDiv.appendChild(err);
+      return;
+    }
+    if (models.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No trained models yet.';
+      Object.assign(empty.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', padding: '0 10px' });
+      modelsListDiv.appendChild(empty);
+      return;
+    }
+    for (const m of models) {
+      const card = document.createElement('div');
+      Object.assign(card.style, { border: '1px solid rgba(180,140,255,0.12)', borderRadius: '5px', padding: '6px 8px', marginBottom: '5px', background: 'rgba(255,255,255,0.02)' });
+      card.appendChild(idBadgeRow(m.id, `${m.symbol} ${m.timeframe} · ${m.modelType} · horizon ${m.horizon} · trained ${new Date(m.createdAt * 1000).toLocaleString()}`));
+
+      const meta = document.createElement('div');
+      meta.textContent = `${m.symbol} ${m.timeframe} · ${m.modelType} · target: ${m.targetType} (horizon ${m.horizon}) · ${m.trainRows} train / ${m.valRows} val rows`;
+      Object.assign(meta.style, { fontSize: '9px', color: 'rgba(255,255,255,0.5)', marginBottom: '3px' });
+      card.appendChild(meta);
+
+      const metricsLine = document.createElement('div');
+      if (m.targetType === 'direction') {
+        const acc = Number(m.metrics.accuracy), base = Number(m.metrics.baselineAccuracy);
+        const beats = acc > base;
+        metricsLine.textContent = `Validation accuracy: ${(acc * 100).toFixed(1)}% vs ${(base * 100).toFixed(1)}% baseline (${m.metrics.baselineLabel}) — precision ${(Number(m.metrics.precision) * 100).toFixed(1)}%, recall ${(Number(m.metrics.recall) * 100).toFixed(1)}%`;
+        metricsLine.style.color = beats ? '#22cc88' : '#ff4477';
+      } else {
+        const mae = Number(m.metrics.mae), base = Number(m.metrics.baselineMae);
+        const beats = mae < base;
+        metricsLine.textContent = `Validation MAE: ${mae.toFixed(4)} vs ${base.toFixed(4)} baseline (${m.metrics.baselineLabel}) — R² ${Number(m.metrics.r2).toFixed(3)}`;
+        metricsLine.style.color = beats ? '#22cc88' : '#ff4477';
+      }
+      Object.assign(metricsLine.style, { fontSize: '9px', fontWeight: '600', marginBottom: '3px' });
+      card.appendChild(metricsLine);
+
+      const topFeat = document.createElement('div');
+      topFeat.textContent = `Top features: ${m.featureImportances.slice(0, 3).map(f => `${f.feature} (${f.importance.toFixed(3)})`).join(', ')}`;
+      Object.assign(topFeat.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)', marginBottom: '4px' });
+      card.appendChild(topFeat);
+
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '🗑 Delete';
+      Object.assign(delBtn.style, { padding: '2px 6px', fontSize: '8px', border: '1px solid rgba(255,68,119,0.3)', borderRadius: '3px', background: 'rgba(255,68,119,0.1)', color: '#ff4477', cursor: 'pointer' });
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        try { await deleteMlModel(m.id, chartCtx.baseUrl); await refreshModelsList(); } catch (e: any) { delBtn.textContent = 'Failed'; }
+      };
+      card.appendChild(delBtn);
+
+      modelsListDiv.appendChild(card);
+    }
+  }
+
+  async function refreshPoliciesList(): Promise<void> {
+    policiesListDiv.innerHTML = '';
+    policiesListDiv.appendChild(mlLabSectionHeader('Trained RL Policies'));
+    let policies: RlPolicyMeta[];
+    try { policies = await listRlPolicies(chartCtx.baseUrl); } catch (e: any) {
+      const err = document.createElement('div');
+      err.textContent = `Couldn't reach the backend for the policy list: ${e?.message || e}`;
+      Object.assign(err.style, { fontSize: '9px', color: '#ff4477', padding: '0 10px' });
+      policiesListDiv.appendChild(err);
+      return;
+    }
+    if (policies.length === 0) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No trained RL policies yet.';
+      Object.assign(empty.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', padding: '0 10px' });
+      policiesListDiv.appendChild(empty);
+      return;
+    }
+    for (const p of policies) {
+      const card = document.createElement('div');
+      Object.assign(card.style, { border: '1px solid rgba(180,140,255,0.12)', borderRadius: '5px', padding: '6px 8px', marginBottom: '5px', background: 'rgba(255,255,255,0.02)' });
+      card.appendChild(idBadgeRow(p.id, `${p.symbol} ${p.timeframe} · ${p.episodes} episodes · trained ${new Date(p.createdAt * 1000).toLocaleString()}`));
+
+      const meta = document.createElement('div');
+      meta.textContent = `${p.symbol} ${p.timeframe} · ${p.episodes} episodes · state space ${p.stateSpaceSize} · ${p.trainRows} train / ${p.valRows} val steps`;
+      Object.assign(meta.style, { fontSize: '9px', color: 'rgba(255,255,255,0.5)', marginBottom: '3px' });
+      card.appendChild(meta);
+
+      const learningCurve = document.createElement('div');
+      const rewards = p.episodeRewards;
+      const firstAvg = rewards.slice(0, Math.max(1, Math.floor(rewards.length * 0.1))).reduce((a, b) => a + b, 0) / Math.max(1, Math.floor(rewards.length * 0.1));
+      const lastAvg = rewards.slice(-Math.max(1, Math.floor(rewards.length * 0.1))).reduce((a, b) => a + b, 0) / Math.max(1, Math.floor(rewards.length * 0.1));
+      learningCurve.textContent = `Learning curve (avg episode reward): first 10% ${firstAvg.toFixed(4)} → last 10% ${lastAvg.toFixed(4)}`;
+      Object.assign(learningCurve.style, { fontSize: '9px', color: lastAvg > firstAvg ? '#22cc88' : 'rgba(255,255,255,0.5)', marginBottom: '3px' });
+      card.appendChild(learningCurve);
+
+      const valLine = document.createElement('div');
+      const v = p.validation;
+      const beats = v.policy.totalReturn > v.alwaysLong.totalReturn && v.policy.totalReturn > v.alwaysFlat.totalReturn;
+      valLine.textContent = `Held-out validation return: policy ${(v.policy.totalReturn * 100).toFixed(2)}% (${(v.policy.winRate * 100).toFixed(0)}% win rate) vs always-long ${(v.alwaysLong.totalReturn * 100).toFixed(2)}% vs always-flat ${(v.alwaysFlat.totalReturn * 100).toFixed(2)}%`;
+      Object.assign(valLine.style, { fontSize: '9px', fontWeight: '600', color: beats ? '#22cc88' : '#ff4477', marginBottom: '4px' });
+      card.appendChild(valLine);
+
+      const delBtn = document.createElement('button');
+      delBtn.textContent = '🗑 Delete';
+      Object.assign(delBtn.style, { padding: '2px 6px', fontSize: '8px', border: '1px solid rgba(255,68,119,0.3)', borderRadius: '3px', background: 'rgba(255,68,119,0.1)', color: '#ff4477', cursor: 'pointer' });
+      delBtn.onclick = async () => {
+        delBtn.disabled = true;
+        try { await deleteRlPolicy(p.id, chartCtx.baseUrl); await refreshPoliciesList(); } catch (e: any) { delBtn.textContent = 'Failed'; }
+      };
+      card.appendChild(delBtn);
+
+      policiesListDiv.appendChild(card);
+    }
+  }
+
+  trainMlBtn.onclick = async () => {
+    trainMlBtn.disabled = true;
+    trainMlBtn.textContent = 'Training...';
+    mlStatus.style.color = 'rgba(255,255,255,0.4)';
+    try {
+      mlStatus.textContent = 'Resolving historical bars...';
+      const config = currentDataConfig();
+      const { raw, label: dataLabel } = await resolveBacktestBars(config, chartCtx);
+      const bars = barsToRuntimeBarData(raw);
+      mlStatus.textContent = `Training on ${dataLabel}...`;
+      const meta = await trainMlModel({
+        bars, horizon: Math.max(1, parseInt(horizonInput.value, 10) || 3),
+        targetType: targetTypeSelect.value as 'direction' | 'return',
+        modelType: modelTypeSelect.value as 'gbm' | 'mlp' | 'logistic',
+        trainPct: Math.max(0.5, Math.min(0.9, (parseInt(mlTrainPctInput.value, 10) || 70) / 100)),
+        symbol: config.symbol, timeframe: config.timeframe, baseUrl: chartCtx.baseUrl,
+      });
+      mlStatus.textContent = `Trained ${meta.id} — copy its id into ml.predict("${meta.id}")`;
+      mlStatus.style.color = '#22cc88';
+      await refreshModelsList();
+    } catch (e: any) {
+      mlStatus.textContent = `Training failed: ${e?.message || e}`;
+      mlStatus.style.color = '#ff4477';
+    } finally {
+      trainMlBtn.disabled = false;
+      trainMlBtn.textContent = '▶ Train ML Model';
+    }
+  };
+
+  trainRlBtn.onclick = async () => {
+    trainRlBtn.disabled = true;
+    trainRlBtn.textContent = 'Training...';
+    rlStatus.style.color = 'rgba(255,255,255,0.4)';
+    try {
+      rlStatus.textContent = 'Resolving historical bars...';
+      const config = currentDataConfig();
+      const { raw, label: dataLabel } = await resolveBacktestBars(config, chartCtx);
+      const bars = barsToRuntimeBarData(raw);
+      rlStatus.textContent = `Training on ${dataLabel} (this runs ${episodesInput.value} episodes — may take a few seconds)...`;
+      const meta = await trainRlPolicy({
+        bars, episodes: Math.max(20, Math.min(2000, parseInt(episodesInput.value, 10) || 150)),
+        trainPct: Math.max(0.5, Math.min(0.9, (parseInt(rlTrainPctInput.value, 10) || 70) / 100)),
+        symbol: config.symbol, timeframe: config.timeframe, baseUrl: chartCtx.baseUrl,
+      });
+      rlStatus.textContent = `Trained ${meta.id} — copy its id into rl.action("${meta.id}")`;
+      rlStatus.style.color = '#22cc88';
+      await refreshPoliciesList();
+    } catch (e: any) {
+      rlStatus.textContent = `Training failed: ${e?.message || e}`;
+      rlStatus.style.color = '#ff4477';
+    } finally {
+      trainRlBtn.disabled = false;
+      trainRlBtn.textContent = '▶ Train RL Policy';
+    }
+  };
+
+  mlLabPanel.appendChild(modelsListDiv);
+  mlLabPanel.appendChild(policiesListDiv);
+  refreshModelsList();
+  refreshPoliciesList();
 }
 
 // ─── Alert History / Explain This Signal Panel ───────────────────────

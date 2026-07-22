@@ -27,7 +27,7 @@ export interface BuiltinStyleCheck {
 export interface BuiltinDef {
   /** Dotted or bare builtin name, e.g. 'line.new', 'plotimage', 'sma'. */
   name: string;
-  category: 'drawing_2d' | 'drawing_analyst' | 'image' | 'backtest' | 'mtf' | 'consensus' | 'existing';
+  category: 'drawing_2d' | 'drawing_analyst' | 'image' | 'backtest' | 'mtf' | 'consensus' | 'ml' | 'existing';
   minArgs: number;
   maxArgs: number;
   /** Positional argument names, in order (optional args are suffixed '?'). */
@@ -378,6 +378,16 @@ export const BUILTIN_REGISTRY: BuiltinDef[] = [
     argDescriptions: ['value', 'mode?'],
     styleChecks: [{ argIndex: 1, values: new Set(['pct', 'abs']), code: 'UNKNOWN_BRACKET_MODE', label: 'model.takeProfit mode' }],
     summary: 'Sets a per-script take-profit (mode "pct", default, or "abs" $ distance) attached to subsequent entries, overriding the backtest form\'s TP. value <= 0 clears it.',
+  },
+  {
+    name: 'ml.predict', category: 'ml', minArgs: 1, maxArgs: 1,
+    argDescriptions: ['modelId'],
+    summary: 'Returns a trained ML model\'s prediction for this bar — a 0-1 probability for a direction model, a raw predicted return for a regression model. Neutral (0.5) until the model resolves. Train models in the ML Lab panel.',
+  },
+  {
+    name: 'rl.action', category: 'ml', minArgs: 1, maxArgs: 1,
+    argDescriptions: ['policyId'],
+    summary: 'Returns the greedy action (-1 short, 0 flat, 1 long) a Q-learning policy trained in the ML Lab panel would take on this bar. Defaults to 0 (flat) until the policy resolves.',
   },
   // ── Legacy aliases (pre-Signal-Analysis-Model naming) — identical
   // execution to model.entry/model.exit, kept indefinitely for backward

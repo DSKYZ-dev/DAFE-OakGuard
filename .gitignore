@@ -14,6 +14,11 @@ __pycache__/
 backend/settings.json
 backend/.vault_key
 
+# ML Lab — trained models/policies are runtime-generated local state
+# (per-deployment artifacts), never source to track.
+backend/ml_models/
+backend/rl_policies/
+
 # Logs
 *.log
 

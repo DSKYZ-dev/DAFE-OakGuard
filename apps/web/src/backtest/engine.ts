@@ -47,6 +47,12 @@ export interface RunBacktestOptions {
    * same source N times with different parameter values. Unset for a normal
    * single Time Machine run. */
   inputOverrides?: Map<string, unknown>;
+  /** Pre-fetched ml.predict()/rl.action() data (see ml-client.ts) for any
+   * model/policy ids the script's source references — the caller (editor.ts)
+   * scans the source and awaits these before calling runBacktestOnBars, so
+   * the worker's one-shot pass never needs to do its own async I/O. */
+  mlPredictions?: Map<string, number[]>;
+  rlActions?: Map<string, number[]>;
 }
 
 /**
@@ -153,7 +159,10 @@ function runSignalCollection(
       reject(new Error(`Backtest worker error: ${ev.message}`));
     };
 
-    const req: BacktestWorkerRequest = { source, bars, inputOverrides: opts?.inputOverrides };
+    const req: BacktestWorkerRequest = {
+      source, bars, inputOverrides: opts?.inputOverrides,
+      mlPredictions: opts?.mlPredictions, rlActions: opts?.rlActions,
+    };
     worker.postMessage(req);
   });
 }

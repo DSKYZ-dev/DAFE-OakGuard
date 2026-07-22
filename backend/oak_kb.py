@@ -679,7 +679,10 @@ SECTIONS: list[dict] = [
             "(persist/var state and warmup carry through unbroken, exactly like a normal "
             "render). Each call is recorded on the bar it fired and filled at the NEXT "
             "bar's open (no lookahead) — never the same bar's close. The live auto-trader "
-            "uses the same next-evaluation semantics.\n"
+            "uses the same next-evaluation semantics. Once a stop-loss/take-profit/"
+            "trailing bracket is live it's checked INTRABAR against each bar's full "
+            "high/low range (not just open/close), with gap-through pricing — only "
+            "brackets get this, signal entries/exits still fill next-bar-open.\n"
             "Exactly like plotshape, an unconditional top-level call fires every bar — "
             "always wrap it in a signal condition.\n"
             "    fast = sma(close, 5)\n"
@@ -708,6 +711,64 @@ SECTIONS: list[dict] = [
             "sharpe", "win rate", "in-sample", "out-of-sample", "paper broker",
             "auto-trade", "auto-trader", "automation", "confidence", "stop loss",
             "take profit", "signal analysis model", "model",
+        ],
+    },
+    {
+        "title": "ML / RL — ml.predict / rl.action",
+        "content": (
+            "ml.predict(modelId) / rl.action(policyId) — read predictions from a model "
+            "or policy trained in the 🧠 ML Lab panel (next to Backtest/Optimize in the "
+            "editor toolbar), NOT something the agent can train on the user's behalf — "
+            "never invent a model/policy id; tell the user to train one in ML Lab and "
+            "give you its id, or write the script with a placeholder id.\n"
+            "ml.predict(modelId): returns a 0-1 probability (direction model: predicts "
+            "next-H-bar up/down) or a raw predicted return (regression model) for the "
+            "CURRENT bar. Neutral 0.5 until the model resolves. Models are gradient "
+            "boosting / a real 2-hidden-layer neural net (MLP) / logistic-ridge "
+            "regression via scikit-learn, trained on a standard technical feature set "
+            "(multi-lookback returns, rolling volatility, RSI, MACD histogram, EMA "
+            "spread, volume ratio, bar range/position). Training splits bars "
+            "CHRONOLOGICALLY (train = first Train%, validate = the rest, never "
+            "shuffled — shuffling would leak future bars into training). Every result "
+            "is reported against an honest baseline: accuracy vs majority-class "
+            "baseline for direction models, MAE vs always-predict-zero-change for "
+            "regression models.\n"
+            "rl.action(policyId): returns -1/0/1 (short/flat/long) — the greedy action "
+            "of a from-scratch TABULAR Q-LEARNING policy. Genuine reinforcement "
+            "learning: the agent is never given a labeled 'correct' action, only a "
+            "reward (mark-to-market P&L on the position its action implies, minus a "
+            "small cost for flipping) from acting against the same historical bars the "
+            "backtester replays, learned via the standard Q-learning Bellman update "
+            "across many training episodes. Neutral 0 (flat) until the policy resolves. "
+            "ML Lab shows the episode-reward learning curve (proof it actually learned "
+            "something across training) and the validated policy's held-out return "
+            "against 'always long'/'always flat' baselines.\n"
+            "EXECUTION: on the live chart, predictions/actions resolve in the "
+            "background against a synchronous cache (same pattern as async image "
+            "decodes) — neutral value until the first fetch for that model/bar-range "
+            "lands, then the next render picks up the real value. In Backtest/"
+            "Optimizer runs, the script is scanned for ml.predict(\"id\")/"
+            "rl.action(\"id\") calls and their data is fetched UP FRONT before the "
+            "replay runs.\n"
+            "No PyTorch/GPU deep-learning framework — this backend has no GPU and the "
+            "default PyTorch wheel bundles ~2GB of unused CUDA runtime; scikit-learn's "
+            "MLP is a genuine backprop-trained multi-layer net, appropriately scoped "
+            "for tabular financial features (gradient-boosted trees routinely "
+            "outperform deep nets there anyway); the RL agent is tabular rather than a "
+            "deep policy network for the same reason. Both are real, honestly-"
+            "validated learning, just not GPU-scale.\n"
+            "    p = ml.predict(\"ml_a1b2c3d4e5\")\n"
+            "    if crossover(fast, slow) and p > 0.55 {\n"
+            "        model.confidence(p)\n"
+            "        model.longEntry(\"ml_gated\")\n"
+            "    }"
+        ),
+        "keywords": [
+            "ml", "rl", "machine learning", "deep learning", "reinforcement learning",
+            "ml.predict", "rl.action", "ml lab", "train a model", "train a policy",
+            "gradient boosting", "neural net", "mlp", "logistic regression",
+            "q-learning", "q learning", "qlearning", "policy", "reward",
+            "feature importance", "baseline", "validation accuracy",
         ],
     },
     {

@@ -76,6 +76,7 @@ import {
   setInstanceDashboardVisible, setInstanceAutoTradeArmed, getInstance,
   type IndicatorInstance,
 } from './indicator-manager';
+import { setMlRedrawCallback } from './ml-client';
 
 // ─── URL-based hard reset ──────────────────────────────────────────
 if (window.location.search.includes('reset=1')) {
@@ -460,6 +461,16 @@ const inputsPanel = createInputsPanel((overrides) => {
 });
 
 const dashboard = createDashboard();
+
+// ml.predict()/rl.action() resolve synchronously against a cache and kick
+// off a background fetch on a miss (see ml-client.ts's resolveGeneric) —
+// this is the "next render picks up the real value" half of that contract.
+// Without it, a script applied on a static/paused chart would show the
+// neutral default (0.5/0) forever instead of just until the fetch lands,
+// since nothing else forces a re-run absent a new bar/tick.
+setMlRedrawCallback(() => {
+  if (oakScriptEnabled) { runAllIndicators(); updateUI(); }
+});
 
 // ─── Regime Ribbon ─────────────────────────────────────────────────
 // Persistent, advisory-only top-of-chart strip — see regime-ribbon.ts for

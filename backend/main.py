@@ -22,6 +22,7 @@ import httpx
 
 import model_manager as mm
 import vault
+import ml_engine as ml
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -574,7 +575,8 @@ AGENT_SYSTEM_PROMPTS = {
         "COORDINATES: on every drawing builtin, x/x1/x2 mean bar_index and y/y1/y2 mean price, but width/height on image.new and width/height/size on plotimage/plotimage_3d are PIXELS (screen-space), not price units — do not scale them like a price value. "
         "regression.channel(source,length,mult?) returns {mid,upper,lower} per bar as a CALCULATION ONLY — it does not draw anything by itself; the script must plot all three series itself (three plot() calls) and use fill() between upper and lower for the shaded channel, the same recipe pattern as the existing linreg/stdev usage. "
         "CAPABILITY MINDSET: You now have a full drawing toolkit — lines, boxes, polylines, circles, arrows, tables/dashboards, text/labels, fills between lines, fibonacci/gann overlays, and image import (inline or a saved asset by name), in both 2D and 3D. When a request has no single dedicated builtin (a supply/demand zone, a custom diagram, a labeled channel), DECOMPOSE it into these primitives instead of saying it isn't possible — e.g. 'mark a supply zone' = box.new anchored to the swing high/low; 'label the golden pocket' = fibretracement.new; 'put my logo in the corner' = image.new with a saved asset name. This does NOT relax VISUAL FOCUS: decomposing into primitives still means using the FEWEST objects that faithfully render exactly what was asked — never add drawing calls beyond what the request needs. "
-        "MODEL EXECUTION (Time Machine backtest + live paper auto-trader): model.entry(direction, id?, qty?) / model.longEntry(id?, qty?) / model.shortEntry(id?, qty?) open a position; model.exit(id?) closes whichever side is open, model.longExit(id?)/model.shortExit(id?) close ONLY if that side is currently open (no-op otherwise); model.confidence(0-1) attaches a sticky metadata score to subsequent entries (never a size multiplier); model.stopLoss(value, mode?) / model.takeProfit(value, mode?) attach a sticky per-entry bracket (mode \"pct\" default or \"abs\" $), overriding the backtest form's SL/TP for that entry. These are order-EVENT builtins — they render nothing and have zero effect unless the backtest panel or the live auto-trader is actually running. The broker tracks ONE position per symbol: an entry is a no-op if already in a position (no pyramiding/adding), and exit(s) always close the WHOLE matching position (no partial exits). Exactly like plotshape, an unconditional top-level call fires every bar — always wrap in a signal condition. strategy.entry/strategy.exit still work as legacy aliases (identical to model.entry/model.exit, no direction-conditional exit or confidence/bracket calls) — use model.* in new scripts, not strategy.*. Only reach for model.*/strategy.* when the user explicitly asks to backtest, test a strategy, or make something auto-tradable; a plain 'give me a buy/sell signal' request should still use plotshape markers, not these. "
+        "MODEL EXECUTION (Time Machine backtest + live paper auto-trader): model.entry(direction, id?, qty?) / model.longEntry(id?, qty?) / model.shortEntry(id?, qty?) open a position; model.exit(id?) closes whichever side is open, model.longExit(id?)/model.shortExit(id?) close ONLY if that side is currently open (no-op otherwise); model.confidence(0-1) attaches a sticky metadata score to subsequent entries (never a size multiplier); model.stopLoss(value, mode?) / model.takeProfit(value, mode?) attach a sticky per-entry bracket (mode \"pct\" default or \"abs\" $), overriding the backtest form's SL/TP for that entry. These are order-EVENT builtins — they render nothing and have zero effect unless the backtest panel or the live auto-trader is actually running. The broker tracks ONE position per symbol: an entry is a no-op if already in a position (no pyramiding/adding), and exit(s) always close the WHOLE matching position (no partial exits). Exactly like plotshape, an unconditional top-level call fires every bar — always wrap in a signal condition. strategy.entry/strategy.exit still work as legacy aliases (identical to model.entry/model.exit, no direction-conditional exit or confidence/bracket calls) — use model.* in new scripts, not strategy.*. Only reach for model.*/strategy.* when the user explicitly asks to backtest, test a strategy, or make something auto-tradable; a plain 'give me a buy/sell signal' request should still use plotshape markers, not these. Once a bracket is live, stop-loss/take-profit/trailing are checked intrabar against each bar's full high/low range (not just open/close) with gap-through pricing — signal-driven entries/exits still fill next-bar-open, that's the no-lookahead rule, not a fill-precision limit. "
+        "ML / RL (train in the 🧠 ML Lab panel, next to Backtest/Optimize — you cannot train one yourself, never invent a model/policy id): ml.predict(modelId) returns a trained ML model's prediction for this bar — 0-1 probability for a direction model, a raw predicted return for a regression model — neutral 0.5 until resolved; models are gradient boosting / a real 2-hidden-layer neural net / logistic regression via scikit-learn on standard technical features, chronologically split train/validate (never shuffled), reported against an honest baseline (majority-class accuracy or zero-change MAE). rl.action(policyId) returns -1/0/1 (short/flat/long) — the greedy action of a from-scratch tabular Q-learning policy, neutral 0 until resolved; genuine reinforcement learning (reward = mark-to-market P&L, no labeled targets), validated against 'always long'/'always flat' baselines with a visible episode-reward learning curve. If the user wants one of these in a script, tell them to train it in ML Lab first and give you the id, or write the script with a placeholder id they'll swap in. "
         "MULTI-TIMEFRAME: security(timeframe, source) — bare, not dotted — returns the last CONFIRMED (fully closed) higher-timeframe value of source, aggregated from bars already loaded (no new fetch, no symbol argument). NEVER the still-forming bucket — it returns NaN until the first bucket closes, then holds flat until the next one closes, so it never repaints. timeframe is one of \"1s\"/\"5s\"/\"10s\"/\"30s\"/\"1m\"/\"5m\"/\"15m\"/\"30m\"/\"1h\"/\"4h\"/\"1d\"/\"1w\" and must be COARSER than the chart's own loaded resolution — the same or finer returns NaN for every bar. Use this whenever a request implies agreement across timeframes (e.g. \"only signal on the 1m chart when the 1h trend agrees\") — reach for it instead of claiming multi-timeframe isn't possible. "
         "Your goal: the most accurate, focused, and polished version of exactly what the user asked for."
     ),
@@ -1331,3 +1333,109 @@ async def _fetch_quote(symbol: str, provider: str) -> dict[str, Any]:
     except Exception as e:
         return {"ok": False, "detail": str(e)}
     return {"ok": False, "detail": "quote unavailable"}
+
+# ---------------------------------------------------------------------------
+# ML / RL — trained on bars the CALLER sends (the exact same resolved bars
+# Time Machine / the Optimizer already use), never re-fetched server-side,
+# so training data and backtest data can never silently diverge. See
+# ml_engine.py for the feature pipeline, walk-forward split, and the
+# from-scratch tabular Q-learning RL agent.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ml/train")
+def api_ml_train(body: dict[str, Any]):
+    bars = body.get("bars")
+    if not isinstance(bars, list) or len(bars) < 40:
+        raise HTTPException(status_code=400, detail="bars: need at least 40 OHLCV bars to train on")
+    try:
+        meta = ml.train_ml_model(
+            bars,
+            horizon=int(body.get("horizon", 3)),
+            target_type=body.get("targetType", "direction"),
+            model_type=body.get("modelType", "gbm"),
+            train_pct=float(body.get("trainPct", 0.7)),
+            symbol=body.get("symbol", ""),
+            timeframe=body.get("timeframe", ""),
+        )
+        return {"ok": True, "model": meta}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("ml/train failed")
+        raise HTTPException(status_code=500, detail=f"Training failed: {e}")
+
+@app.post("/api/ml/predict")
+def api_ml_predict(body: dict[str, Any]):
+    model_id = body.get("modelId", "")
+    bars = body.get("bars")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="modelId required")
+    if not isinstance(bars, list) or len(bars) == 0:
+        raise HTTPException(status_code=400, detail="bars required")
+    try:
+        preds = ml.predict_ml_model(model_id, bars)
+        return {"ok": True, "predictions": preds}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("ml/predict failed")
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {e}")
+
+@app.get("/api/ml/models")
+def api_ml_models():
+    return {"ok": True, "models": ml.list_ml_models()}
+
+@app.delete("/api/ml/models/{model_id}")
+def api_ml_delete_model(model_id: str):
+    found = ml.delete_ml_model(model_id)
+    if not found:
+        raise HTTPException(status_code=404, detail=f"No such model: {model_id}")
+    return {"ok": True}
+
+@app.post("/api/rl/train")
+def api_rl_train(body: dict[str, Any]):
+    bars = body.get("bars")
+    if not isinstance(bars, list) or len(bars) < 70:
+        raise HTTPException(status_code=400, detail="bars: need at least 70 OHLCV bars to train an RL policy on")
+    try:
+        meta = ml.train_rl_policy(
+            bars,
+            episodes=int(body.get("episodes", 150)),
+            train_pct=float(body.get("trainPct", 0.7)),
+            symbol=body.get("symbol", ""),
+            timeframe=body.get("timeframe", ""),
+        )
+        return {"ok": True, "policy": meta}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("rl/train failed")
+        raise HTTPException(status_code=500, detail=f"RL training failed: {e}")
+
+@app.post("/api/rl/action")
+def api_rl_action(body: dict[str, Any]):
+    policy_id = body.get("policyId", "")
+    bars = body.get("bars")
+    if not policy_id:
+        raise HTTPException(status_code=400, detail="policyId required")
+    if not isinstance(bars, list) or len(bars) == 0:
+        raise HTTPException(status_code=400, detail="bars required")
+    try:
+        actions = ml.get_rl_actions(policy_id, bars)
+        return {"ok": True, "actions": actions}
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("rl/action failed")
+        raise HTTPException(status_code=500, detail=f"RL action inference failed: {e}")
+
+@app.get("/api/rl/policies")
+def api_rl_policies():
+    return {"ok": True, "policies": ml.list_rl_policies()}
+
+@app.delete("/api/rl/policies/{policy_id}")
+def api_rl_delete_policy(policy_id: str):
+    found = ml.delete_rl_policy(policy_id)
+    if not found:
+        raise HTTPException(status_code=404, detail=f"No such policy: {policy_id}")
+    return {"ok": True}

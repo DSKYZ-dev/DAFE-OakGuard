@@ -2005,6 +2005,14 @@ model.confidence(value)                  model.stopLoss(value, mode?)
   until the next bar opens. The live paper auto-trader uses the same
   next-evaluation semantics.
 
+  INTRABAR BRACKETS: once a stop-loss/take-profit/trailing bracket is
+  live, it's checked against each bar's FULL high/low range, not just its
+  open and close — a wick that touches a level and reverses before the
+  close still fills, with gap-through pricing when a bar's open already
+  cleared the level. Only brackets get this — signal-driven entries/exits
+  above still fill at next-bar-open, since that's the no-lookahead rule,
+  not a fill-precision limitation.
+
   UNCONDITIONAL CALLS: exactly like plotshape(), an unconditional top-level
   model.entry/exit fires on every single bar — almost always a mistake.
   Wrap it in a signal condition (the validator will warn you if you don't).
@@ -2036,6 +2044,80 @@ model.confidence(value)                  model.stopLoss(value, mode?)
   per-bar unannualized Sharpe, win rate, avg win/loss) — always both
   together, since an in-sample-only result is not evidence the model
   works out of sample.`,
+    },
+    {
+      title: 'ML / RL — ml.predict / rl.action',
+      content: `ml.predict(modelId)                      rl.action(policyId)
+
+  Reads a prediction from an ML model or RL policy trained in the 🧠 ML Lab
+  panel (next to ⏱️ Backtest and 🎯 Optimize in the editor toolbar) — real
+  models trained on real historical bars, not a stub. ML Lab trains two
+  kinds of thing:
+
+  ML SIGNAL MODELS (ml.predict): gradient boosting, a real 2-hidden-layer
+  neural net (MLP), or logistic/ridge regression — trained on a standard
+  technical feature set (returns over several lookbacks, rolling
+  volatility, RSI, MACD histogram, EMA spread, volume ratio, bar range/
+  position) to predict either next-H-bar DIRECTION (up/down) or RETURN.
+  ml.predict("modelId") returns a 0-1 probability for a direction model
+  or a raw predicted return for a regression model, for the CURRENT bar.
+  Neutral (0.5) until the model resolves.
+
+  RL TRADING POLICIES (rl.action): a from-scratch tabular Q-learning
+  agent — genuine reinforcement learning. It is never told the "right"
+  action; it only ever sees a reward (mark-to-market P&L on the position
+  its action implies, minus a small cost for flipping) from acting
+  against the SAME historical bars the backtester replays, and learns
+  purely from that via the standard Q-learning update across many training
+  episodes. rl.action("policyId") returns the policy's greedy action for
+  the current bar: -1 (short), 0 (flat), or 1 (long). Defaults to 0 until
+  the policy resolves.
+
+  TRAINING: both split bars CHRONOLOGICALLY (train = the first Train %,
+  validate = the rest) — never shuffled, which would leak future bars into
+  training the same way it would corrupt the backtester's in-sample/
+  out-of-sample split. Every result is reported next to an honest baseline:
+  ML shows validation accuracy/MAE against the naive majority-class/
+  zero-change baseline; RL shows an episode-reward learning curve (proof
+  it actually learned something across training, not a static number) plus
+  the validated policy's held-out return against "always long" and "always
+  flat." A model or policy that beats these baselines is doing something
+  real; one that doesn't is visibly not, right there in the panel.
+
+  EXECUTION MODEL: on the live chart, predictions/actions resolve in the
+  background against a synchronous cache — 0.5/0 until the first fetch for
+  that model/bar-range lands, then the next render picks up the real
+  value (same pattern plotimage/label image sources already use for async
+  decodes). In the Backtest and Optimizer panels, the script is scanned
+  for ml.predict("id")/rl.action("id") calls and their data is fetched
+  UP FRONT before the replay runs, so a backtest never sees the neutral
+  placeholder mid-run the way a fresh live-chart load briefly might.
+
+  No PyTorch/GPU deep-learning framework here — this environment has no
+  GPU, and the default PyTorch wheel bundles ~2GB of CUDA runtime with no
+  use for it. scikit-learn's MLP is a genuine backprop-trained multi-layer
+  net, appropriately scoped for tabular financial features (where
+  gradient-boosted trees routinely outperform deep nets anyway); the RL
+  agent is tabular Q-learning rather than a deep policy network for the
+  same reason — both are real, honestly-validated learning, just not
+  GPU-scale.
+
+  EXAMPLE — gate an EMA-cross entry behind an ML model's confidence:
+    fast = sma(close, 5)
+    slow = sma(close, 20)
+    p = ml.predict("ml_a1b2c3d4e5")
+    if crossover(fast, slow) and p > 0.55 {
+        model.confidence(p)
+        model.longEntry("ml_gated")
+    }
+    if crossunder(fast, slow) {
+        model.longExit("ml_gated")
+    }
+
+  EXAMPLE — trade an RL policy directly:
+    a = rl.action("rl_f6a7b8c9d0")
+    if a > 0 { model.longEntry("rl_policy") }
+    if a <= 0 { model.longExit("rl_policy") }`,
     },
     {
       title: 'Confirmed-Only Multi-Timeframe Confluence — security()',

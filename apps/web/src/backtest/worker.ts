@@ -32,10 +32,10 @@ interface WorkerSelf {
 const ctx = self as unknown as WorkerSelf;
 
 ctx.onmessage = (ev: MessageEvent<BacktestWorkerRequest>) => {
-  const { source, bars, inputOverrides } = ev.data;
+  const { source, bars, inputOverrides, mlPredictions, rlActions } = ev.data;
   try {
     const ast = parse(source);
-    const result = executeScript(ast, bars, new Map(), inputOverrides as Map<string, any> | undefined);
+    const result = executeScript(ast, bars, new Map(), inputOverrides as Map<string, any> | undefined, undefined, mlPredictions, rlActions);
     const signalShapes: SignalShape[] = [];
     for (const p of result.plots) {
       if (signalShapes.length >= MAX_SIGNAL_SHAPES) break;

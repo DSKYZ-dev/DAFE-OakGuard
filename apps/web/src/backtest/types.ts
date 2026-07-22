@@ -124,6 +124,12 @@ export interface BacktestWorkerRequest {
   source: string;
   bars: RuntimeBarData;
   inputOverrides?: Map<string, unknown>;
+  /** Pre-fetched (awaited before the worker starts — see ml-client.ts's
+   * fetchMlPredictionsMap/fetchRlActionsMap) ml.predict()/rl.action() data,
+   * keyed by model/policy id. A one-shot worker pass has no "next frame" to
+   * retry an async fetch on, unlike the live-chart path. */
+  mlPredictions?: Map<string, number[]>;
+  rlActions?: Map<string, number[]>;
 }
 
 export interface BacktestWorkerResponse {

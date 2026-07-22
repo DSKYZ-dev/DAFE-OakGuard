@@ -4,6 +4,7 @@ import type { BinaryExpr, UnaryExpr, TernaryExpr, CallExpr, IndexExpr, MemberExp
 import type { VarDecl, Assignment, IfStatement, ForStatement, WhileStatement, ReturnStmt, ExpressionStmt, FunctionDecl } from './ast';
 import type { OakPlot, OakAlert, OakTableCell, OakStrategyOrder } from './runtime';
 import { StdLib } from './runtime';
+import { resolveMlPrediction, resolveRlAction } from '../ml-client';
 
 // Recognized plot() render styles (used to disambiguate the 5th positional arg).
 const PLOT_STYLES = new Set(['line', 'stepline', 'area', 'histogram', 'columns', 'circles', 'cross']);
@@ -296,6 +297,13 @@ export interface RuntimeContext {
   // rebuilt fresh for every bar (see the bar loop below), so this resets
   // automatically each bar with no separate cleanup needed.
   consensusVotes: Map<string, boolean>;
+  // ML/RL: pre-fetched per-bar arrays keyed by model/policy id, threaded in
+  // by the backtest engine (worker.ts) which awaits ml-client.ts's
+  // fetchMlPredictionsMap/fetchRlActionsMap before this ever runs — a
+  // one-shot replay pass has no "next render frame" to retry on, unlike
+  // the live-chart path below. Omitted entirely for non-backtest callers.
+  mlPredictions?: Map<string, number[]>;
+  rlActions?: Map<string, number[]>;
 }
 
 // Per-bar cap on while/for loop iterations. A buggy or pathological script
@@ -330,7 +338,11 @@ export interface PlotResult {
   errors: string[];
 }
 
-export function executeScript(program: Program, barData: RuntimeBarData, persist: Map<string, RuntimeValue>, inputOverrides?: Map<string, RuntimeValue>, imageAssets?: Map<string, string>): PlotResult {
+export function executeScript(
+  program: Program, barData: RuntimeBarData, persist: Map<string, RuntimeValue>,
+  inputOverrides?: Map<string, RuntimeValue>, imageAssets?: Map<string, string>,
+  mlPredictions?: Map<string, number[]>, rlActions?: Map<string, number[]>,
+): PlotResult {
   const errors: string[] = [];
   const plots: OakPlot[] = [];
   const alerts: OakAlert[] = [];
@@ -386,6 +398,8 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
       userFuncs,
       callDepth: 0,
       consensusVotes: new Map(),
+      mlPredictions,
+      rlActions,
     };
 
     // Set built-in variables
@@ -1656,6 +1670,34 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const target = funcName === 'model.stopLoss' ? 'stopLoss' as const : 'takeProfit' as const;
         ctx.modelDefaults[target] = value > 0 ? { mode, value } : undefined;
         return value;
+      }
+
+      case 'ml.predict': {
+        // Returns a 0-1 probability (direction models) or a raw predicted
+        // return (regression models) for THIS bar, from a model trained in
+        // the ML Lab panel. Backtest replay pre-fetches the whole array
+        // (see ctx.mlPredictions, threaded in by worker.ts); the live chart
+        // resolves it synchronously against a background-fetch cache (see
+        // ml-client.ts's resolveMlPrediction, same pattern image-cache.ts
+        // uses for async image decodes) — 0.5 (neutral) until the first
+        // fetch for this model/bar-range lands.
+        const modelId = typeof args[0] === 'string' ? args[0] : '';
+        const pre = ctx.mlPredictions?.get(modelId);
+        if (pre) return pre[ctx.barIndex] ?? 0.5;
+        const live = resolveMlPrediction(modelId, ctx.bars);
+        return live ? (live[ctx.barIndex] ?? 0.5) : 0.5;
+      }
+
+      case 'rl.action': {
+        // Returns -1/0/1 (short/flat/long) — the greedy action a Q-learning
+        // policy trained in the ML Lab panel would take on THIS bar. Same
+        // pre-fetch-for-backtest / resolve-live-in-background split as
+        // ml.predict above; defaults to 0 (flat) until resolved.
+        const policyId = typeof args[0] === 'string' ? args[0] : '';
+        const pre = ctx.rlActions?.get(policyId);
+        if (pre) return pre[ctx.barIndex] ?? 0;
+        const live = resolveRlAction(policyId, ctx.bars);
+        return live ? (live[ctx.barIndex] ?? 0) : 0;
       }
 
       case 'tostring': return String(args[0]);
