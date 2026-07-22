@@ -1385,17 +1385,36 @@ export function renderMain3DScene(
     const p3dLayers = plots.filter(p =>
       p.pane === '3d' && p.series.filter(v => isFinite(v) && !isNaN(v)).length >= 2);
     const anyLevel = p3dLayers.some(p => p.z_level !== undefined);
+    const Z_SPACING = 2.0;
+    // Cumulative, magnitude-respecting spacing between DISTINCT z_levels —
+    // same rationale as three-lower-pane.ts's zOffsets: "0, 1, 2, …" (the
+    // documented convention) renders identically to before, but a script
+    // that deliberately spaces levels wide (0 and 10) now actually gets
+    // that instead of collapsing to rank-only spacing.
     const zKeys = anyLevel
       ? [...new Set(p3dLayers.map(p => p.z_level ?? 0))].sort((a, b) => a - b)
       : p3dLayers.map((_, i) => i);
-    const Z_SPACING = 2.0;
-    const zCenter = ((zKeys.length - 1) / 2) * Z_SPACING; // center the stack around z=0
+    const zPlaneByKey = new Map<number, number>();
+    let zCursor = 0;
+    zKeys.forEach((key, idx) => {
+      if (idx === 0) { zPlaneByKey.set(key, 0); zCursor = 0; return; }
+      zCursor += Math.max(Z_SPACING, (key - zKeys[idx - 1]) * Z_SPACING);
+      zPlaneByKey.set(key, zCursor);
+    });
+    const zCenter = zCursor / 2; // center the stack around z=0
+    // Same-key collision count — TWO layers sharing one z_level used to
+    // render at the exact same Z (true overlap, not even a Z-fight gap,
+    // since indexOf(zKey) is identical for both). Give repeats after the
+    // first a real, visible push instead.
+    const zKeyOccurrence = new Map<number, number>();
     for (let pi = 0; pi < p3dLayers.length; pi++) {
       const p = p3dLayers[pi];
       const series = p.series.filter(v => isFinite(v) && !isNaN(v));
       const col = typeof p.color === 'string' ? p.color : '#b48cff';
       const zKey = anyLevel ? (p.z_level ?? 0) : pi;
-      const zPlane = zKeys.indexOf(zKey) * Z_SPACING - zCenter;
+      const occurrence = zKeyOccurrence.get(zKey) ?? 0;
+      zKeyOccurrence.set(zKey, occurrence + 1);
+      const zPlane = (zPlaneByKey.get(zKey) ?? 0) - zCenter + occurrence * 0.6;
 
       let obj: THREE.Object3D | null = null;
       switch (p.style) {
@@ -1434,6 +1453,16 @@ export function renderMain3DScene(
         const { min: minP, max: maxP, range: pRange } = normRange(visible);
         const halfW = width * 0.5;
         const total = visible.length;
+        // A shape/label sharing a z_level with a plot3d series lands at that
+        // SAME depth (falls back to the plain magnitude formula if no series
+        // uses that level) — previously this used an unrelated `* 0.3` scale,
+        // so e.g. a "BUY" label never actually lined up with its own signal
+        // line's plane once that line had a non-zero z_level.
+        const shapeZ = (zLevel: number | undefined): number => {
+          const key = zLevel ?? 0;
+          const known = zPlaneByKey.get(key);
+          return (known ?? key * Z_SPACING) - zCenter;
+        };
         let labelBudget = 40;
         // Declutter: skip same-text labels that would land on top of an
         // already-placed one (newest wins) — dense signal runs otherwise
@@ -1451,7 +1480,7 @@ export function renderMain3DScene(
           placedLabels.push({ text: sp.text, x, y });
           labelBudget--;
           const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
-          sprite.position.set(x, y, (sp.z_level ?? 0) * 0.3);
+          sprite.position.set(x, y, shapeZ(sp.z_level));
           _scene.add(sprite);
         }
         for (const sp of shapes) {
@@ -1462,7 +1491,7 @@ export function renderMain3DScene(
           const px = barX(vi, total, width, view.barSpacing, view.scrollX);
           const x = ((px - halfW) / halfW) * 5;
           const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
-          const z = (sp.z_level ?? 0) * 0.3;
+          const z = shapeZ(sp.z_level);
           const s = sp.size ?? 1;
           // 3D image billboard (plotimage_3d) — resolved from the shared
           // sync-read image decode cache; skip the geometry switch entirely.

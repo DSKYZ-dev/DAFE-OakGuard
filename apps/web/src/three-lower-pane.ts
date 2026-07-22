@@ -180,19 +180,37 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
     }
   }
 
-  // Compute Z offsets: sort levels ascending, space groups by 2.4 units
+  // Compute Z offsets: sort levels ascending, space adjacent levels by
+  // whichever is bigger — a flat 2.4 units (today's default, so the common
+  // "0, 1, 2, …" authoring convention renders identically to before) or the
+  // actual gap between the two z_level NUMBERS scaled the same way. A
+  // script that deliberately spaces its levels wide (e.g. 0 and 10, to push
+  // one layer dramatically further back) now gets that — previously only
+  // RANK mattered, so 0-and-1 and 0-and-10 rendered identically.
+  const Z_UNIT = 2.4;
   const sortedLevels = [...groups.keys()].sort((a, b) => a - b);
   const zOffsets = new Map<number, number>();
+  let cursor = 0;
   sortedLevels.forEach((key, idx) => {
-    zOffsets.set(key, idx * 2.4);
+    if (idx === 0) { zOffsets.set(key, 0); cursor = 0; return; }
+    const gap = Math.max(Z_UNIT, (key - sortedLevels[idx - 1]) * Z_UNIT);
+    cursor += gap;
+    zOffsets.set(key, cursor);
   });
+
+  // Same-level micro-offset: distinct plot3d series that share a z_level
+  // (usually an oversight — nothing in OakScript signals "these two are
+  // meant to fuse") get a real, visible separation instead of the old
+  // 0.05 units, which read as one merged/flickering surface. Shapes and
+  // labels are unaffected — they intentionally sit AT their series' level,
+  // not in a sub-layer of their own (see the shape/label rendering below).
+  const SAME_LEVEL_GAP = 0.6;
 
   for (const [level, groupPlots] of groups) {
     const baseZ = zOffsets.get(level) ?? 0;
     for (let gi = 0; gi < groupPlots.length; gi++) {
       const p = groupPlots[gi];
-      // Stack within the same level: micro-offset so stacked visuals don't Z-fight
-      const z = baseZ + gi * 0.05;
+      const z = baseZ + gi * SAME_LEVEL_GAP;
       const vals = p.series.filter(v => isFinite(v) && !isNaN(v));
       if (vals.length < 2) continue;
 
