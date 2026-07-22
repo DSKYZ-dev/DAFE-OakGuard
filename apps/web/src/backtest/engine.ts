@@ -66,11 +66,23 @@ function placeBracketOrders(
   qty: number,
   fillPrice: number,
   config: BacktestConfig,
+  // Per-order overrides from model.stopLoss()/model.takeProfit() — when
+  // present, this specific entry's bracket uses them instead of the
+  // backtest form's SL/TP config. Fixed distance only (pct/abs), no
+  // trailing — trailing stays a form-level-only option.
+  orderStopLoss?: { mode: 'pct' | 'abs'; value: number },
+  orderTakeProfit?: { mode: 'pct' | 'abs'; value: number },
 ): void {
   const isLong = entrySide === 'buy';
   const exitSide: 'buy' | 'sell' = isLong ? 'sell' : 'buy';
 
-  if (config.stopLossMode !== 'none') {
+  if (orderStopLoss) {
+    const pct = orderStopLoss.mode === 'pct';
+    const stopPrice = isLong
+      ? (pct ? fillPrice * (1 - orderStopLoss.value / 100) : fillPrice - orderStopLoss.value)
+      : (pct ? fillPrice * (1 + orderStopLoss.value / 100) : fillPrice + orderStopLoss.value);
+    broker.placeOrder({ symbol, side: exitSide, type: 'stop', qty, stopPrice });
+  } else if (config.stopLossMode !== 'none') {
     if (config.stopLossMode === 'trailing-pct' || config.stopLossMode === 'trailing-amount') {
       broker.placeOrder({
         symbol, side: exitSide, type: 'trailing-stop', qty,
@@ -86,7 +98,13 @@ function placeBracketOrders(
     }
   }
 
-  if (config.takeProfitMode !== 'none') {
+  if (orderTakeProfit) {
+    const pct = orderTakeProfit.mode === 'pct';
+    const limitPrice = isLong
+      ? (pct ? fillPrice * (1 + orderTakeProfit.value / 100) : fillPrice + orderTakeProfit.value)
+      : (pct ? fillPrice * (1 - orderTakeProfit.value / 100) : fillPrice - orderTakeProfit.value);
+    broker.placeOrder({ symbol, side: exitSide, type: 'limit', qty, limitPrice });
+  } else if (config.takeProfitMode !== 'none') {
     const pct = config.takeProfitMode === 'fixed-pct';
     const limitPrice = isLong
       ? (pct ? fillPrice * (1 + config.takeProfitValue / 100) : fillPrice + config.takeProfitValue)
@@ -276,10 +294,15 @@ export async function runBacktestOnBars(
           const qty = order.qty ?? config.qtyPerTrade;
           const filled = broker.placeOrder({ symbol, side, type: 'market', qty });
           if (filled.status === 'filled' && filled.fillPrice !== undefined) {
-            placeBracketOrders(broker, symbol, side, qty, filled.fillPrice, config);
+            placeBracketOrders(broker, symbol, side, qty, filled.fillPrice, config, order.stopLoss, order.takeProfit);
           }
         } else {
           if (!openPos) continue;
+          // Direction-conditional exit (model.longExit/shortExit): only
+          // flattens when the open side matches. Undirected exits
+          // (model.exit / legacy strategy.exit) flatten whatever is open.
+          if (order.direction === 'long' && openPos.qty <= 0) continue;
+          if (order.direction === 'short' && openPos.qty >= 0) continue;
           const side = openPos.qty > 0 ? 'sell' : 'buy';
           broker.placeOrder({ symbol, side, type: 'market', qty: Math.abs(openPos.qty) });
         }

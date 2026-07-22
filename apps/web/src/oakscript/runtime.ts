@@ -79,10 +79,20 @@ export interface OakAlert {
 
 export interface OakStrategyOrder {
   kind: 'entry' | 'exit';
+  /** For entries: which side to open. For exits: when set, the exit only
+   * applies if the open position IS that side (model.longExit/shortExit);
+   * unset = flatten whatever is open (legacy strategy.exit / model.exit). */
   direction?: 'long' | 'short';
   id: string;
   qty?: number;
   barIdx: number;
+  /** 0-1 score attached via model.confidence() — metadata carried through
+   * to TradeSignals and backtest results, never a hidden qty multiplier. */
+  confidence?: number;
+  /** Per-script bracket set via model.stopLoss()/model.takeProfit() —
+   * overrides the backtest form's SL/TP config for entries that carry it. */
+  stopLoss?: { mode: 'pct' | 'abs'; value: number };
+  takeProfit?: { mode: 'pct' | 'abs'; value: number };
 }
 
 export interface OakContext {

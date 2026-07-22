@@ -647,43 +647,67 @@ SECTIONS: list[dict] = [
         ],
     },
     {
-        "title": "Backtesting — Time Machine (strategy.entry / strategy.exit)",
+        "title": "Model Execution — model.entry / model.exit / model.confidence / model.stopLoss / model.takeProfit",
         "content": (
-            "strategy.entry(direction, id?, qty?) / strategy.exit(id?) — order-EVENT "
-            "builtins consumed ONLY by the Time Machine backtest panel (not the live "
-            "chart/paper-trading path; a script using them still renders normally as an "
-            "indicator otherwise). direction is \"long\" or \"short\"; id is a label "
-            "carried on the order for readability, NOT compared when filling.\n"
-            "POSITION-LEVEL, NOT ID-LEVEL: the backtest's broker tracks one position per "
-            "SYMBOL. strategy.entry is a no-op if a position is already open (no "
-            "pyramiding/adding); strategy.exit is a no-op if nothing is open and always "
-            "closes the WHOLE position (no partial exit). This is a deliberate v1 "
-            "simplification — no bracket orders (no attached stop/take-profit, no "
-            "trailing exit); express those as additional strategy.exit(...) conditions "
-            "in your own signal logic.\n"
+            "model.entry(direction, id?, qty?) / model.longEntry(id?, qty?) / "
+            "model.shortEntry(id?, qty?) / model.exit(id?) / model.longExit(id?) / "
+            "model.shortExit(id?) / model.confidence(value) / model.stopLoss(value, mode?) / "
+            "model.takeProfit(value, mode?) — order-EVENT builtins consumed by the Time "
+            "Machine backtest panel AND the live paper auto-trader (per-model arm toggle "
+            "in the Active Signal Models list); not the plain chart-render path (a script "
+            "using them still renders normally as a signal analysis model otherwise). "
+            "This is the point of Signal Analysis Models: one script is both the chart "
+            "study and the executable model — no separate indicator/strategy split. A "
+            "script with no model.* calls at all is STILL backtestable/auto-tradable if "
+            "it plots Buy/Sell shapes — the Signal Engine derives entries/exits from the "
+            "marker labels automatically.\n"
+            "direction is \"long\" or \"short\" (model.entry) or baked into the name "
+            "(model.longEntry/model.shortEntry); id is a label carried on the order for "
+            "readability, NOT compared when filling. model.longExit/model.shortExit are "
+            "DIRECTION-CONDITIONAL — they only close if the open position is currently "
+            "that side (no-op otherwise), letting a long/short model manage each side "
+            "independently; model.exit closes whichever side is open. "
+            "model.confidence(0-1) is sticky metadata attached to subsequent entries "
+            "(NEVER a position-size multiplier). model.stopLoss/model.takeProfit(value, "
+            "mode? \"pct\"|\"abs\") are sticky per-entry brackets that override the "
+            "backtest form's SL/TP for entries that carry them; value<=0 clears them.\n"
+            "POSITION-LEVEL, NOT ID-LEVEL: the broker tracks one position per SYMBOL. An "
+            "entry is a no-op if a position is already open (no pyramiding/adding); an "
+            "exit is a no-op if nothing matching is open and always closes the WHOLE "
+            "position (no partial exit).\n"
             "EXECUTION: the backtest runs the script ONCE over the full historical range "
-            "(persist/var state and indicator warmup carry through unbroken, exactly "
-            "like a normal render). Each entry/exit call is recorded on the bar it fired "
-            "and filled at the NEXT bar's open (no lookahead) — never the same bar's "
-            "close.\n"
+            "(persist/var state and warmup carry through unbroken, exactly like a normal "
+            "render). Each call is recorded on the bar it fired and filled at the NEXT "
+            "bar's open (no lookahead) — never the same bar's close. The live auto-trader "
+            "uses the same next-evaluation semantics.\n"
             "Exactly like plotshape, an unconditional top-level call fires every bar — "
             "always wrap it in a signal condition.\n"
             "    fast = sma(close, 5)\n"
             "    slow = sma(close, 20)\n"
             "    if crossover(fast, slow) {\n"
-            "        strategy.entry(\"long\", \"ma_cross\")\n"
+            "        model.confidence(0.6)\n"
+            "        model.longEntry(\"ma_cross\")\n"
             "    }\n"
             "    if crossunder(fast, slow) {\n"
-            "        strategy.exit(\"ma_cross\")\n"
+            "        model.longExit(\"ma_cross\")\n"
             "    }\n"
             "The Backtest panel reports in-sample/out-of-sample stats SIDE BY SIDE from "
             "one fixed historical split (equity curve, max drawdown, per-bar "
-            "unannualized Sharpe, win rate, avg win/loss) — never just one sample alone."
+            "unannualized Sharpe, win rate, avg win/loss) — never just one sample alone.\n"
+            "LEGACY ALIASES: strategy.entry(direction, id?, qty?) / strategy.exit(id?) "
+            "still work exactly as before (identical to model.entry/model.exit) — kept "
+            "for existing scripts. Prefer model.* in new scripts; strategy.entry/exit "
+            "have no direction-conditional exit or confidence/bracket calls."
         ),
         "keywords": [
-            "backtest", "backtesting", "time machine", "strategy.entry", "strategy.exit",
-            "strategy", "entry", "exit", "long", "short", "equity curve", "drawdown",
+            "backtest", "backtesting", "time machine", "model.entry", "model.exit",
+            "model.longentry", "model.shortentry", "model.longexit", "model.shortexit",
+            "model.confidence", "model.stoploss", "model.takeprofit",
+            "strategy.entry", "strategy.exit", "strategy",
+            "entry", "exit", "long", "short", "equity curve", "drawdown",
             "sharpe", "win rate", "in-sample", "out-of-sample", "paper broker",
+            "auto-trade", "auto-trader", "automation", "confidence", "stop loss",
+            "take profit", "signal analysis model", "model",
         ],
     },
     {
@@ -817,8 +841,17 @@ FUNCTIONS: list[dict] = [
     {"name": "image.new", "signature": "image.new(x, y, source, width?, height?, anchor?, opacity?, rotation?, id?)", "desc": "Places an image at (bar_index, price); source is a data:image/... URI or a saved asset name; width/height in pixels, rotation in degrees", "category": "image"},
     {"name": "plotimage", "signature": "plotimage(bar_index, price, source, width?, height?, pane?, id?)", "desc": "Per-bar image signal marker (like plotshape but with a custom image) — call inside a condition", "category": "image"},
     {"name": "plotimage_3d", "signature": "plotimage_3d(bar_index, price, source, size?, z_level?, pane?, rx?, ry?, rz?)", "desc": "3D billboard sprite version of plotimage for pane=\"3d\"/\"separate\" scenes", "category": "image"},
-    {"name": "strategy.entry", "signature": "strategy.entry(direction, id?, qty?)", "desc": "Backtest-only: opens a position for this symbol (\"long\"/\"short\"); no-op if one is already open — position-level, not id-level", "category": "backtest"},
-    {"name": "strategy.exit", "signature": "strategy.exit(id?)", "desc": "Backtest-only: closes the ENTIRE open position for this symbol; no-op if none is open; not a bracket-order (stop/limit/trailing) clone", "category": "backtest"},
+    {"name": "model.entry", "signature": "model.entry(direction, id?, qty?)", "desc": "Backtest/live-auto-trade: opens a position for this symbol (\"long\"/\"short\"); no-op if one is already open — position-level, not id-level. Current primary API.", "category": "backtest"},
+    {"name": "model.longEntry", "signature": "model.longEntry(id?, qty?)", "desc": "Opens a LONG position; same as model.entry(\"long\", ...) with direction baked into the name", "category": "backtest"},
+    {"name": "model.shortEntry", "signature": "model.shortEntry(id?, qty?)", "desc": "Opens a SHORT position; same as model.entry(\"short\", ...) with direction baked into the name", "category": "backtest"},
+    {"name": "model.exit", "signature": "model.exit(id?)", "desc": "Closes the ENTIRE open position for this symbol, whichever side; no-op if none is open; not a bracket-order (stop/limit/trailing) clone", "category": "backtest"},
+    {"name": "model.longExit", "signature": "model.longExit(id?)", "desc": "Closes the position ONLY if currently long (no-op if short or flat) — direction-conditional", "category": "backtest"},
+    {"name": "model.shortExit", "signature": "model.shortExit(id?)", "desc": "Closes the position ONLY if currently short (no-op if long or flat) — direction-conditional", "category": "backtest"},
+    {"name": "model.confidence", "signature": "model.confidence(value)", "desc": "Sticky 0-1 confidence score attached to subsequent entries — metadata only, never a size multiplier", "category": "backtest"},
+    {"name": "model.stopLoss", "signature": "model.stopLoss(value, mode?)", "desc": "Sticky per-entry stop-loss (mode \"pct\" default or \"abs\" $), overrides the backtest form's SL; value<=0 clears it", "category": "backtest"},
+    {"name": "model.takeProfit", "signature": "model.takeProfit(value, mode?)", "desc": "Sticky per-entry take-profit (mode \"pct\" default or \"abs\" $), overrides the backtest form's TP; value<=0 clears it", "category": "backtest"},
+    {"name": "strategy.entry", "signature": "strategy.entry(direction, id?, qty?)", "desc": "Legacy alias for model.entry — identical behavior. Prefer model.entry in new scripts.", "category": "backtest"},
+    {"name": "strategy.exit", "signature": "strategy.exit(id?)", "desc": "Legacy alias for model.exit — identical behavior. Prefer model.exit in new scripts.", "category": "backtest"},
     {"name": "security", "signature": "security(timeframe, source)", "desc": "Last CONFIRMED (closed) higher-timeframe value of source, from bars already loaded; NaN until confirmed and NaN if timeframe isn't coarser than loaded resolution", "category": "mtf"},
 ]
 

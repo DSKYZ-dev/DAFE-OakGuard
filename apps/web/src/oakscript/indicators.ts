@@ -17,15 +17,16 @@ const INDICATORS: IndicatorDef[] = [
   // indicator that plots Buy/Sell markers is backtestable too.
   {
     name: 'Quantum Reversion Engine',
-    description: 'Automated model: buys band-reclaim dips in a non-crashing market, exits at the mean. Full chart visuals + strategy.* execution in one script.',
+    description: 'Automated model: buys band-reclaim dips in a non-crashing market, exits at the mean, with a confidence score and a hard stop-loss. Full chart visuals + model.* execution in one script.',
     category: '⚡ Automated Signal Models',
-    source: `// Quantum Reversion Engine — Automated Mean-Reversion Strategy
+    source: `// Quantum Reversion Engine — Automated Mean-Reversion Model
 // Entry: close crosses back ABOVE the lower Bollinger band (a reclaim,
 // not a falling knife) while the basis isn't in freefall.
 // Exit: price tags the basis (mean) or the upper band.
 bbLen = input(20, "Band Length", 5, 60, 1)
 mult = input(2.0, "StdDev Mult", 0.5, 4.0, 0.25)
 slideGuard = input(0.6, "Max Basis Slide %", 0.0, 5.0, 0.1)
+stopPct = input(2.5, "Stop-Loss %", 0.5, 10.0, 0.5)
 showSignals = input(true, "Show Signals")
 
 basis = sma(close, bbLen)
@@ -51,20 +52,24 @@ exitSig = inPos and (close >= basis or tagUpper)
 
 if enterSig
     inPos := true
-    strategy.entry("long", "qre")
+    // Deeper reclaim below the band = more oversold = higher confidence.
+    depth = (basis - close) / (dev * mult)
+    model.confidence(min(1.0, max(0.3, depth)))
+    model.stopLoss(stopPct)
+    model.longEntry("qre")
     if showSignals
         plotshape(bar_index, low, "BUY reclaim", "triangleup", "#22cc88")
 if exitSig
     inPos := false
-    strategy.exit("qre")
+    model.longExit("qre")
     if showSignals
         plotshape(bar_index, high, "EXIT mean", "triangledown", "#ffd166")`,
   },
   {
     name: 'Aurora Momentum Rider',
-    description: 'Automated model: rides EMA-cross momentum with an RSI confirmation gate. Full chart visuals + strategy.* execution in one script.',
+    description: 'Automated model: rides EMA-cross momentum with an RSI confirmation gate and RSI-scaled confidence. Full chart visuals + model.* execution in one script.',
     category: '⚡ Automated Signal Models',
-    source: `// Aurora Momentum Rider — Automated Trend-Following Strategy
+    source: `// Aurora Momentum Rider — Automated Trend-Following Model
 // Entry: fast EMA crosses above slow EMA with RSI confirming momentum.
 // Exit: fast EMA crosses back under slow EMA, or momentum dies.
 fastLen = input(9, "Fast EMA", 2, 50, 1)
@@ -94,12 +99,16 @@ exitSig = inPos and (crossDn or r < rsiFloor)
 
 if enterSig
     inPos := true
-    strategy.entry("long", "amr")
+    // Confidence scales with how far RSI cleared the gate — no bracket
+    // here on purpose: a trend-follower wants to ride momentum, not get
+    // stopped out of it early by a fixed distance.
+    model.confidence(min(1.0, (r - rsiGate) / (100 - rsiGate)))
+    model.longEntry("amr")
     if showSignals
         plotshape(bar_index, low, "BUY momentum", "triangleup", "#22cc88")
 if exitSig
     inPos := false
-    strategy.exit("amr")
+    model.longExit("amr")
     if showSignals
         plotshape(bar_index, high, "EXIT momentum", "triangledown", "#ff4477")`,
   },

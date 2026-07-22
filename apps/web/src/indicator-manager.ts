@@ -31,6 +31,15 @@ export interface IndicatorInstance {
   // the UI can show *why* it's off instead of looking identical to a
   // manual disable.
   autoDisabledReason: string | null;
+  // Per-model auto-execution arming (Active Signal Models list toggle).
+  // Gates whether THIS instance's live signals reach the paper auto-trader
+  // — the Trading panel's master switch is a second, independent gate (both
+  // must be on). Deliberately session-only, never persisted, and reset to
+  // false whenever the source changes (see updateInstanceSource) — the
+  // same "a changed script needs a fresh explicit decision" rule the
+  // circuit breaker already follows, so editing a script can never leave
+  // auto-trading silently armed on unreviewed code.
+  autoTradeArmed: boolean;
 }
 
 // Dashboard visibility persistence — set of indicator NAMES the user hid.
@@ -112,6 +121,7 @@ export function addIndicator(indDef: IndicatorDef): IndicatorInstance {
     enabled: true,
     showInDashboard: !loadDashHidden().has(indDef.name),
     autoDisabledReason: null,
+    autoTradeArmed: false,
   };
   instances.set(id, instance);
   instanceOrder.push(id);
@@ -153,6 +163,9 @@ export function updateInstanceSource(id: string, source: string): IndicatorInsta
   // script re-backfills (no live emission) instead of diffing its signal
   // count against an unrelated previous script's history.
   lastForwardedSignalCount.delete(id);
+  // And for auto-trade arming: edited code is unreviewed code — never let
+  // it inherit the previous version's "armed" state.
+  inst.autoTradeArmed = false;
   return inst;
 }
 
@@ -167,6 +180,14 @@ export function getActiveInstances(): IndicatorInstance[] {
 export function setInstanceOverrides(id: string, overrides: Map<string, any>): void {
   const inst = instances.get(id);
   if (inst) inst.overrides = overrides;
+}
+
+/** Arms/disarms this instance's signals for the paper auto-trader. The
+ * Trading panel's master switch is a second, independent gate — both
+ * must be on for a signal to actually execute. */
+export function setInstanceAutoTradeArmed(id: string, armed: boolean): void {
+  const inst = instances.get(id);
+  if (inst) inst.autoTradeArmed = armed;
 }
 
 export function setInstanceEnabled(id: string, enabled: boolean): void {

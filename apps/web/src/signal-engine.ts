@@ -26,12 +26,19 @@ import type { OakPlot, OakStrategyOrder } from './oakscript/runtime';
 
 export interface TradeSignal {
   kind: 'entry' | 'exit';
-  direction: 'long' | 'short';
+  /** Entries: which side to open (shape-derived entries are always 'long'
+   * — a visual marker has no natural short indication). Exits: when set,
+   * the exit only applies to a position already on THAT side
+   * (model.longExit/shortExit); undefined = flatten whichever side is
+   * open (model.exit / legacy strategy.exit / shape-derived). */
+  direction?: 'long' | 'short';
   barIdx: number;
   /** How this signal was expressed by the script. */
   source: 'strategy' | 'shape';
   /** The marker/order label that classified it (for provenance UIs). */
   label: string;
+  /** 0-1 score from model.confidence(), if the script set one. */
+  confidence?: number;
 }
 
 /** A live-edge signal handed to subscribed consumers (paper auto-trader). */
@@ -98,20 +105,28 @@ export function deriveSignalsFromMarkers(
     const key = `${m.barIdx}:${kind}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    signals.push({ kind, direction: 'long', barIdx: m.barIdx, source: 'shape', label: m.name || m.text || m.style || '' });
+    // Entries default to 'long' — a visual marker has no natural short
+    // indication. Exits stay UNDIRECTED (flatten whichever side is open):
+    // a plotted "Sell" marker doesn't know which side its script's entries
+    // opened, so it can't safely be scoped to one direction.
+    signals.push({ kind, direction: kind === 'entry' ? 'long' : undefined, barIdx: m.barIdx, source: 'shape', label: m.name || m.text || m.style || '' });
   }
   signals.sort((a, b) => a.barIdx - b.barIdx);
   return signals;
 }
 
-/** Normalizes explicit strategy.entry()/exit() orders into TradeSignals. */
+/** Normalizes explicit model.entry/exit (or legacy strategy.entry/exit)
+ * orders into TradeSignals. Direction is passed through AS-IS (not
+ * defaulted) — an undirected exit must stay undirected so it flattens
+ * whichever side is actually open. */
 export function signalsFromStrategyOrders(orders: OakStrategyOrder[]): TradeSignal[] {
   return orders.map(o => ({
     kind: o.kind,
-    direction: o.direction === 'short' ? 'short' as const : 'long' as const,
+    direction: o.direction,
     barIdx: o.barIdx,
     source: 'strategy' as const,
     label: o.id,
+    confidence: o.confidence,
   }));
 }
 

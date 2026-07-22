@@ -1941,63 +1941,100 @@ regression.channel just supplies the three series; there is no auto-drawn
 channel object to reach for instead.`,
     },
     {
-      title: 'Backtesting — Time Machine (strategy.entry / strategy.exit)',
-      content: `strategy.entry(direction, id?, qty?)
-strategy.exit(id?)
+      title: 'Model Execution — model.entry / model.exit / model.confidence / model.stopLoss / model.takeProfit',
+      content: `model.entry(direction, id?, qty?)        model.longEntry(id?, qty?)
+model.exit(id?)                          model.shortEntry(id?, qty?)
+model.longExit(id?)                      model.shortExit(id?)
+model.confidence(value)                  model.stopLoss(value, mode?)
+                                          model.takeProfit(value, mode?)
   Order-EVENT builtins consumed by the Time Machine backtest engine (the
-  ⏱️ Backtest panel in the editor) — NOT rendering calls, and NOT active in
-  the live chart/paper-trading path. A script that calls these can still be
-  used as a normal signal analysis model (plot()/plotshape() etc. keep working exactly
-  as before); the strategy.* calls simply do nothing outside a backtest run.
+  ⏱️ Backtest panel) AND the live paper auto-trader (per-model 🤖 arm
+  toggle in the Active Signal Models list) — NOT rendering calls. A script
+  that calls these can still be used as a normal signal analysis model
+  (plot()/plotshape() etc. keep working exactly as before); the model.*
+  calls simply do nothing when neither consumer is active.
 
-  - direction: "long" or "short"
-  - id: a label carried on the order for readability — see the POSITION-
-    LEVEL note below; it is NOT compared when deciding whether an order
-    fills
-  - qty: number of units (default: the backtest panel's "Qty/trade" field)
+  This IS the point of Signal Analysis Models: one script is both the
+  chart study AND the executable model — no separate "indicator version"
+  and "strategy version" of the same idea. A script with no model.* calls
+  at all is still fully backtestable/auto-tradable if it plots Buy/Sell
+  shapes (plotshape/plotshape_3d) — the Signal Engine derives entries and
+  exits from the marker labels automatically (see the Signals dropdown in
+  the Backtest panel: Auto / model.* only / plotted shapes).
 
-  POSITION-LEVEL, NOT ID-LEVEL: the backtest's paper broker tracks one
-  position per SYMBOL, not per id. So:
-  - strategy.entry(...) is a no-op if a position is already open — it will
-    NOT add to or pyramid an existing position.
-  - strategy.exit(...) is a no-op if nothing is open, and always closes the
-    ENTIRE position (there is no partial-exit or per-id close).
-  This is a deliberate v1 simplification, not a bug: there is no bracket-
-  order engine (no attached stop-loss/take-profit, no trailing exit) —
-  express those as additional strategy.exit(...) conditions in your own
-  signal logic instead, e.g. exiting on a stop-price cross.
+  ENTRY forms:
+  - model.entry(direction, id?, qty?) — direction is "long" or "short"
+  - model.longEntry(id?, qty?) / model.shortEntry(id?, qty?) — direction
+    baked into the name, same effect as model.entry("long"/"short", ...)
+  - id: a label carried on the order for readability — see POSITION-LEVEL
+    below; it is NOT compared when deciding whether an order fills
+  - qty: number of units (default: the backtest panel's "Qty/trade" field,
+    or the auto-trader's qty field when trading live)
+
+  EXIT forms:
+  - model.exit(id?) — closes the open position for this symbol, whichever
+    side it is (no-op if flat)
+  - model.longExit(id?) / model.shortExit(id?) — DIRECTION-CONDITIONAL:
+    only closes if the open position is currently that side (a shortExit
+    while long is a no-op) — lets a long/short model manage each side
+    independently instead of one exit condition closing whatever's open
+
+  SIGNAL METADATA (sticky — applies to every subsequent entry until
+  changed or cleared with a value <= 0):
+  - model.confidence(value) — a 0-1 score. Metadata only, carried through
+    to backtest results and live signals for your own review — it is
+    NEVER a hidden position-size multiplier.
+  - model.stopLoss(value, mode?) / model.takeProfit(value, mode?) — mode
+    is "pct" (default) or "abs" ($ distance). Attaches a bracket to the
+    NEXT entry(ies), overriding the backtest form's SL/TP config for just
+    that entry. No trailing-stop form here — trailing stays a Backtest
+    panel-level-only option.
+
+  POSITION-LEVEL, NOT ID-LEVEL: the paper broker tracks one position per
+  SYMBOL, not per id. So an entry is a no-op if a position is already
+  open (no pyramiding), and an exit always closes the ENTIRE matching
+  position (no partial-exit or per-id close).
 
   EXECUTION MODEL: the backtest runs your script ONCE over the full
   historical range exactly like a normal chart render (persist/var state
-  and signal analysis model warmup carry across the whole run, unbroken). Every
-  strategy.entry/exit call your script makes is recorded as a signal on the
-  bar it fired; the backtest engine then fills it at the FOLLOWING bar's
-  open price (never the same bar's close) — the standard no-lookahead
-  assumption, since a signal computed from a bar's own close cannot
-  realistically be acted on until the next bar opens.
+  and warmup carry across the whole run, unbroken). Every model.* call
+  your script makes is recorded as a signal on the bar it fired; the
+  backtest engine then fills it at the FOLLOWING bar's open price (never
+  the same bar's close) — the standard no-lookahead assumption, since a
+  signal computed from a bar's own close cannot realistically be acted on
+  until the next bar opens. The live paper auto-trader uses the same
+  next-evaluation semantics.
 
   UNCONDITIONAL CALLS: exactly like plotshape(), an unconditional top-level
-  strategy.entry/exit fires on every single bar — almost always a mistake.
+  model.entry/exit fires on every single bar — almost always a mistake.
   Wrap it in a signal condition (the validator will warn you if you don't).
 
-  EXAMPLE — MA-crossover long/flat strategy:
+  EXAMPLE — MA-crossover long/short model with a stop and confidence:
     fast = sma(close, 5)
     slow = sma(close, 20)
     buySig = crossover(fast, slow)
     sellSig = crossunder(fast, slow)
     if buySig {
-        strategy.entry("long", "ma_cross")
+        model.confidence(0.7)
+        model.stopLoss(1.5)
+        model.longEntry("ma_cross")
     }
     if sellSig {
-        strategy.exit("ma_cross")
+        model.longExit("ma_cross")
     }
     plot(fast, "Fast", "#22cc88", 1)
     plot(slow, "Slow", "#ff4477", 1)
 
+  LEGACY ALIASES: strategy.entry(direction, id?, qty?) and strategy.exit(id?)
+  still work exactly as before (identical execution to model.entry/
+  model.exit) — kept for existing scripts. Prefer model.* in new scripts;
+  strategy.entry/exit have no equivalent of longExit/shortExit's
+  direction-conditional behavior or the confidence/bracket metadata calls.
+
   The Backtest panel reports in-sample and out-of-sample stats SIDE BY
   SIDE from a single fixed historical split (equity curve, max drawdown,
   per-bar unannualized Sharpe, win rate, avg win/loss) — always both
-  together, since an in-sample-only result is not evidence the strategy
+  together, since an in-sample-only result is not evidence the model
   works out of sample.`,
     },
     {

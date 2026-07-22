@@ -321,19 +321,79 @@ export const BUILTIN_REGISTRY: BuiltinDef[] = [
     summary: 'Draws a 3D billboard image sprite at a bar/price/z-level.',
   },
 
-  // ── New — backtest strategy orders (Time Machine) ──────────────────────
+  // ── Signal Analysis Model execution API (Time Machine backtest,
+  // paper auto-trader) — model.* is the current namespace; strategy.entry/
+  // strategy.exit are kept below as legacy aliases with identical
+  // execution, so existing scripts keep working unchanged.
+  {
+    name: 'model.entry', category: 'backtest', minArgs: 1, maxArgs: 3,
+    argDescriptions: ['direction', 'id?', 'qty?'],
+    styleChecks: [{ argIndex: 0, values: STRATEGY_DIRECTIONS, code: 'UNKNOWN_STRATEGY_DIRECTION', label: 'model.entry direction' }],
+    hasIdArg: true,
+    summary: 'Opens a position for this symbol (no-op if one is already open). Position-level, not id-level. Carries any pending model.confidence/stopLoss/takeProfit.',
+  },
+  {
+    name: 'model.longEntry', category: 'backtest', minArgs: 0, maxArgs: 2,
+    argDescriptions: ['id?', 'qty?'],
+    hasIdArg: true,
+    summary: 'Opens a LONG position (no-op if already in one). Same as model.entry("long", ...) with the direction baked into the name.',
+  },
+  {
+    name: 'model.shortEntry', category: 'backtest', minArgs: 0, maxArgs: 2,
+    argDescriptions: ['id?', 'qty?'],
+    hasIdArg: true,
+    summary: 'Opens a SHORT position (no-op if already in one). Same as model.entry("short", ...) with the direction baked into the name.',
+  },
+  {
+    name: 'model.exit', category: 'backtest', minArgs: 0, maxArgs: 1,
+    argDescriptions: ['id?'],
+    hasIdArg: true,
+    summary: 'Closes the open position for this symbol, whichever side it is (no-op if flat). Not a bracket-order clone.',
+  },
+  {
+    name: 'model.longExit', category: 'backtest', minArgs: 0, maxArgs: 1,
+    argDescriptions: ['id?'],
+    hasIdArg: true,
+    summary: 'Closes the position ONLY if it is currently long (no-op if short or flat) — lets a long/short model manage each side independently.',
+  },
+  {
+    name: 'model.shortExit', category: 'backtest', minArgs: 0, maxArgs: 1,
+    argDescriptions: ['id?'],
+    hasIdArg: true,
+    summary: 'Closes the position ONLY if it is currently short (no-op if long or flat).',
+  },
+  {
+    name: 'model.confidence', category: 'backtest', minArgs: 1, maxArgs: 1,
+    argDescriptions: ['value'],
+    summary: 'Sets a 0-1 confidence score attached to every entry from this point until changed. Metadata only — never a hidden position-size multiplier.',
+  },
+  {
+    name: 'model.stopLoss', category: 'backtest', minArgs: 1, maxArgs: 2,
+    argDescriptions: ['value', 'mode?'],
+    styleChecks: [{ argIndex: 1, values: new Set(['pct', 'abs']), code: 'UNKNOWN_BRACKET_MODE', label: 'model.stopLoss mode' }],
+    summary: 'Sets a per-script stop-loss (mode "pct", default, or "abs" $ distance) attached to subsequent entries, overriding the backtest form\'s SL. value <= 0 clears it.',
+  },
+  {
+    name: 'model.takeProfit', category: 'backtest', minArgs: 1, maxArgs: 2,
+    argDescriptions: ['value', 'mode?'],
+    styleChecks: [{ argIndex: 1, values: new Set(['pct', 'abs']), code: 'UNKNOWN_BRACKET_MODE', label: 'model.takeProfit mode' }],
+    summary: 'Sets a per-script take-profit (mode "pct", default, or "abs" $ distance) attached to subsequent entries, overriding the backtest form\'s TP. value <= 0 clears it.',
+  },
+  // ── Legacy aliases (pre-Signal-Analysis-Model naming) — identical
+  // execution to model.entry/model.exit, kept indefinitely for backward
+  // compatibility with existing scripts. Prefer model.* in new scripts.
   {
     name: 'strategy.entry', category: 'backtest', minArgs: 1, maxArgs: 3,
     argDescriptions: ['direction', 'id?', 'qty?'],
     styleChecks: [{ argIndex: 0, values: STRATEGY_DIRECTIONS, code: 'UNKNOWN_STRATEGY_DIRECTION', label: 'strategy.entry direction' }],
     hasIdArg: true,
-    summary: 'Backtest-only: opens a position for this symbol (no-op if one is already open). Position-level, not id-level.',
+    summary: 'Legacy alias for model.entry — identical behavior. Prefer model.entry in new scripts.',
   },
   {
     name: 'strategy.exit', category: 'backtest', minArgs: 0, maxArgs: 1,
     argDescriptions: ['id?'],
     hasIdArg: true,
-    summary: 'Backtest-only: closes the open position for this symbol (no-op if none is open). Not a bracket-order (stop/limit/trailing) clone.',
+    summary: 'Legacy alias for model.exit — identical behavior. Prefer model.exit in new scripts.',
   },
 
   // ── New — confirmed-only multi-timeframe confluence ─────────────────────

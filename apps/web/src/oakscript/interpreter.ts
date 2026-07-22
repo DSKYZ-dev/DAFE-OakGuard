@@ -258,6 +258,10 @@ export interface RuntimeContext {
   // by the script, consumed by the backtest engine's execution-replay pass
   // (apps/web/src/backtest/engine.ts). Empty for every non-backtest caller.
   strategyOrders: OakStrategyOrder[];
+  // Shared per-execution: sticky signal metadata set by model.confidence()/
+  // model.stopLoss()/model.takeProfit() — attached to every subsequent
+  // entry order (model.* AND legacy strategy.*) until changed or cleared.
+  modelDefaults: { confidence?: number; stopLoss?: { mode: 'pct' | 'abs'; value: number }; takeProfit?: { mode: 'pct' | 'abs'; value: number } };
   barIndex: number;
   returnValue: RuntimeValue | null;
   breakFlag: boolean;
@@ -331,6 +335,7 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
   const plots: OakPlot[] = [];
   const alerts: OakAlert[] = [];
   const strategyOrders: OakStrategyOrder[] = [];
+  const modelDefaults: RuntimeContext['modelDefaults'] = {};
   const allPersist = new Map(persist);
   const seriesHistory = new Map<ASTNode, number[]>();
   const cache = new Map<string, any>();
@@ -363,6 +368,7 @@ export function executeScript(program: Program, barData: RuntimeBarData, persist
       plots,
       alerts,
       strategyOrders,
+      modelDefaults,
       barIndex: bi,
       returnValue: null,
       breakFlag: false,
@@ -1573,25 +1579,83 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       case 'consensus.total':
         return ctx.consensusVotes.size;
 
+      // ─── Signal Analysis Model execution API ─────────────────────
+      // model.* is the primary namespace; strategy.entry/strategy.exit are
+      // retained as legacy aliases so existing scripts keep working. All
+      // entry spellings attach the sticky model.confidence/stopLoss/
+      // takeProfit metadata currently in effect.
+      case 'model.entry':
       case 'strategy.entry': {
-        // strategy.entry(direction, id?, qty?) — position-level (not id-level):
-        // PaperBroker keys positions by symbol only, so v1's execution-replay
+        // (direction, id?, qty?) — position-level (not id-level):
+        // PaperBroker keys positions by symbol only, so the execution-replay
         // pass treats this as "open a position if none is open." `id` rides
         // along for readability/forward-compat but isn't compared on fill.
         const direction = (typeof args[0] === 'string' ? args[0] : 'long') as 'long' | 'short';
         const id = autoId(ctx, args[1], 'entry');
         const qty = typeof args[2] === 'number' ? args[2] : undefined;
-        ctx.strategyOrders.push({ kind: 'entry', direction, id, qty, barIdx: ctx.barIndex });
+        ctx.strategyOrders.push({
+          kind: 'entry', direction, id, qty, barIdx: ctx.barIndex,
+          confidence: ctx.modelDefaults.confidence,
+          stopLoss: ctx.modelDefaults.stopLoss,
+          takeProfit: ctx.modelDefaults.takeProfit,
+        });
         return id;
       }
 
+      case 'model.longEntry':
+      case 'model.shortEntry': {
+        // (id?, qty?) — direction baked into the name.
+        const direction = funcName === 'model.longEntry' ? 'long' as const : 'short' as const;
+        const id = autoId(ctx, args[0], 'entry');
+        const qty = typeof args[1] === 'number' ? args[1] : undefined;
+        ctx.strategyOrders.push({
+          kind: 'entry', direction, id, qty, barIdx: ctx.barIndex,
+          confidence: ctx.modelDefaults.confidence,
+          stopLoss: ctx.modelDefaults.stopLoss,
+          takeProfit: ctx.modelDefaults.takeProfit,
+        });
+        return id;
+      }
+
+      case 'model.exit':
       case 'strategy.exit': {
-        // strategy.exit(id?) — closes the open position for this symbol, if
-        // any. Not a bracket-order clone (no stop/limit/trailing) — v1 is
-        // deliberately a plain flatten-on-signal.
+        // (id?) — closes the open position for this symbol whichever side
+        // it is. Not a bracket-order clone — a plain flatten-on-signal.
         const id = autoId(ctx, args[0], 'exit');
         ctx.strategyOrders.push({ kind: 'exit', id, barIdx: ctx.barIndex });
         return id;
+      }
+
+      case 'model.longExit':
+      case 'model.shortExit': {
+        // (id?) — direction-CONDITIONAL exit: only closes the position if
+        // the open side matches (a shortExit while long is a no-op), so a
+        // long/short model can manage each side independently.
+        const direction = funcName === 'model.longExit' ? 'long' as const : 'short' as const;
+        const id = autoId(ctx, args[0], 'exit');
+        ctx.strategyOrders.push({ kind: 'exit', direction, id, barIdx: ctx.barIndex });
+        return id;
+      }
+
+      case 'model.confidence': {
+        // (value 0-1) — sticky metadata attached to subsequent entries;
+        // carried through TradeSignals and backtest results, deliberately
+        // NEVER a hidden position-size multiplier.
+        const v = typeof args[0] === 'number' ? Math.max(0, Math.min(1, args[0])) : undefined;
+        ctx.modelDefaults.confidence = v;
+        return v ?? 0;
+      }
+
+      case 'model.stopLoss':
+      case 'model.takeProfit': {
+        // (value, mode?) — mode 'pct' (default) or 'abs' ($ distance).
+        // value <= 0 clears it. Sticky until changed; overrides the
+        // backtest form's SL/TP for entries that carry it.
+        const value = typeof args[0] === 'number' ? args[0] : 0;
+        const mode = args[1] === 'abs' ? 'abs' as const : 'pct' as const;
+        const target = funcName === 'model.stopLoss' ? 'stopLoss' as const : 'takeProfit' as const;
+        ctx.modelDefaults[target] = value > 0 ? { mode, value } : undefined;
+        return value;
       }
 
       case 'tostring': return String(args[0]);

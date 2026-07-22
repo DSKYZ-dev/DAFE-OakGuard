@@ -1811,7 +1811,7 @@ function buildBacktestConfigForm(cfg: {
   }
   const signalSourceSelect = document.createElement('select');
   for (const [val, label] of [
-    ['auto', 'Auto (strategy.* → shapes)'], ['strategy', 'strategy.* only'], ['shapes', 'Plotted shapes'],
+    ['auto', 'Auto (model.* → shapes)'], ['strategy', 'model.*/strategy.* only'], ['shapes', 'Plotted shapes'],
   ] as const) {
     const opt = document.createElement('option');
     opt.value = val; opt.textContent = label;
@@ -2083,8 +2083,8 @@ function renderBacktest(): void {
     const signalDesc = result.signalSourceUsed === 'shapes'
       ? `derived from plotted signal shapes (${result.orderCount} orders, long-flat)`
       : result.signalSourceUsed === 'strategy'
-        ? `explicit strategy.entry/exit calls (${result.orderCount} orders)`
-        : 'none — the script emitted no strategy.* calls and no matchable signal shapes';
+        ? `explicit model.*/strategy.* calls (${result.orderCount} orders)`
+        : 'none — the script emitted no model.*/strategy.* calls and no matchable signal shapes';
     provenance.textContent = `Signals: ${signalDesc}${lastBacktestDataLabel ? ` · Data: ${lastBacktestDataLabel}` : ''}`;
     Object.assign(provenance.style, {
       fontSize: '9px', color: 'rgba(180,140,255,0.8)', background: 'rgba(180,140,255,0.07)',
@@ -2157,8 +2157,8 @@ function renderBacktest(): void {
       const signalNote = result.signalSourceUsed === 'shapes'
         ? `${result.orderCount} orders derived from plotted signals`
         : result.signalSourceUsed === 'strategy'
-          ? `${result.orderCount} strategy.* orders`
-          : 'no signals found (add strategy.* calls or plotted Buy/Sell shapes)';
+          ? `${result.orderCount} model.*/strategy.* orders`
+          : 'no signals found (add model.* calls or plotted Buy/Sell shapes)';
       statusMsg.textContent = `Done — ${result.totalBars} bars, ${result.trades.length} trades · ${signalNote} · data: ${dataLabel}`;
       renderResults(result);
     } catch (e: any) {

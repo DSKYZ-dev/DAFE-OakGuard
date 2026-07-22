@@ -73,7 +73,7 @@ import {
   addIndicator, removeIndicator, getActiveInstances,
   runAllInstances, getCombinedPlots, hasActiveIndicators,
   setInstanceOverrides, setInstanceEnabled, updateInstanceSource,
-  setInstanceDashboardVisible,
+  setInstanceDashboardVisible, setInstanceAutoTradeArmed, getInstance,
   type IndicatorInstance,
 } from './indicator-manager';
 
@@ -1214,6 +1214,33 @@ function buildIndicatorList() {
       dashboard.refresh();
     };
 
+    // Per-model auto-execution arming — the OTHER gate the paper
+    // auto-trader checks (see the onLiveSignal consumer near broker setup),
+    // independent of the Trading panel's master switch. Session-only,
+    // starts false, and resets to false on every source edit.
+    const autoBtn = document.createElement('button');
+    autoBtn.textContent = '🤖';
+    const autoStyle = (on: boolean) => {
+      autoBtn.title = on
+        ? 'Auto-execution ARMED for this model — its new entry/exit signals will paper-trade when the Trading panel\'s master switch is also on. Click to disarm.'
+        : 'Auto-execution off for this model. Click to arm (also requires the Trading panel\'s master switch).';
+      autoBtn.style.opacity = on ? '1' : '0.3';
+      autoBtn.style.borderColor = on ? 'rgba(255,209,102,0.6)' : 'rgba(255,255,255,0.15)';
+      autoBtn.style.background = on ? 'rgba(255,209,102,0.12)' : 'none';
+    };
+    Object.assign(autoBtn.style, {
+      border: '1px solid rgba(255,209,102,0.4)',
+      cursor: 'pointer', borderRadius: '4px',
+      width: '20px', height: '20px', fontSize: '9px', padding: '0',
+    });
+    autoStyle(inst.autoTradeArmed);
+    autoBtn.onclick = () => {
+      const next = !inst.autoTradeArmed;
+      setInstanceAutoTradeArmed(inst.id, next);
+      autoStyle(next);
+      visualAdapter.logAction('auto-trade', `${inst.name} ${next ? 'armed' : 'disarmed'} for auto-execution`);
+    };
+
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '✕';
     closeBtn.title = 'Remove';
@@ -1254,6 +1281,7 @@ function buildIndicatorList() {
 
     item.appendChild(label);
     item.appendChild(dashBtn);
+    item.appendChild(autoBtn);
     item.appendChild(settingsBtn);
     item.appendChild(closeBtn);
     section.appendChild(item);
@@ -1524,12 +1552,19 @@ function closeAllPositions(): void {
 }
 
 // ─── Signal Engine → Paper Trader (Live Automation, paper only) ─────
-// Consumes the live-edge signal stream (see signal-engine.ts): when armed,
-// an entry signal buys qty on the CURRENT chart symbol if flat, an exit
-// signal flattens. Strictly opt-in and session-only — it always starts OFF
-// and is deliberately not persisted, so auto-trading can never be something
-// the user discovers already running. Paper broker only; fills flow through
-// the existing onFill hooks (chart markers, Glass Ledger entry, sound cue).
+// Consumes the live-edge signal stream (see signal-engine.ts). TWO
+// independent gates must both be open for a signal to execute: the
+// Trading panel's master switch (autoTradeEnabled), and the emitting
+// model's own arming toggle in the Active Signal Models list
+// (getInstance(id).autoTradeArmed) — so arming one model can never
+// silently arm every other active model too. Entry direction picks the
+// side (model.shortEntry opens short); exit direction, when the script
+// set one (model.longExit/shortExit), only flattens a position already on
+// that side, otherwise flattens whichever side is open. Strictly opt-in
+// and session-only — both gates always start OFF and neither is
+// persisted, so auto-trading can never be something the user discovers
+// already running. Paper broker only; fills flow through the existing
+// onFill hooks (chart markers, Glass Ledger entry, sound cue).
 // Real-brokerage routing is intentionally NOT wired here.
 let autoTradeEnabled = false;
 let autoTradeQty = 1;
@@ -1539,13 +1574,20 @@ function setAutoTradeStatus(text: string): void {
 }
 onLiveSignal((e) => {
   if (!autoTradeEnabled) return;
+  if (!getInstance(e.instanceId)?.autoTradeArmed) return;
   const pos = broker.getPositions().find(p => p.symbol === currentSymbol && p.qty !== 0);
+  const confNote = typeof e.signal.confidence === 'number' ? ` (confidence ${e.signal.confidence.toFixed(2)})` : '';
   if (e.signal.kind === 'entry' && !pos) {
-    broker.placeOrder({ symbol: currentSymbol, side: 'buy', type: 'market', qty: autoTradeQty });
-    setAutoTradeStatus(`⚡ ${e.indicatorName} entry → bought ${autoTradeQty} ${currentSymbol} (paper)`);
+    const side = e.signal.direction === 'short' ? 'sell' : 'buy';
+    broker.placeOrder({ symbol: currentSymbol, side, type: 'market', qty: autoTradeQty });
+    setAutoTradeStatus(`⚡ ${e.indicatorName} ${side === 'sell' ? 'short' : 'long'} entry → ${autoTradeQty} ${currentSymbol} (paper)${confNote}`);
   } else if (e.signal.kind === 'exit' && pos) {
+    // Direction-conditional exit: a shortExit signal must not flatten a
+    // long position a DIFFERENT armed model opened, and vice versa.
+    if (e.signal.direction === 'long' && pos.qty <= 0) return;
+    if (e.signal.direction === 'short' && pos.qty >= 0) return;
     broker.placeOrder({ symbol: currentSymbol, side: pos.qty > 0 ? 'sell' : 'buy', type: 'market', qty: Math.abs(pos.qty) });
-    setAutoTradeStatus(`⚡ ${e.indicatorName} exit → flattened ${currentSymbol} (paper)`);
+    setAutoTradeStatus(`⚡ ${e.indicatorName} exit → flattened ${currentSymbol} (paper)${confNote}`);
   } else {
     return;
   }
@@ -1719,8 +1761,8 @@ document.addEventListener('DOMContentLoaded', () => {
     toggle.id = 'auto-trade-toggle';
     const toggleLabel = document.createElement('label');
     toggleLabel.htmlFor = 'auto-trade-toggle';
-    toggleLabel.textContent = '🤖 Auto-trade signals (paper)';
-    toggleLabel.title = 'When enabled, NEW entry/exit signals from active signal models place paper trades on the current symbol. Paper broker only — never sends real orders. Always starts off; not remembered across reloads.';
+    toggleLabel.textContent = '🤖 Master arm (paper)';
+    toggleLabel.title = 'Master switch — required, but not sufficient alone: each Signal Analysis Model also needs its own 🤖 toggle armed in the Active Signal Models list before its signals place paper trades. Paper broker only — never sends real orders. Always starts off; neither this nor any per-model arming is remembered across reloads.';
     Object.assign(toggleLabel.style, { fontSize: '10px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer' });
     const qtyInput = document.createElement('input');
     qtyInput.type = 'number'; qtyInput.min = '1'; qtyInput.step = '1'; qtyInput.value = '1';
@@ -1735,7 +1777,7 @@ document.addEventListener('DOMContentLoaded', () => {
     section.appendChild(row);
 
     const status = document.createElement('div');
-    status.textContent = 'Off — signals from active signal models are ignored.';
+    status.textContent = 'Off — master switch is disarmed, no model can auto-trade regardless of its own toggle.';
     Object.assign(status.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginTop: '5px' });
     section.appendChild(status);
     autoTradeStatusEl = status;
@@ -1744,9 +1786,9 @@ document.addEventListener('DOMContentLoaded', () => {
       autoTradeEnabled = toggle.checked;
       autoTradeQty = Math.max(1, parseInt(qtyInput.value, 10) || 1);
       setAutoTradeStatus(autoTradeEnabled
-        ? `Armed — new entry/exit signals will paper-trade ${currentSymbol} (qty ${autoTradeQty}).`
-        : 'Off — signals from active signal models are ignored.');
-      visualAdapter.logAction('auto-trade', `Auto-trade ${autoTradeEnabled ? 'armed' : 'disarmed'}`);
+        ? `Master armed (qty ${autoTradeQty}) — also arm 🤖 on individual models in the Active Signal Models list to actually trade them.`
+        : 'Off — master switch is disarmed, no model can auto-trade regardless of its own toggle.');
+      visualAdapter.logAction('auto-trade', `Auto-trade master ${autoTradeEnabled ? 'armed' : 'disarmed'}`);
     });
     qtyInput.addEventListener('change', () => {
       autoTradeQty = Math.max(1, parseInt(qtyInput.value, 10) || 1);
