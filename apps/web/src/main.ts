@@ -589,7 +589,20 @@ let lowerHeight = 220; // dynamic for 3D pane and resizable divider
 
 function resize() {
   const w = window.innerWidth;
-  const h = Math.max(100, window.innerHeight - lowerHeight);
+  // #toolbar floats via position:fixed, entirely decoupled from #chart-area's
+  // flex:1 CSS rule — #chart-area fills 100% of #chart-container regardless
+  // of any JS-computed height, so the fix has to happen in real CSS: reserve
+  // the toolbar's live footprint as padding-bottom on the flex container
+  // itself, which shrinks the space flex:1 actually resolves against. (An
+  // earlier version of this only shrank the canvas's internal draw-buffer
+  // math, which changed nothing about the visual layout — #chart-area still
+  // filled the full container and the toolbar still overlapped it.)
+  const toolbarEl = document.getElementById('toolbar');
+  const toolbarTop = toolbarEl ? toolbarEl.getBoundingClientRect().top : window.innerHeight;
+  const availableHeight = Math.max(200, Math.min(window.innerHeight, toolbarTop - 8));
+  const chartContainer = document.getElementById('chart-container');
+  if (chartContainer) chartContainer.style.paddingBottom = `${window.innerHeight - availableHeight}px`;
+  const h = Math.max(100, availableHeight - lowerHeight);
   // Backing-store resolution is scaled by devicePixelRatio (clamped like
   // every other renderer in this app — three-indicators.ts, webgl-renderer.ts
   // — to cap GPU/fill cost on very-high-DPI displays) so the chart renders
@@ -2497,6 +2510,7 @@ CRITICAL RULES:
       (c as HTMLElement).style.display = collapsed ? 'none' : '';
     }
     btn.textContent = collapsed ? 'Menu »' : '«';
+    resize();
   });
 
   // Make toolbar draggable

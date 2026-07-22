@@ -5,6 +5,10 @@
  *         helix, vortex, manifold, nebula, constellation, torus, trail, ridgeline
  */
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { BaseBar } from '@dafe/types';
 import type { OakPlot, OakPlot3D } from './oakscript/runtime';
 import { makeTextSprite } from './three-lower-pane';
@@ -19,9 +23,40 @@ const CANVAS_ID = 'three-viz-canvas';
 let _renderer: THREE.WebGLRenderer | null = null;
 let _scene: THREE.Scene | null = null;
 let _camera: THREE.PerspectiveCamera | null = null;
+let _composer: EffectComposer | null = null;
+let _bloomPass: UnrealBloomPass | null = null;
 let _activeViz: VizType = 'surface';
 let _initialized = false;
 let _renderTime = 0;
+
+// ─── Bloom post-processing ──────────────────────────────────────────
+// Every scene here is built from MeshPhongMaterial with emissive colors —
+// authored for glow that was never actually rendered. UnrealBloomPass adds
+// it: threshold keeps the bloom off flat unlit surfaces/grid lines (which
+// sit well below it) so only the emissive geometry blooms, not the whole
+// frame.
+const BLOOM_STRENGTH = 0.7;
+const BLOOM_RADIUS = 0.45;
+const BLOOM_THRESHOLD = 0.15;
+
+function setupComposer(w: number, h: number): void {
+  if (!_renderer || !_scene || !_camera) return;
+  _composer = new EffectComposer(_renderer);
+  _composer.addPass(new RenderPass(_scene, _camera));
+  _bloomPass = new UnrealBloomPass(new THREE.Vector2(w, h), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+  _composer.addPass(_bloomPass);
+  _composer.addPass(new OutputPass());
+}
+
+function resizeComposer(w: number, h: number): void {
+  _composer?.setSize(w, h);
+  _bloomPass?.setSize(w, h);
+}
+
+function renderFrame(): void {
+  if (_composer) { _composer.render(); return; }
+  if (_renderer && _scene && _camera) _renderer.render(_scene, _camera);
+}
 
 export function setVizType(t: VizType) { _activeViz = t; }
 export function getVizType(): VizType { return _activeViz; }
@@ -155,10 +190,14 @@ function init(): void {
   const grid = new THREE.GridHelper(24, 20, 0x333366, 0x1a1a33);
   _scene.add(grid);
 
+  setupComposer(w, h);
+
   _initialized = true;
 }
 
 export function disposeViz(): void {
+  _composer?.dispose();
+  _composer = null; _bloomPass = null;
   if (_renderer) { _renderer.dispose(); _renderer = null; }
   _scene = null; _camera = null; _initialized = false;
   const c = document.getElementById(CANVAS_ID);
@@ -792,9 +831,10 @@ export function render3DViz(bars: BaseBar[], view: ViewState, width: number, hei
     _renderer.setSize(width, height, false);
     _camera.aspect = width / Math.max(height, 1);
     _camera.updateProjectionMatrix();
+    resizeComposer(width, height);
   }
   _renderTime = performance.now();
-  _renderer.render(_scene, _camera);
+  renderFrame();
 }
 
 export function toggle3DViz(bars: BaseBar[], view: ViewState, width: number, height: number): boolean {
@@ -846,14 +886,14 @@ function enableOrbitMain(): void {
     _orbitPhi = Math.max(0.15, Math.min(1.5, _orbitPhi - (e.clientY - _orbitLY) * 0.008));
     _orbitLX = e.clientX; _orbitLY = e.clientY;
     applyOrbitCam();
-    if (_renderer && _scene && _camera) _renderer.render(_scene, _camera);
+    renderFrame();
   };
   c.onpointerup = () => { _orbitDragging = false; if (c) c.style.cursor = 'grab'; };
   c.onwheel = (e: WheelEvent) => {
     if (!_camera) return;
     _orbitDist = Math.max(4, Math.min(50, _orbitDist + e.deltaY * 0.02));
     applyOrbitCam();
-    if (_renderer && _scene && _camera) _renderer.render(_scene, _camera);
+    renderFrame();
     e.preventDefault();
   };
   _orbitEnabled = true;
@@ -1307,6 +1347,7 @@ export function renderMain3DScene(
     _renderer.setSize(width, height, false);
     _camera.aspect = width / Math.max(height, 1);
     _camera.updateProjectionMatrix();
+    resizeComposer(width, height);
   }
 
   // Pan/zoom changes which bars getVisibleRange() considers "in view" even
@@ -1477,7 +1518,7 @@ export function renderMain3DScene(
 
   applyOrbitCam();
   _renderTime = performance.now();
-  _renderer.render(_scene, _camera);
+  renderFrame();
 }
 
 export function dispose3DScene(): void {

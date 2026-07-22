@@ -112,6 +112,48 @@ if exitSig
     if showSignals
         plotshape(bar_index, high, "EXIT momentum", "triangledown", "#ff4477")`,
   },
+  {
+    name: 'Riptide Scalper',
+    description: 'Automated model: buys short RSI dips and banks the first bounce with a tight stop and a fast forced timeout — tuned for a high, consistent win rate over many short trades rather than a few large ones. Full chart visuals + model.* execution in one script.',
+    category: '⚡ Automated Signal Models',
+    source: `// Riptide Scalper — Automated High-Win-Rate Reversion Model
+// Entry: RSI dips into oversold territory (a short, sharp pullback).
+// Exit: the first up-tick off the dip banks the win before it fades, with
+// a short forced timeout as backstop so a stalled trade never rides out a
+// slow bleed, and a tight stop-loss caps tail risk on the rest.
+rsiLen = input(7, "RSI Length", 2, 30, 1)
+rsiLow = input(40, "Oversold Entry", 10, 50, 1)
+maxHold = input(3, "Max Hold (bars)", 1, 20, 1)
+stopPct = input(0.35, "Stop-Loss %", 0.1, 5.0, 0.05)
+showSignals = input(true, "Show Signals")
+
+r = rsi(close, rsiLen)
+plot(r, "RSI", "#4cc9f0", 1, "separate")
+hline(rsiLow, "rgba(255,68,119,0.4)", "separate")
+
+var inPos = false
+var entryBar = 0
+barsHeld = bar_index - entryBar
+
+enterSig = r < rsiLow and not inPos
+forceExit = inPos and barsHeld >= maxHold
+signalExit = inPos and close > close[1] and barsHeld >= 1
+
+if enterSig
+    inPos := true
+    entryBar := bar_index
+    // Deeper into oversold = higher confidence in the bounce.
+    model.confidence(min(1.0, (rsiLow - r) / rsiLow + 0.4))
+    model.stopLoss(stopPct)
+    model.longEntry("rts")
+    if showSignals
+        plotshape(bar_index, low, "BUY dip", "triangleup", "#22cc88")
+if inPos and (signalExit or forceExit)
+    inPos := false
+    model.longExit("rts")
+    if showSignals
+        plotshape(bar_index, high, "EXIT bounce", "triangledown", "#ffd166")`,
+  },
 
   // ─── Moving Averages ───────────────────────────────────────────
   {

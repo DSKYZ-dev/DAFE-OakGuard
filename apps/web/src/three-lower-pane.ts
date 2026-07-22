@@ -3,6 +3,10 @@
  * Minimal surface area — no mouse handlers, no orbit controls.
  */
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { OakPlot3D, OakPlot } from './oakscript/runtime';
 import { resolveImage } from './image-cache';
 
@@ -13,6 +17,13 @@ let _rafId = 0;
 let _renderer: THREE.WebGLRenderer | null = null;
 let _scene: THREE.Scene | null = null;
 let _camera: THREE.PerspectiveCamera | null = null;
+let _composer: EffectComposer | null = null;
+let _bloomPass: UnrealBloomPass | null = null;
+// Same rationale as three-indicators.ts's twin constants — this pane's
+// geometry is built from the same emissive MeshPhongMaterial palette.
+const BLOOM_STRENGTH = 0.7;
+const BLOOM_RADIUS = 0.45;
+const BLOOM_THRESHOLD = 0.15;
 
 // ─── Content-fit framing ───────────────────────────────────────────
 // Plot geometry is normalized to a fixed world-space span (roughly x in
@@ -75,6 +86,8 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     _renderer.setSize(pw, h, false);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     _camera.aspect = pw / h; _camera.updateProjectionMatrix();
+    _composer?.setSize(pw, h);
+    _bloomPass?.setSize(pw, h);
     return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   }
   try {
@@ -87,10 +100,16 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     const d = new THREE.DirectionalLight(0xffffff, 0.7);
     d.position.set(3, 6, 5); _scene.add(d);
     _scene.add(new THREE.GridHelper(16, 12, 0x222244, 0x111122));
-    _camera = new THREE.PerspectiveCamera(BASE_FOV_DEG, (c.parentElement?.clientWidth || 1200) / h, 0.1, 100);
+    const pw0 = c.parentElement?.clientWidth || 1200;
+    _camera = new THREE.PerspectiveCamera(BASE_FOV_DEG, pw0 / h, 0.1, 100);
     _camera.position.set(0, 3.5, 10);
     _camera.lookAt(0, 1.8, 0);
     enableOrbit(c, _camera);
+    _composer = new EffectComposer(_renderer);
+    _composer.addPass(new RenderPass(_scene, _camera));
+    _bloomPass = new UnrealBloomPass(new THREE.Vector2(pw0, h), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_THRESHOLD);
+    _composer.addPass(_bloomPass);
+    _composer.addPass(new OutputPass());
     return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   } catch { return null; }
 }
@@ -584,7 +603,7 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
   if (_rafId) cancelAnimationFrame(_rafId);
   const loop = () => {
     if (!document.getElementById(ID)) { _rafId = 0; return; }
-    r.renderer.render(r.scene, r.camera);
+    if (_composer) _composer.render(); else r.renderer.render(r.scene, r.camera);
     _rafId = requestAnimationFrame(loop);
   };
   _rafId = requestAnimationFrame(loop);
@@ -626,6 +645,8 @@ function dispose(obj: THREE.Object3D): void {
 export function hide3D(): void {
   _ok = false;
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
+  _composer?.dispose();
+  _composer = null; _bloomPass = null;
   if (_renderer) { _renderer.dispose(); _renderer = null; }
   _scene = null; _camera = null;
   _lowerOrbitFit = null;
