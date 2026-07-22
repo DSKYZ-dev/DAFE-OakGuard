@@ -309,10 +309,14 @@ export async function runBacktestOnBars(
       }
     }
 
-    // Close-tick: marks the equity curve to this bar's close, and evaluates
-    // brackets against it too (a stop/limit can be touched intra-bar in
-    // either direction, not only at the open).
-    broker.tick(symbol, bars.close[i], bars.time[i]);
+    // Full-bar tick: evaluates every working stop-loss/take-profit/
+    // trailing-stop bracket against the bar's ACTUAL high/low range, not
+    // just its open and close — a wick that touches a level and reverses
+    // before the close now fills, with gap-through pricing and a
+    // deterministic same-bar ambiguity rule. See PaperBroker.tickBar() for
+    // the full intrabar fill model. Also marks lastPrice to this bar's
+    // close, which the equity curve below is priced against.
+    broker.tickBar(symbol, { open: bars.open[i], high: bars.high[i], low: bars.low[i], close: bars.close[i] }, bars.time[i]);
     equityCurve.push({ barIdx: i, time: bars.time[i], equity: broker.getAccount().equity });
   }
 

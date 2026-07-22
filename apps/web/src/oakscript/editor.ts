@@ -16,6 +16,10 @@ import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../b
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
 import type { BaseBar } from '@dafe/types';
 import { renderEquityCurve } from '../backtest/chart';
+import {
+  buildOptimizerGrid, objectiveScore, objectiveLabel, formatObjectiveScore, formatNumber, OPTIMIZER_OBJECTIVES,
+  type OptimizerVariant, type OptimizerRunRow, type OptimizerObjective,
+} from '../backtest/optimizer';
 
 export interface OakscriptResult {
   plots: OakPlot[];
@@ -65,7 +69,8 @@ let lastBacktestDataLabel: string | null = null;
 let lastBacktestResult: BacktestResult | null = null;
 let backtestAbortController: AbortController | null = null;
 let lastStrategyLabConfig: Partial<BacktestConfig> | null = null;
-let lastStrategyLabRows: BatchRunRow[] | null = null;
+let lastStrategyLabRows: OptimizerRunRow[] | null = null;
+let lastStrategyLabObjective: OptimizerObjective = 'netPnlPct';
 let strategyLabAbortController: AbortController | null = null;
 // createEditor() defines refreshIndicatorDropdown() as its own local closure
 // (it needs indSelect, which lives only there); this lets the module-scope
@@ -140,72 +145,13 @@ function evaluateLiteral(node: ASTNode): any {
   return 0;
 }
 
-// ─── Strategy Lab batch-variant sweep ───────────────────────────────
-// v1 scope (per the adversarial review's mandated cuts): a single
-// deterministic one-at-a-time parameter sweep, never a GA — no iteration,
-// no fitness-guided mutation, no randomness. Running buildBatchVariants()
-// twice on the same inputs always produces the exact same list.
-
-export interface BatchVariant {
-  label: string;
-  /** Empty for the baseline variant. */
-  overrides: Map<string, number>;
-}
-
-export interface BatchRunRow {
-  variant: BatchVariant;
-  result: BacktestResult;
-}
-
-/** Hard, fixed caps — "small fixed N" per the review, never a user-facing
- * dial. Sweeping more inputs or generating more variants than this starts
- * to look like the optimizer that was explicitly cut. */
-export const MAX_SWEPT_INPUTS = 4;
-export const MAX_BATCH_VARIANTS = 1 + MAX_SWEPT_INPUTS * 2;
-
-function round6(n: number): number {
-  return Math.round(n * 1e6) / 1e6;
-}
-
-function formatNumber(n: number): string {
-  return Number.isInteger(n) ? String(n) : String(round6(n));
-}
-
-/**
- * Baseline (script defaults) plus, for each of up to MAX_SWEPT_INPUTS
- * numeric inputs (in script order), one variant nudged down and one nudged
- * up by the input's own declared step (or 20% of its default when no step
- * is declared), clamped to any declared min/max and deduped against the
- * baseline value.
- */
-export function buildBatchVariants(inputs: InputDef[]): BatchVariant[] {
-  const variants: BatchVariant[] = [{ label: 'Baseline (script defaults)', overrides: new Map() }];
-  const numeric = inputs.filter(i => i.type === 'number').slice(0, MAX_SWEPT_INPUTS);
-
-  for (const inp of numeric) {
-    const base = typeof inp.defaultValue === 'number' ? inp.defaultValue : 0;
-    const step = inp.step && inp.step > 0 ? inp.step : Math.max(Math.abs(base) * 0.2, 1e-6);
-    const seen = new Set<number>([round6(base)]);
-
-    for (const raw of [base - step, base + step]) {
-      let clamped = raw;
-      if (inp.min !== undefined) clamped = Math.max(inp.min, clamped);
-      if (inp.max !== undefined) clamped = Math.min(inp.max, clamped);
-      clamped = round6(clamped);
-      if (seen.has(clamped)) continue;
-      seen.add(clamped);
-      variants.push({
-        label: `${inp.title}: ${formatNumber(base)} → ${formatNumber(clamped)}`,
-        overrides: new Map([[inp.name, clamped]]),
-      });
-    }
-  }
-
-  // Belt-and-braces — the loop above can only ever reach 1 + 4*2 = 9, but
-  // this is the one line that actually GUARANTEES "small fixed N" holds
-  // regardless of future edits above.
-  return variants.slice(0, MAX_BATCH_VARIANTS);
-}
+// ─── Optimizer variant sweep ─────────────────────────────────────────
+// The combinatorial grid-search itself (buildOptimizerGrid, objective
+// scoring) lives in ../backtest/optimizer.ts — a genuine backtest-domain
+// concern, not editor UI. This file just wires that module's output into
+// the panel below and reuses OptimizerVariant's Map<string,number>
+// overrides shape for the same source-rewrite-on-save flow the old
+// one-at-a-time sweep used.
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -910,8 +856,8 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   backtestBtn.onclick = () => toggleBacktest();
 
   const strategyLabBtn = document.createElement('button');
-  strategyLabBtn.textContent = '🧪 Batch';
-  strategyLabBtn.title = 'Model Lab — run a small fixed batch of parameter variants against historical data';
+  strategyLabBtn.textContent = '🎯 Optimize';
+  strategyLabBtn.title = 'Optimizer — combinatorial parameter search against historical data, ranked by a selectable objective';
   Object.assign(strategyLabBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   strategyLabBtn.onclick = () => toggleStrategyLab();
 
@@ -2069,7 +2015,7 @@ function renderBacktest(): void {
     // Required, always-visible whenever a result is shown — never render
     // stats without it directly above them.
     const disclaimer = document.createElement('div');
-    disclaimer.textContent = 'Backtest results use a single fixed historical split and simplified next-bar-open fills. Past performance on this data does not predict live results. This is not financial advice.';
+    disclaimer.textContent = 'Backtest results use a single fixed historical split. Signal entries/exits fill at next-bar-open (no lookahead); stop-loss/take-profit/trailing brackets are evaluated intrabar against each bar\'s full high/low range, with gap-through pricing. Past performance on this data does not predict live results. This is not financial advice.';
     Object.assign(disclaimer.style, {
       fontSize: '9px', color: 'rgba(255,200,80,0.85)', background: 'rgba(255,200,80,0.08)',
       border: '1px solid rgba(255,200,80,0.2)', borderRadius: '4px', padding: '5px 7px', marginBottom: '6px',
@@ -2183,15 +2129,15 @@ function renderBacktest(): void {
   if (lastBacktestResult) renderResults(lastBacktestResult);
 }
 
-// ─── Strategy Lab (batch variant sweep) Panel ────────────────────────
-// Rescoped exactly per the adversarial review's mandated cuts on the
-// original "Overnight Strategy Lab" concept: no GA, no scheduling/idle-time
-// framing — a foreground "Run Batch" button only, a small fixed N of
-// variants (buildBatchVariants(), capped at MAX_BATCH_VARIANTS), the
-// existing single in-sample/out-of-sample Time Machine split (never
-// walk-forward), and a human-approval gate — the same prompt()-based save
-// flow as the editor's own Save button — before anything reaches the saved-
-// indicator library. Nothing here is ever applied or saved automatically.
+// ─── Optimizer Panel ──────────────────────────────────────────────────
+// True combinatorial parameter search (see ../backtest/optimizer.ts):
+// every swept numeric input is varied TOGETHER via buildOptimizerGrid()'s
+// cartesian product, capped/randomly-subsampled at MAX_OPTIMIZER_RUNS total
+// backtests, and ranked by a user-selectable objective. Still foreground
+// only (no scheduling/idle-time framing) and still gated by human approval
+// — the same prompt()-based save flow as the editor's own Save button —
+// before any variant reaches the saved-indicator library. Nothing here is
+// ever applied or saved automatically.
 
 function toggleStrategyLab(): void {
   if (!strategyLabPanel) return;
@@ -2211,11 +2157,11 @@ function renderStrategyLab(): void {
     zIndex: '1',
   });
   const headerTitle = document.createElement('div');
-  headerTitle.textContent = '🧪 Model Lab — Batch Run';
+  headerTitle.textContent = '🎯 Optimizer';
   Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '2px' });
   header.appendChild(headerTitle);
   const headerSub = document.createElement('div');
-  headerSub.textContent = `Runs a fixed batch of up to ${MAX_BATCH_VARIANTS} parameter variants (baseline + up to ${MAX_SWEPT_INPUTS} numeric inputs, nudged one at a time) through Time Machine. You review and approve before anything is saved.`;
+  headerSub.textContent = 'Combinatorial parameter search through Time Machine — every swept numeric input varied together, ranked by your chosen objective. You review and approve before anything is saved.';
   Object.assign(headerSub.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
   header.appendChild(headerSub);
   strategyLabPanel.appendChild(header);
@@ -2255,7 +2201,9 @@ function renderStrategyLab(): void {
   Object.assign(previewDiv.style, { padding: '0 10px 6px', fontSize: '9px', color: 'rgba(255,255,255,0.55)' });
   strategyLabPanel.appendChild(previewDiv);
 
-  let currentVariants: BatchVariant[] = [];
+  let currentVariants: OptimizerVariant[] = [];
+  let currentTotalCombinations = 1;
+  let currentTruncated = false;
   let sweepError: string | null = null;
 
   function recomputeSweepPreview(): void {
@@ -2270,27 +2218,52 @@ function renderStrategyLab(): void {
     try {
       const ast = parse(source);
       const inputs = detectInputs(ast);
-      currentVariants = buildBatchVariants(inputs);
-      const numericCount = inputs.filter(i => i.type === 'number').length;
-      if (numericCount === 0) {
-        previewDiv.textContent = 'No numeric inputs detected in this script — batch will run the baseline only (1 variant).';
+      const grid = buildOptimizerGrid(inputs);
+      currentVariants = grid.variants;
+      currentTotalCombinations = grid.totalCombinations;
+      currentTruncated = grid.truncated;
+      if (grid.sweptInputs.length === 0) {
+        previewDiv.textContent = 'No numeric inputs detected in this script — optimizer will run the baseline only (1 combination).';
       } else {
-        const swept = numericCount > MAX_SWEPT_INPUTS ? `first ${MAX_SWEPT_INPUTS} of ${numericCount}` : `${numericCount}`;
-        previewDiv.textContent = `Will run ${currentVariants.length} variants: ${currentVariants.map(v => v.label).join(' · ')} (sweeping ${swept} numeric input${numericCount === 1 ? '' : 's'}).`;
+        const names = grid.sweptInputs.map(i => i.title).join(', ');
+        const truncNote = grid.truncated
+          ? ` — full grid is ${currentTotalCombinations.toLocaleString()} combinations, randomly subsampled down to ${currentVariants.length} (baseline always kept)`
+          : '';
+        previewDiv.textContent = `Will run ${currentVariants.length} combination${currentVariants.length === 1 ? '' : 's'} across ${grid.sweptInputs.length} swept input${grid.sweptInputs.length === 1 ? '' : 's'} (${names})${truncNote}.`;
       }
     } catch (e: any) {
       sweepError = e?.message ? String(e.message) : String(e);
-      previewDiv.textContent = `Script has a parse error — fix it before running a batch: ${sweepError}`;
+      previewDiv.textContent = `Script has a parse error — fix it before running the optimizer: ${sweepError}`;
       previewDiv.style.color = '#ff4477';
     }
   }
   recomputeSweepPreview();
 
   const actionsRow = document.createElement('div');
-  Object.assign(actionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 8px' });
+  Object.assign(actionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '0 10px 8px', flexWrap: 'wrap' });
+
+  const objectiveSelect = document.createElement('select');
+  Object.assign(objectiveSelect.style, {
+    padding: '4px 6px', border: '1px solid rgba(180,140,255,0.15)', borderRadius: '4px',
+    background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.7)', fontSize: '10px',
+  });
+  for (const o of OPTIMIZER_OBJECTIVES) {
+    const opt = document.createElement('option');
+    opt.value = o.value; opt.textContent = `Rank by: ${o.label}`;
+    if (o.value === lastStrategyLabObjective) opt.selected = true;
+    objectiveSelect.appendChild(opt);
+  }
+  objectiveSelect.onchange = () => {
+    lastStrategyLabObjective = objectiveSelect.value as OptimizerObjective;
+    if (lastStrategyLabRows) {
+      lastStrategyLabRows.forEach(r => { r.score = objectiveScore(r.result, lastStrategyLabObjective); });
+      lastStrategyLabRows.sort((a, b) => b.score - a.score);
+      renderBatchResults(lastStrategyLabRows);
+    }
+  };
 
   const runBatchBtn = document.createElement('button');
-  runBatchBtn.textContent = '▶ Run Batch';
+  runBatchBtn.textContent = '▶ Run Optimizer';
   Object.assign(runBatchBtn.style, {
     padding: '4px 10px', border: '1px solid rgba(34,204,136,0.4)',
     borderRadius: '4px', background: 'rgba(34,204,136,0.15)',
@@ -2309,6 +2282,7 @@ function renderStrategyLab(): void {
   const statusMsg = document.createElement('span');
   Object.assign(statusMsg.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
 
+  actionsRow.appendChild(objectiveSelect);
   actionsRow.appendChild(runBatchBtn);
   actionsRow.appendChild(cancelBtn);
   actionsRow.appendChild(statusMsg);
@@ -2335,7 +2309,7 @@ function renderStrategyLab(): void {
   // the editor is still editing the ORIGINAL script; approving a variant
   // creates a new, separate saved indicator alongside it, never silently
   // switches what a later Save/Apply click thinks it's editing.
-  function approveAndSaveVariant(variant: BatchVariant, btn: HTMLButtonElement): void {
+  function approveAndSaveVariant(variant: OptimizerVariant, btn: HTMLButtonElement): void {
     const source = textarea ? textarea.value : '';
     const rewritten = applyOverridesToSource(source, variant.overrides);
     // applyOverridesToSource() matches input(...) calls line-by-line, but
@@ -2354,9 +2328,9 @@ function renderStrategyLab(): void {
     }
     const currentName = localStorage.getItem('oakscript_active_name') || 'My Indicator';
     const suggested = variant.overrides.size === 0
-      ? `${currentName} (batch baseline)`
+      ? `${currentName} (optimizer baseline)`
       : `${currentName} (${variant.label})`;
-    const name = prompt('Save this variant as a new signal model — nothing is saved until you confirm a name:', suggested);
+    const name = prompt('Save this combination as a new signal model — nothing is saved until you confirm a name:', suggested);
     if (!name) return;
     saveUserIndicator(name, rewritten);
     refreshIndicatorDropdownFn?.();
@@ -2364,11 +2338,12 @@ function renderStrategyLab(): void {
     setTimeout(() => { btn.textContent = '💾 Approve & Save'; }, 1500);
   }
 
-  function renderBatchResults(rows: BatchRunRow[]): void {
+  function renderBatchResults(rows: OptimizerRunRow[]): void {
     resultsDiv.innerHTML = '';
 
+    const objective = lastStrategyLabObjective;
     const disclaimer = document.createElement('div');
-    disclaimer.textContent = 'Same single fixed historical split and simplified next-bar-open fills as Time Machine. Ranked by in-sample Sharpe — out-of-sample is shown for reference only, never used to pick a "winner." Nothing is applied or saved automatically. Past performance on this data does not predict live results. This is not financial advice.';
+    disclaimer.textContent = `Same single fixed historical split and intrabar bracket fills as Time Machine (signals fill at next-bar-open; SL/TP/trailing brackets check each bar's full high/low range). Ranked by in-sample ${objectiveLabel(objective)} — out-of-sample is shown for reference only, never used to pick a "winner." Nothing is applied or saved automatically. Past performance on this data does not predict live results. This is not financial advice.`;
     Object.assign(disclaimer.style, {
       fontSize: '9px', color: 'rgba(255,200,80,0.85)', background: 'rgba(255,200,80,0.08)',
       border: '1px solid rgba(255,200,80,0.2)', borderRadius: '4px', padding: '5px 7px', marginBottom: '8px',
@@ -2391,7 +2366,8 @@ function renderStrategyLab(): void {
       Object.assign(top.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', gap: '6px' });
 
       const label = document.createElement('span');
-      label.textContent = (isBest ? '★ Best (in-sample): ' : `#${idx + 1} `) + row.variant.label;
+      label.textContent = (isBest ? '★ Best: ' : `#${idx + 1} `) + row.variant.label;
+      label.title = row.variant.label;
       Object.assign(label.style, {
         fontSize: '10px', fontWeight: '700', color: isBest ? '#22cc88' : 'rgba(255,255,255,0.75)',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -2400,6 +2376,14 @@ function renderStrategyLab(): void {
 
       const rightSide = document.createElement('div');
       Object.assign(rightSide.style, { display: 'flex', alignItems: 'center', gap: '6px', flexShrink: '0' });
+
+      const scoreBadge = document.createElement('span');
+      scoreBadge.textContent = `${objectiveLabel(objective)}: ${formatObjectiveScore(objective, row.score)}`;
+      Object.assign(scoreBadge.style, {
+        fontSize: '9px', fontWeight: '700', color: isBest ? '#22cc88' : '#b48cff',
+        whiteSpace: 'nowrap',
+      });
+      rightSide.appendChild(scoreBadge);
 
       if (row.result.scriptErrors.length > 0) {
         const warn = document.createElement('span');
@@ -2437,7 +2421,7 @@ function renderStrategyLab(): void {
   runBatchBtn.onclick = async () => {
     recomputeSweepPreview();
     if (sweepError) {
-      statusMsg.textContent = 'Fix the script parse error above before running a batch.';
+      statusMsg.textContent = 'Fix the script parse error above before running the optimizer.';
       statusMsg.style.color = '#ff4477';
       return;
     }
@@ -2450,6 +2434,8 @@ function renderStrategyLab(): void {
     const source = textarea ? textarea.value : '';
     const config = formHandle.getConfig(chartCtx.baseUrl);
     lastStrategyLabConfig = config;
+    lastStrategyLabObjective = objectiveSelect.value as OptimizerObjective;
+    const objective = lastStrategyLabObjective;
 
     resultsDiv.innerHTML = '';
     runBatchBtn.disabled = true;
@@ -2460,7 +2446,7 @@ function renderStrategyLab(): void {
     const controller = new AbortController();
     strategyLabAbortController = controller;
     const variants = currentVariants;
-    const rows: BatchRunRow[] = [];
+    const rows: OptimizerRunRow[] = [];
 
     try {
       statusMsg.textContent = 'Resolving historical bars...';
@@ -2470,34 +2456,35 @@ function renderStrategyLab(): void {
 
       for (let i = 0; i < variants.length; i++) {
         const variant = variants[i];
-        statusMsg.textContent = `Running variant ${i + 1}/${variants.length} — ${variant.label}...`;
+        statusMsg.textContent = `Running combination ${i + 1}/${variants.length} — ${variant.label}...`;
         const result = await runBacktestOnBars(config, source, bars, {
           signal: controller.signal,
           inputOverrides: variant.overrides.size > 0 ? new Map<string, unknown>(variant.overrides) : undefined,
         });
-        rows.push({ variant, result });
+        rows.push({ variant, result, score: objectiveScore(result, objective) });
       }
 
-      rows.sort((a, b) => b.result.inSample.sharpePerBar - a.result.inSample.sharpePerBar);
+      rows.sort((a, b) => b.score - a.score);
       lastStrategyLabRows = rows;
       const sigNote = rows[0]?.result.signalSourceUsed === 'shapes' ? ' · signals derived from plotted shapes' : '';
-      statusMsg.textContent = `Done — ${rows.length} variants against ${bars.count} bars · data: ${dataLabel}${sigNote}`;
+      const truncNote = currentTruncated ? ` (subsampled from ${currentTotalCombinations.toLocaleString()} total combinations)` : '';
+      statusMsg.textContent = `Done — ${rows.length} combinations${truncNote} against ${bars.count} bars · data: ${dataLabel}${sigNote}`;
       renderBatchResults(rows);
     } catch (e: any) {
       if (e instanceof BacktestCancelledError) {
-        statusMsg.textContent = `Cancelled — ${rows.length}/${variants.length} variants completed.`;
+        statusMsg.textContent = `Cancelled — ${rows.length}/${variants.length} combinations completed.`;
         if (rows.length > 0) {
-          rows.sort((a, b) => b.result.inSample.sharpePerBar - a.result.inSample.sharpePerBar);
+          rows.sort((a, b) => b.score - a.score);
           lastStrategyLabRows = rows;
           renderBatchResults(rows);
         }
       } else {
-        statusMsg.textContent = `Batch failed: ${e?.message || e}`;
+        statusMsg.textContent = `Optimizer failed: ${e?.message || e}`;
         statusMsg.style.color = '#ff4477';
       }
     } finally {
       runBatchBtn.disabled = false;
-      runBatchBtn.textContent = '▶ Run Batch';
+      runBatchBtn.textContent = '▶ Run Optimizer';
       cancelBtn.style.display = 'none';
       strategyLabAbortController = null;
     }

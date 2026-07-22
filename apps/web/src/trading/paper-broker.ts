@@ -181,6 +181,89 @@ export class PaperBroker implements IBroker {
     }
   }
 
+  /**
+   * Intrabar-aware evaluation for backtest replay — checks every working
+   * order against the bar's FULL open/high/low/close range instead of two
+   * isolated snapshots (tick() called at just open, then just close), so a
+   * stop or limit touched by a wick that reverses before the close still
+   * fills. Two things a single-price tick() structurally cannot do:
+   *  1. Gap-through pricing — if the bar's open already cleared a level
+   *     (a real overnight/session gap), fill at the open, not at a stale
+   *     level no real order could have been honored at.
+   *  2. A deterministic same-bar ambiguity rule — we don't have true tick
+   *     data, so when a bar's range straddles BOTH a stop and a limit for
+   *     the same position (which one actually triggered first intrabar is
+   *     unknowable from OHLC alone), stop-type orders are evaluated FIRST.
+   *     This is the same conservative convention engine.ts's
+   *     placeBracketOrders() already documents for the same-tick case
+   *     (stop-loss placed before take-profit), extended consistently here
+   *     to the whole-bar case.
+   * Trailing-stops ratchet continuously in reality; this approximates that
+   * with a "high-water mark" pass: extend the trail reference to the bar's
+   * most-favorable extreme (what any continuously-updating trail would have
+   * reached before a pullback), THEN check whether the bar's unfavorable
+   * extreme would have triggered the resulting stop level.
+   */
+  tickBar(symbol: string, bar: { open: number; high: number; low: number; close: number }, _timestamp: number): void {
+    for (const o of this.orders.values()) {
+      if (o.status !== 'working' || o.symbol !== symbol || o.type !== 'trailing-stop') continue;
+      if (o.side === 'sell') {
+        if (o.trailReference === undefined || bar.high > o.trailReference) o.trailReference = bar.high;
+      } else {
+        if (o.trailReference === undefined || bar.low < o.trailReference) o.trailReference = bar.low;
+      }
+    }
+
+    const rank = (o: Order) => (o.type === 'limit' ? 1 : 0); // stop-type orders resolve first
+    const working = Array.from(this.orders.values())
+      .filter(o => o.status === 'working' && o.symbol === symbol)
+      .sort((a, b) => rank(a) - rank(b));
+
+    for (const o of working) {
+      // An earlier fill in this same pass (e.g. a stop) can trigger onFill's
+      // sweep-cancel of its sibling bracket — re-check before touching it.
+      if (o.status !== 'working') continue;
+
+      if (o.type === 'trailing-stop') {
+        const ref = o.trailReference ?? (o.side === 'sell' ? bar.high : bar.low);
+        const trail = o.trailIsPercent ? ref * ((o.trailAmount ?? 0) / 100) : (o.trailAmount ?? 0);
+        if (o.side === 'sell') {
+          const stopLevel = ref - trail;
+          if (bar.low <= stopLevel) this.fill(o, bar.open < stopLevel ? bar.open : stopLevel);
+        } else {
+          const stopLevel = ref + trail;
+          if (bar.high >= stopLevel) this.fill(o, bar.open > stopLevel ? bar.open : stopLevel);
+        }
+        continue;
+      }
+
+      if (o.type === 'stop' || o.type === 'stop-limit') {
+        const stopPrice = o.stopPrice ?? (o.side === 'buy' ? Infinity : -Infinity);
+        const triggered = o.side === 'buy' ? bar.high >= stopPrice : bar.low <= stopPrice;
+        if (!triggered) continue;
+        // Gap-through: if the open already cleared the stop, that's the
+        // realistic fill — a real order couldn't have been honored at a
+        // level the market skipped past overnight.
+        const gapped = o.side === 'buy' ? bar.open >= stopPrice : bar.open <= stopPrice;
+        const fillPx = gapped ? bar.open : stopPrice;
+        if (o.type === 'stop') { this.fill(o, fillPx); continue; }
+        const limitOk = o.side === 'buy' ? fillPx <= (o.limitPrice ?? Infinity) : fillPx >= (o.limitPrice ?? -Infinity);
+        if (limitOk) this.fill(o, o.limitPrice ?? fillPx);
+        continue;
+      }
+
+      if (o.type === 'limit') {
+        const limitPrice = o.limitPrice ?? (o.side === 'buy' ? -Infinity : Infinity);
+        const triggered = o.side === 'buy' ? bar.low <= limitPrice : bar.high >= limitPrice;
+        if (!triggered) continue;
+        const gapped = o.side === 'buy' ? bar.open <= limitPrice : bar.open >= limitPrice;
+        this.fill(o, gapped ? bar.open : limitPrice);
+      }
+    }
+
+    this.lastPrice.set(symbol, bar.close);
+  }
+
   private fill(order: Order, marketPrice: number): void {
     const { perUnit: slipPerUnit } = describeSlippage(this.config.slippage, marketPrice);
     const slipSign = order.side === 'buy' ? 1 : -1; // buys pay up, sells receive less
