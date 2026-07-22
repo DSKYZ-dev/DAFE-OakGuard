@@ -21,9 +21,9 @@ import {
   type OptimizerVariant, type OptimizerRunRow, type OptimizerObjective,
 } from '../backtest/optimizer';
 import {
-  detectMlRefs, fetchMlPredictionsMap, fetchRlActionsMap,
+  detectMlRefs, fetchMlPredictionsMap, fetchRlActionsMap, fetchDeviceInfo,
   trainMlModel, listMlModels, deleteMlModel, trainRlPolicy, listRlPolicies, deleteRlPolicy,
-  type MlModelMeta, type RlPolicyMeta,
+  type MlModelMeta, type RlPolicyMeta, type DeviceInfo,
 } from '../ml-client';
 
 export interface OakscriptResult {
@@ -2549,15 +2549,15 @@ function renderStrategyLab(): void {
 
 // ─── ML Lab Panel ─────────────────────────────────────────────────────
 // Trains the models/policies ml.predict("id")/rl.action("id") reference.
-// ML: gradient boosting / a real 2-hidden-layer MLP / logistic regression
-// via scikit-learn, chronologically split (no shuffle) so validation never
-// sees future bars the way training did. RL: a from-scratch tabular
-// Q-learning agent — genuine trial-and-error learning against a reward
-// signal (mark-to-market P&L), not supervised learning wearing an RL name.
-// See backend/ml_engine.py. No PyTorch/deep-RL framework here — this
-// sandbox has no GPU and the default PyTorch wheel bundles ~2GB of CUDA
-// runtime it couldn't use; scikit-learn's MLP is a genuine backprop-trained
-// net, appropriately scoped for tabular financial features.
+// Tiered by design, not GPU-gated: gradient boosting / a real 2-hidden-
+// layer MLP / logistic regression / tabular Q-learning (all scikit-learn
+// or from-scratch numpy) are classical, CPU-fast, and often just as
+// accurate on this much tabular data — legitimate choices on any machine.
+// LSTM (sequence-aware, a sliding window of bars rather than just the
+// current one) and DQN (continuous state, no fixed discretization ceiling)
+// are real PyTorch neural nets that benefit from a CUDA GPU when present,
+// and still train correctly — just slower — on CPU. The device badge below
+// reports which tier is actually in play. See backend/ml_engine.py.
 
 let lastMlLabConfig: { symbol: string; timeframe: string; barCount: number; dataSource: 'auto' | 'fetch' | 'chart' } | null = null;
 
@@ -2599,9 +2599,17 @@ function renderMlLab(): void {
   Object.assign(headerTitle.style, { color: '#b48cff', fontSize: '11px', fontWeight: '600', marginBottom: '2px' });
   header.appendChild(headerTitle);
   const headerSub = document.createElement('div');
-  headerSub.textContent = 'Train ML signal models and RL trading policies against historical bars. Reference them in a script via ml.predict("modelId") / rl.action("policyId"). Classical ML (gradient boosting / a real neural net / logistic regression) and tabular Q-learning RL — no GPU deep-learning framework in this environment.';
+  headerSub.textContent = 'Train ML signal models and RL trading policies against historical bars. Reference them in a script via ml.predict("modelId") / rl.action("policyId"). Classical (Gradient Boosting / MLP / Logistic / Tabular Q-Learning) or deep (LSTM / DQN) — pick per model, not a global setting.';
   Object.assign(headerSub.style, { fontSize: '9px', color: 'rgba(255,255,255,0.4)' });
   header.appendChild(headerSub);
+
+  const deviceBadge = document.createElement('div');
+  deviceBadge.textContent = 'Checking device for deep (LSTM/DQN) models…';
+  Object.assign(deviceBadge.style, {
+    fontSize: '9px', color: 'rgba(255,255,255,0.35)', marginTop: '4px', padding: '4px 6px',
+    border: '1px solid rgba(180,140,255,0.15)', borderRadius: '4px', background: 'rgba(180,140,255,0.05)',
+  });
+  header.appendChild(deviceBadge);
   mlLabPanel.appendChild(header);
 
   const chartCtx: EditorChartContext = onGetChartContext ? onGetChartContext() : { symbol: 'SPY', timeframe: '1h', baseUrl: undefined };
@@ -2664,9 +2672,13 @@ function renderMlLab(): void {
   const mlFormRow = document.createElement('div');
   Object.assign(mlFormRow.style, { padding: '0 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
   const modelTypeSelect = document.createElement('select');
-  for (const [v, l] of [['gbm', 'Gradient Boosting'], ['mlp', 'Neural Net (MLP)'], ['logistic', 'Logistic/Ridge']] as const) {
+  for (const [v, l] of [
+    ['gbm', 'Gradient Boosting (classical)'], ['mlp', 'Neural Net — MLP (classical)'],
+    ['logistic', 'Logistic/Ridge (classical)'], ['lstm', 'Neural Net — LSTM (deep, sequence-aware)'],
+  ] as const) {
     const opt = document.createElement('option'); opt.value = v; opt.textContent = l; modelTypeSelect.appendChild(opt);
   }
+  const lstmOption = modelTypeSelect.querySelector('option[value="lstm"]') as HTMLOptionElement;
   const targetTypeSelect = document.createElement('select');
   for (const [v, l] of [['direction', 'Direction (up/down)'], ['return', 'Return (%)']] as const) {
     const opt = document.createElement('option'); opt.value = v; opt.textContent = l; targetTypeSelect.appendChild(opt);
@@ -2675,11 +2687,15 @@ function renderMlLab(): void {
   horizonInput.type = 'number'; horizonInput.min = '1'; horizonInput.max = '50'; horizonInput.value = '3';
   const mlTrainPctInput = document.createElement('input');
   mlTrainPctInput.type = 'number'; mlTrainPctInput.min = '50'; mlTrainPctInput.max = '90'; mlTrainPctInput.value = '70';
-  mlFormRow.appendChild(configField('Model', modelTypeSelect, '140px'));
+  mlFormRow.appendChild(configField('Model', modelTypeSelect, '190px'));
   mlFormRow.appendChild(configField('Target', targetTypeSelect, '150px'));
   mlFormRow.appendChild(configField('Horizon (bars)', horizonInput, '90px'));
   mlFormRow.appendChild(configField('Train %', mlTrainPctInput, '70px'));
   mlLabPanel.appendChild(mlFormRow);
+
+  const mlDeepHint = document.createElement('div');
+  Object.assign(mlDeepHint.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', padding: '0 10px 4px', display: 'none' });
+  mlLabPanel.appendChild(mlDeepHint);
 
   const mlActionsRow = document.createElement('div');
   Object.assign(mlActionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px' });
@@ -2696,13 +2712,34 @@ function renderMlLab(): void {
   mlLabPanel.appendChild(mlLabSectionHeader('Train RL Trading Policy'));
   const rlFormRow = document.createElement('div');
   Object.assign(rlFormRow.style, { padding: '0 10px', display: 'flex', flexWrap: 'wrap', gap: '6px' });
+  const algorithmSelect = document.createElement('select');
+  for (const [v, l] of [
+    ['tabular', 'Tabular Q-Learning (classical, fast)'], ['dqn', 'Deep Q-Network — DQN (deep, continuous state)'],
+  ] as const) {
+    const opt = document.createElement('option'); opt.value = v; opt.textContent = l; algorithmSelect.appendChild(opt);
+  }
+  const dqnOption = algorithmSelect.querySelector('option[value="dqn"]') as HTMLOptionElement;
   const episodesInput = document.createElement('input');
   episodesInput.type = 'number'; episodesInput.min = '20'; episodesInput.max = '2000'; episodesInput.value = '150';
   const rlTrainPctInput = document.createElement('input');
   rlTrainPctInput.type = 'number'; rlTrainPctInput.min = '50'; rlTrainPctInput.max = '90'; rlTrainPctInput.value = '70';
+  // DQN does a gradient-descent step per environment step (real backprop,
+  // not a table lookup) — meaningfully more work per episode than tabular
+  // Q-learning, so it defaults to fewer episodes rather than leaving a
+  // 150-episode default that'd feel hung on a CPU-only machine.
+  const RL_DEFAULT_EPISODES: Record<string, string> = { tabular: '150', dqn: '40' };
+  algorithmSelect.onchange = () => {
+    episodesInput.value = RL_DEFAULT_EPISODES[algorithmSelect.value] ?? episodesInput.value;
+    updateRlHint();
+  };
+  rlFormRow.appendChild(configField('Algorithm', algorithmSelect, '220px'));
   rlFormRow.appendChild(configField('Episodes', episodesInput, '90px'));
   rlFormRow.appendChild(configField('Train %', rlTrainPctInput, '70px'));
   mlLabPanel.appendChild(rlFormRow);
+
+  const rlDeepHint = document.createElement('div');
+  Object.assign(rlDeepHint.style, { fontSize: '9px', color: 'rgba(255,255,255,0.35)', padding: '0 10px 4px', display: 'none' });
+  mlLabPanel.appendChild(rlDeepHint);
 
   const rlActionsRow = document.createElement('div');
   Object.assign(rlActionsRow.style, { display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 10px' });
@@ -2715,11 +2752,60 @@ function renderMlLab(): void {
   rlActionsRow.appendChild(rlStatus);
   mlLabPanel.appendChild(rlActionsRow);
 
+  // ── Device tier — fetched once per panel open, then drives the badge
+  // text, which deep options are actually clickable, and the two inline
+  // hints. Classical options never touch this — they're always available. ──
+  let deviceInfo: DeviceInfo | null = null;
+
+  function updateMlHint(): void {
+    if (modelTypeSelect.value !== 'lstm' || !deviceInfo) { mlDeepHint.style.display = 'none'; return; }
+    mlDeepHint.style.display = 'block';
+    mlDeepHint.textContent = deviceInfo.device === 'cuda'
+      ? `⚡ Will train on ${deviceInfo.deviceName} — fast.`
+      : '🖥 No GPU detected — LSTM will still train correctly on CPU, just slower (a few to several seconds). Gradient Boosting above is a fast classical alternative with comparable accuracy on this much data.';
+  }
+  function updateRlHint(): void {
+    if (algorithmSelect.value !== 'dqn' || !deviceInfo) { rlDeepHint.style.display = 'none'; return; }
+    rlDeepHint.style.display = 'block';
+    rlDeepHint.textContent = deviceInfo.device === 'cuda'
+      ? `⚡ Will train on ${deviceInfo.deviceName} — fast.`
+      : '🖥 No GPU detected — DQN does real backprop every step, so this can take 20-60s+ on CPU at the default episode count. Tabular Q-Learning above is a fast classical alternative.';
+  }
+  modelTypeSelect.onchange = updateMlHint;
+
+  fetchDeviceInfo(chartCtx.baseUrl).then((info) => {
+    deviceInfo = info;
+    if (!info.torchAvailable) {
+      deviceBadge.textContent = '⚙️ Classical-only backend — PyTorch isn\'t installed, so LSTM/DQN are unavailable here. Gradient Boosting, Neural Net (MLP), and Tabular Q-Learning below need no extra dependency and work fully as-is.';
+      lstmOption.disabled = true;
+      dqnOption.disabled = true;
+    } else if (info.device === 'cuda') {
+      deviceBadge.textContent = `⚡ GPU detected: ${info.deviceName} — LSTM/DQN below will train fast. Classical options are still great for quick iteration.`;
+    } else {
+      deviceBadge.textContent = '🖥 CPU only (no CUDA GPU detected) — LSTM/DQN below still train correctly, just slower. Gradient Boosting / Tabular Q-Learning are legitimate fast choices on any machine, not just a fallback.';
+    }
+    deviceBadge.style.color = info.device === 'cuda' ? '#22cc88' : 'rgba(255,255,255,0.45)';
+    updateMlHint();
+    updateRlHint();
+  }).catch(() => {
+    deviceBadge.textContent = 'Could not reach the backend to check device — deep (LSTM/DQN) options may be unavailable.';
+    deviceBadge.style.color = '#ff4477';
+  });
+
   // ── Lists ──
   const modelsListDiv = document.createElement('div');
   Object.assign(modelsListDiv.style, { padding: '0 10px 10px' });
   const policiesListDiv = document.createElement('div');
   Object.assign(policiesListDiv.style, { padding: '0 10px 10px' });
+
+  const ML_MODEL_TYPE_LABEL: Record<string, string> = {
+    gbm: 'Gradient Boosting', mlp: 'Neural Net (MLP)', logistic: 'Logistic/Ridge', lstm: 'LSTM (deep)',
+  };
+  const RL_ALGORITHM_LABEL: Record<string, string> = { tabular: 'Tabular Q-Learning', dqn: 'Deep Q-Network (DQN)' };
+  function deviceTag(device: string | undefined): string {
+    if (!device) return '';
+    return device === 'cuda' ? ' · ⚡ trained on GPU' : ' · 🖥 trained on CPU';
+  }
 
   function idBadgeRow(id: string, meta: string): HTMLDivElement {
     const top = document.createElement('div');
@@ -2764,10 +2850,11 @@ function renderMlLab(): void {
     for (const m of models) {
       const card = document.createElement('div');
       Object.assign(card.style, { border: '1px solid rgba(180,140,255,0.12)', borderRadius: '5px', padding: '6px 8px', marginBottom: '5px', background: 'rgba(255,255,255,0.02)' });
-      card.appendChild(idBadgeRow(m.id, `${m.symbol} ${m.timeframe} · ${m.modelType} · horizon ${m.horizon} · trained ${new Date(m.createdAt * 1000).toLocaleString()}`));
+      const modelLabel = ML_MODEL_TYPE_LABEL[m.modelType] ?? m.modelType;
+      card.appendChild(idBadgeRow(m.id, `${m.symbol} ${m.timeframe} · ${modelLabel} · horizon ${m.horizon} · trained ${new Date(m.createdAt * 1000).toLocaleString()}`));
 
       const meta = document.createElement('div');
-      meta.textContent = `${m.symbol} ${m.timeframe} · ${m.modelType} · target: ${m.targetType} (horizon ${m.horizon}) · ${m.trainRows} train / ${m.valRows} val rows`;
+      meta.textContent = `${m.symbol} ${m.timeframe} · ${modelLabel} · target: ${m.targetType} (horizon ${m.horizon}) · ${m.trainRows} train / ${m.valRows} val rows${deviceTag(m.device)}`;
       Object.assign(meta.style, { fontSize: '9px', color: 'rgba(255,255,255,0.5)', marginBottom: '3px' });
       card.appendChild(meta);
 
@@ -2825,10 +2912,15 @@ function renderMlLab(): void {
     for (const p of policies) {
       const card = document.createElement('div');
       Object.assign(card.style, { border: '1px solid rgba(180,140,255,0.12)', borderRadius: '5px', padding: '6px 8px', marginBottom: '5px', background: 'rgba(255,255,255,0.02)' });
-      card.appendChild(idBadgeRow(p.id, `${p.symbol} ${p.timeframe} · ${p.episodes} episodes · trained ${new Date(p.createdAt * 1000).toLocaleString()}`));
+      const algo = p.algorithm ?? 'tabular';
+      const algoLabel = RL_ALGORITHM_LABEL[algo] ?? algo;
+      const stateDesc = p.stateSpaceSize != null
+        ? `${p.stateSpaceSize} discretized states`
+        : `continuous (${p.stateFeatures.length} features, no discretization)`;
+      card.appendChild(idBadgeRow(p.id, `${p.symbol} ${p.timeframe} · ${algoLabel} · ${p.episodes} episodes · trained ${new Date(p.createdAt * 1000).toLocaleString()}`));
 
       const meta = document.createElement('div');
-      meta.textContent = `${p.symbol} ${p.timeframe} · ${p.episodes} episodes · state space ${p.stateSpaceSize} · ${p.trainRows} train / ${p.valRows} val steps`;
+      meta.textContent = `${p.symbol} ${p.timeframe} · ${algoLabel} · ${p.episodes} episodes · state space: ${stateDesc} · ${p.trainRows} train / ${p.valRows} val steps${deviceTag(p.device)}`;
       Object.assign(meta.style, { fontSize: '9px', color: 'rgba(255,255,255,0.5)', marginBottom: '3px' });
       card.appendChild(meta);
 
@@ -2873,7 +2965,7 @@ function renderMlLab(): void {
       const meta = await trainMlModel({
         bars, horizon: Math.max(1, parseInt(horizonInput.value, 10) || 3),
         targetType: targetTypeSelect.value as 'direction' | 'return',
-        modelType: modelTypeSelect.value as 'gbm' | 'mlp' | 'logistic',
+        modelType: modelTypeSelect.value as 'gbm' | 'mlp' | 'logistic' | 'lstm',
         trainPct: Math.max(0.5, Math.min(0.9, (parseInt(mlTrainPctInput.value, 10) || 70) / 100)),
         symbol: config.symbol, timeframe: config.timeframe, baseUrl: chartCtx.baseUrl,
       });
@@ -2898,11 +2990,14 @@ function renderMlLab(): void {
       const config = currentDataConfig();
       const { raw, label: dataLabel } = await resolveBacktestBars(config, chartCtx);
       const bars = barsToRuntimeBarData(raw);
-      rlStatus.textContent = `Training on ${dataLabel} (this runs ${episodesInput.value} episodes — may take a few seconds)...`;
+      const algo = algorithmSelect.value as 'tabular' | 'dqn';
+      const slowNote = algo === 'dqn' && deviceInfo?.device !== 'cuda' ? ' — real backprop on CPU, this may take a while' : '';
+      rlStatus.textContent = `Training on ${dataLabel} (${episodesInput.value} episodes${slowNote})...`;
       const meta = await trainRlPolicy({
         bars, episodes: Math.max(20, Math.min(2000, parseInt(episodesInput.value, 10) || 150)),
         trainPct: Math.max(0.5, Math.min(0.9, (parseInt(rlTrainPctInput.value, 10) || 70) / 100)),
         symbol: config.symbol, timeframe: config.timeframe, baseUrl: chartCtx.baseUrl,
+        algorithm: algo,
       });
       rlStatus.textContent = `Trained ${meta.id} — copy its id into rl.action("${meta.id}")`;
       rlStatus.style.color = '#22cc88';

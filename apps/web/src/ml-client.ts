@@ -20,20 +20,32 @@ export const ML_API_BASE = 'http://localhost:8788';
 
 export interface MlModelMeta {
   id: string; symbol: string; timeframe: string; horizon: number;
-  targetType: 'direction' | 'return'; modelType: 'gbm' | 'mlp' | 'logistic';
+  targetType: 'direction' | 'return'; modelType: 'gbm' | 'mlp' | 'logistic' | 'lstm';
   trainPct: number; trainRows: number; valRows: number; warmupBars: number; createdAt: number;
   metrics: Record<string, number | string>;
   featureImportances: { feature: string; importance: number }[];
+  // Present on deep (torch) models — 'cuda' or 'cpu', whichever this model
+  // actually trained on. Absent/ignored for classical scikit-learn models,
+  // which never touch a GPU either way.
+  device?: 'cuda' | 'cpu';
 }
 
 export interface RlRunStats { totalReturn: number; winRate: number; steps: number; }
 export interface RlPolicyMeta {
   id: string; symbol: string; timeframe: string; episodes: number; trainPct: number;
   trainRows: number; valRows: number; warmupBars: number; createdAt: number;
-  stateFeatures: string[]; binsPerFeature: number; stateSpaceSize: number;
+  // 'tabular' (default for policies trained before this field existed) or
+  // 'dqn'. Tabular discretizes state into a fixed-size table — binsPerFeature/
+  // stateSpaceSize describe that table. DQN consumes continuous features
+  // directly (no table), so both are null for it.
+  algorithm?: 'tabular' | 'dqn';
+  stateFeatures: string[]; binsPerFeature: number | null; stateSpaceSize: number | null;
   episodeRewards: number[];
+  device?: 'cuda' | 'cpu';
   validation: { policy: RlRunStats; alwaysLong: RlRunStats; alwaysFlat: RlRunStats };
 }
+
+export interface DeviceInfo { torchAvailable: boolean; device: 'cuda' | 'cpu'; deviceName: string; }
 
 function barsToApiRows(bars: RuntimeBarData): { ts: number; open: number; high: number; low: number; close: number; volume: number }[] {
   const rows = new Array(bars.count);
@@ -133,10 +145,19 @@ export function detectMlRefs(source: string): { modelIds: string[]; policyIds: s
   return { modelIds: Array.from(modelIds), policyIds: Array.from(policyIds) };
 }
 
+// ─── Device detection — which tier ml.predict()/rl.action()'s deep (LSTM/
+// DQN) model types would actually run on. Classical models (gbm/mlp/
+// logistic/tabular) never need this — they're CPU-fast regardless. ──
+export async function fetchDeviceInfo(baseUrl = ML_API_BASE): Promise<DeviceInfo> {
+  const res = await fetch(`${baseUrl}/api/ml/device`);
+  if (!res.ok) throw new Error(`ml/device failed (${res.status})`);
+  return res.json();
+}
+
 // ─── ML Lab panel: train / list / delete ────────────────────────────────
 export interface MlTrainParams {
   bars: RuntimeBarData; horizon: number; targetType: 'direction' | 'return';
-  modelType: 'gbm' | 'mlp' | 'logistic'; trainPct: number; symbol: string; timeframe: string; baseUrl?: string;
+  modelType: 'gbm' | 'mlp' | 'logistic' | 'lstm'; trainPct: number; symbol: string; timeframe: string; baseUrl?: string;
 }
 export async function trainMlModel(p: MlTrainParams): Promise<MlModelMeta> {
   const data = await postJson<{ model: MlModelMeta }>(p.baseUrl ?? ML_API_BASE, '/api/ml/train', {
@@ -157,10 +178,12 @@ export async function deleteMlModel(id: string, baseUrl = ML_API_BASE): Promise<
 
 export interface RlTrainParams {
   bars: RuntimeBarData; episodes: number; trainPct: number; symbol: string; timeframe: string; baseUrl?: string;
+  algorithm: 'tabular' | 'dqn';
 }
 export async function trainRlPolicy(p: RlTrainParams): Promise<RlPolicyMeta> {
   const data = await postJson<{ policy: RlPolicyMeta }>(p.baseUrl ?? ML_API_BASE, '/api/rl/train', {
     bars: barsToApiRows(p.bars), episodes: p.episodes, trainPct: p.trainPct, symbol: p.symbol, timeframe: p.timeframe,
+    algorithm: p.algorithm,
   });
   return data.policy;
 }
