@@ -417,6 +417,15 @@ export function executeScript(
         if (ctx.breakFlag || ctx.continueFlag || ctx.returnValue !== null) break;
       }
     } catch (e: any) {
+      // RESOURCE-LIMIT VIOLATIONS ARE FATAL — aborting the whole run.
+      // `while true` used to be caught here per-bar, softening into errors[]
+      // and then re-burning MAX_LOOP_STEPS_PER_BAR iterations on EVERY
+      // remaining bar (200k × bars = frozen UI for minutes on real charts).
+      // Continuing after a resource violation can never produce anything
+      // useful, so the run ends now; callers already try/catch executeScript.
+      if (String(e?.message || '').includes('exceeded')) {
+        throw e;
+      }
       errors.push(`Bar ${bi}: ${e.message}`);
     }
   }
