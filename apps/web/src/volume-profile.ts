@@ -114,20 +114,17 @@ export function computeVolumeProfileBins(
   let minP = Infinity;
   let maxP = -Infinity;
   let totalVolume = 0;
-  let delta = 0;
   let usesSyntheticVol = false;
   for (const b of bars) {
     if (b.low < minP) minP = b.low;
     if (b.high > maxP) maxP = b.high;
     totalVolume += b.volume;
-    delta += b.volume * (b.close >= b.open ? 0.6 - 0.4 : 0.4 - 0.6);
   }
   // Forex/crypto pairs often have zero volume from Yahoo — use bar range as proxy
   if (totalVolume === 0) {
     usesSyntheticVol = true;
     for (const b of bars) {
       totalVolume += (b.high - b.low) || 1;
-      delta += ((b.high - b.low) || 1) * (b.close >= b.open ? 0.6 - 0.4 : 0.4 - 0.6);
     }
   }
   const range = maxP - minP || 1;
@@ -151,7 +148,9 @@ export function computeVolumeProfileBins(
 
   for (const b of bars) {
     const vol = usesSyntheticVol ? ((b.high - b.low) || 1) : b.volume;
-    const buyFrac = b.close >= b.open ? 0.6 : 0.4;
+    const barSpan = b.high - b.low;
+    const t = barSpan > 0 ? (b.close - b.low) / barSpan : 0.5;
+    const buyFrac = 0.25 + 0.5 * Math.min(1, Math.max(0, t));
     const buyVol = vol * buyFrac;
     const sellVol = vol - buyVol;
     for (const bin of bins) {
@@ -160,7 +159,7 @@ export function computeVolumeProfileBins(
       const overlapLow = Math.max(b.low, binLow);
       const overlapHigh = Math.min(b.high, binHigh);
       if (overlapHigh <= overlapLow) continue;
-      const overlap = (overlapHigh - overlapLow) / (b.high - b.low || 1);
+      const overlap = (overlapHigh - overlapLow) / (barSpan || 1);
       bin.volume += vol * overlap;
       bin.buyVolume += buyVol * overlap;
       bin.sellVolume += sellVol * overlap;
@@ -171,9 +170,11 @@ export function computeVolumeProfileBins(
   let poc: VolumeBin | null = null;
   let deltaPoc: VolumeBin | null = null;
   let maxDelta = -Infinity;
+  let delta = 0;
   for (const b of bins) {
     if (!poc || b.volume > poc.volume) poc = b;
     const binDelta = b.buyVolume - b.sellVolume;
+    delta += binDelta;
     if (Math.abs(binDelta) > Math.abs(maxDelta)) {
       maxDelta = binDelta;
       deltaPoc = b;

@@ -1206,7 +1206,7 @@ macd(source, fast, slow, signal) — MACD signal analysis model
     plot(m.signal, "Signal", "#ff8800", 1)
     plot(m.hist, "Histogram", "#b48cff", 1)
 
-linreg(source, length, offset) — Linear regression (SMA-based approximation)
+linreg(source, length, offset) — Least-squares linear regression (offset bars back)
   source: close/open/high/low/custom array
   length: number of bars
   offset: future offset (currently ignored, SMA fallback)`,
@@ -1922,9 +1922,8 @@ regression.channel(source, length, mult?) — a CALCULATION, not a drawing
 primitive. Unlike everything above, this does not draw anything by
 itself. It returns three number arrays for the current bar — same shape
 as macd() — and it is YOUR script's job to plot() and fill() them:
-  .mid   — the regression midline over the window (an SMA-based
-           approximation, the same one linreg() already uses internally —
-           not a from-scratch least-squares fit)
+  .mid   — the regression midline over the window (a true least-squares
+           fit, the same one linreg() uses)
   .upper — mid + mult * stdev(source, length)
   .lower — mid - mult * stdev(source, length)
 

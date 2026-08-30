@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,10 +42,12 @@ app = FastAPI(title="DAFE Charts", version="1.0.0")
 # let literally any webpage's JS fetch() this API directly — a classic
 # browser-based CSRF/SSRF pivot against a localhost app. Restrict to the
 # app's own origin (localhost/127.0.0.1, any port, since the dev server port
-# can vary) and drop credentials entirely — nothing here uses cookies/auth.
+# can vary) plus RFC1918 private ranges, so the mobile PWA served from a LAN
+# IP (e.g. http://192.168.1.50:5174) can reach this server too.
+_LAN_IP = r"(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3})"
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=rf"^https?://((localhost|127\.0\.0\.1)|{_LAN_IP})(:\d+)?$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -578,7 +581,14 @@ AGENT_SYSTEM_PROMPTS = {
         "MODEL EXECUTION (Time Machine backtest + live paper auto-trader): model.entry(direction, id?, qty?) / model.longEntry(id?, qty?) / model.shortEntry(id?, qty?) open a position; model.exit(id?) closes whichever side is open, model.longExit(id?)/model.shortExit(id?) close ONLY if that side is currently open (no-op otherwise); model.confidence(0-1) attaches a sticky metadata score to subsequent entries (never a size multiplier); model.stopLoss(value, mode?) / model.takeProfit(value, mode?) attach a sticky per-entry bracket (mode \"pct\" default or \"abs\" $), overriding the backtest form's SL/TP for that entry. These are order-EVENT builtins — they render nothing and have zero effect unless the backtest panel or the live auto-trader is actually running. The broker tracks ONE position per symbol: an entry is a no-op if already in a position (no pyramiding/adding), and exit(s) always close the WHOLE matching position (no partial exits). Exactly like plotshape, an unconditional top-level call fires every bar — always wrap in a signal condition. strategy.entry/strategy.exit still work as legacy aliases (identical to model.entry/model.exit, no direction-conditional exit or confidence/bracket calls) — use model.* in new scripts, not strategy.*. Only reach for model.*/strategy.* when the user explicitly asks to backtest, test a strategy, or make something auto-tradable; a plain 'give me a buy/sell signal' request should still use plotshape markers, not these. Once a bracket is live, stop-loss/take-profit/trailing are checked intrabar against each bar's full high/low range (not just open/close) with gap-through pricing — signal-driven entries/exits still fill next-bar-open, that's the no-lookahead rule, not a fill-precision limit. "
         "ML / RL (train in the 🧠 ML Lab panel, next to Backtest/Optimize — you cannot train one yourself, never invent a model/policy id): ml.predict(modelId) returns a trained ML model's prediction for this bar — 0-1 probability for a direction model, a raw predicted return for a regression model — neutral 0.5 until resolved; models are classical (gradient boosting / a real 2-hidden-layer neural net / logistic regression via scikit-learn) or deep (an LSTM via PyTorch, seeing a sliding window of recent bars instead of just the current one) on standard technical features, chronologically split train/validate (never shuffled), reported against an honest baseline (majority-class accuracy or zero-change MAE). rl.action(policyId) returns -1/0/1 (short/flat/long) — the greedy action of a trained policy, neutral 0 until resolved; genuine reinforcement learning either way (reward = mark-to-market P&L, no labeled targets) — a from-scratch tabular Q-learning policy (classical, fixed 625-state table) or a Deep Q-Network (deep, PyTorch, continuous state with no table to size) — validated against 'always long'/'always flat' baselines with a visible episode-reward learning curve. The deep (LSTM/DQN) options need PyTorch installed on the backend and use a GPU automatically when present, CPU otherwise (ML Lab shows a device badge); classical options always work and are a legitimate fast choice, not just a fallback. If the user wants one of these in a script, tell them to train it in ML Lab first and give you the id, or write the script with a placeholder id they'll swap in. "
         "MULTI-TIMEFRAME: security(timeframe, source) — bare, not dotted — returns the last CONFIRMED (fully closed) higher-timeframe value of source, aggregated from bars already loaded (no new fetch, no symbol argument). NEVER the still-forming bucket — it returns NaN until the first bucket closes, then holds flat until the next one closes, so it never repaints. timeframe is one of \"1s\"/\"5s\"/\"10s\"/\"30s\"/\"1m\"/\"5m\"/\"15m\"/\"30m\"/\"1h\"/\"4h\"/\"1d\"/\"1w\" and must be COARSER than the chart's own loaded resolution — the same or finer returns NaN for every bar. Use this whenever a request implies agreement across timeframes (e.g. \"only signal on the 1m chart when the 1h trend agrees\") — reach for it instead of claiming multi-timeframe isn't possible. "
-        "Your goal: the most accurate, focused, and polished version of exactly what the user asked for."
+        "MATHEMATICAL AUDIT MISSION — YOUR PRIMARY GOAL: Before presenting ANY script, you MUST AUDIT the mathematics. "
+        "1. Decompose the request into building blocks (which MA type? which ATR variant? which zero-lag? Chandelier vs Keltner? storm field spin?). "
+        "2. For each block, audit for old/inaccurate math: is ATR using Wilder's RMA (correct) not EMA (old, 30% too reactive)? Is CCI using mean deviation (Lambert) not stdev (20% compressed)? Is ADX using Wilder not SMA? Is EMA seeded with SMA(length) not source[0] (early bias)? Is RSI NaN for warmup not 50? Is priceToY clamped with 1e-9 guard? Is Renko/Range brick clamped 1e-4 to 0.02*close? Is SMA sliding-window O(n) not O(n*len)? Flag every flaw. "
+        "3. Propose the modern, more useful solution: RMA-ATR, mean-dev CCI, Wilder-ADX, SMA-seeded EMA, NaN RSI, clamped priceToY, sliding SMA, deque highest/lowest, time-bucket aggregation for 2h/4h — not just legacy double-EMA. "
+        "4. Verify silently via 100-bar synthetic (monotonic up, flat, volatile) through barsToRuntimeBarData → parse → execute → check plots.length>0, errors==0, no NaN in outputs, signal count>0, 3D pane coherence (main ribbon + separate manifold when both present). "
+        "5. Only then present the final script, with comments marking each audited math choice (e.g. '// ATR: Wilder RMA — validated vs TradingView'). "
+        "You are NOT rushed — do not deliver an adequate script. It is your mission to find flaws, audit building blocks, and produce a brilliant mathematical solution to even a simplistic request. Brilliant > adequate. "
+        "Your goal: the most accurate, mathematically verified, and visually polished version of exactly what the user asked for."
     ),
 }
 
@@ -720,6 +730,7 @@ async def api_chat(body: dict[str, Any]):
     if provider == "local":
         chat_url = f"{base_url.rstrip('/')}/v1/chat/completions"
         try:
+            is_coder = agent == "oakscript_coder"
             # Adaptive max_tokens: measure prompt, leave room for response.
             # Use the REAL running-model context size, not a hardcoded guess.
             prompt_chars = sum(len(str(m.get("content", ""))) for m in ollama_messages)
@@ -778,8 +789,6 @@ async def api_chat(body: dict[str, Any]):
                 is_thinking = _running_model.get("supports_thinking", False)
             else:
                 is_thinking = "qwen" in model.lower() or "think" in model.lower()
-            is_coder = agent == "oakscript_coder"
-
             # ── Query-complexity classification ──────────────────────────────
             # A thinking model burns THOUSANDS of reasoning tokens; on a trivial
             # prompt ("hi") that means a 200s generation that the client times
@@ -1099,7 +1108,7 @@ def api_save_settings(body: dict[str, Any]):
         return {"ok": False, "detail": str(e)}
 
 # ---------------------------------------------------------------------------
-# Market Data (yfinance + embedded securities)
+# Market Data (Yahoo chart endpoint + embedded securities)
 # ---------------------------------------------------------------------------
 SECURITIES: list[dict[str, str]] = [
     {"symbol": "SPY", "name": "S&P 500 ETF"}, {"symbol": "QQQ", "name": "Nasdaq-100 ETF"},
@@ -1137,16 +1146,46 @@ SECURITIES: list[dict[str, str]] = [
     {"symbol": "GBPUSD=X", "name": "GBP/USD"}, {"symbol": "USDJPY=X", "name": "USD/JPY"},
     {"symbol": "GC=F", "name": "Gold Futures"}, {"symbol": "SI=F", "name": "Silver Futures"},
     {"symbol": "CL=F", "name": "Crude Oil"}, {"symbol": "NG=F", "name": "Natural Gas"},
+    {"symbol": "UB=F", "name": "Ultra T-Bond"}, {"symbol": "ZQ=F", "name": "30-Day Fed Funds"},
+    {"symbol": "ZR=F", "name": "Rough Rice"}, {"symbol": "ZO=F", "name": "Oats"},
+    {"symbol": "HE=F", "name": "Lean Hogs"}, {"symbol": "LE=F", "name": "Live Cattle"},
+    {"symbol": "GF=F", "name": "Feeder Cattle"}, {"symbol": "BZ=F", "name": "Brent Crude"},
+    {"symbol": "BTC=F", "name": "Bitcoin Futures (CME)"},
+    {"symbol": "BNB-USD", "name": "BNB"}, {"symbol": "ADA-USD", "name": "Cardano"},
+    {"symbol": "XRP-USD", "name": "XRP"}, {"symbol": "DOGE-USD", "name": "Dogecoin"},
+    {"symbol": "AVAX-USD", "name": "Avalanche"}, {"symbol": "DOT-USD", "name": "Polkadot"},
+    {"symbol": "MATIC-USD", "name": "Polygon"}, {"symbol": "LTC-USD", "name": "Litecoin"},
+    {"symbol": "LINK-USD", "name": "Chainlink"}, {"symbol": "UNI-USD", "name": "Uniswap"},
+    {"symbol": "ATOM-USD", "name": "Cosmos"}, {"symbol": "ETC-USD", "name": "Ethereum Classic"},
+    {"symbol": "FIL-USD", "name": "Filecoin"}, {"symbol": "TRX-USD", "name": "TRON"},
+    {"symbol": "APT-USD", "name": "Aptos"}, {"symbol": "ARB-USD", "name": "Arbitrum"},
 ]
 
 SUB_MINUTE_TIMEFRAMES = {"1s", "5s", "10s", "30s"}
 SUPPORTED_TIMEFRAMES = SUB_MINUTE_TIMEFRAMES | {"1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1wk"}
-TF_INTERVAL_MAP = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "60m", "2h": "2h", "4h": "4h", "1d": "1d", "1wk": "1wk"}
-# Sub-minute bars require a real second-resolution feed — yfinance has no interval
-# below 1m, so only Massive (paid, second-aggregates) can serve these.
+# Sub-minute bars require a real second-resolution feed — the Yahoo chart API
+# has no interval below 1m, so only Massive (paid, second-aggregates) can
+# serve these.
 SUB_MINUTE_SECS = {"1s": 1, "5s": 5, "10s": 10, "30s": 30}
 
-def _yf_period(tf: str, period: str) -> str:
+# Yahoo's public chart endpoint (query1.finance.yahoo.com). yfinance is NOT
+# used for market data anymore: its pyarrow dependency hard-crashes the whole
+# process (access violation in arrow.dll) on Python 3.14, and the raw endpoint
+# is faster, timeout-controllable, and needs no cookie/crumb dance server-side.
+YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
+_YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+# Yahoo chart intervals: 1m 2m 5m 15m 30m 60m 90m 1h 1d 5d 1wk 1mo 3mo.
+# 2h/4h have no native interval -> fetch 1h and aggregate.
+_TF_YAHOO_INTERVAL = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+                      "1h": "1h", "2h": "1h", "4h": "1h", "1d": "1d", "1wk": "1wk"}
+_TF_YAHOO_GROUP = {"2h": 2, "4h": 4}
+
+def _yahoo_range(tf: str, period: str) -> str:
     bars = int(period) if period.strip().isdigit() else 120
     t = tf.strip().lower()
     if t == "1m": return "7d"
@@ -1154,6 +1193,85 @@ def _yf_period(tf: str, period: str) -> str:
     if t in ("15m", "30m"): return "6mo"
     if t in ("1h", "2h", "4h"): return "1y" if bars > 500 else "6mo"
     return "2y"
+
+def _is_valid_bar(b: dict[str, Any], tf: str) -> bool:
+    try:
+        o,h,l,c,v = b["open"], b["high"], b["low"], b["close"], b["volume"]
+        if not all(isinstance(x,(int,float)) and x==x for x in (o,h,l,c)): return False # NaN check
+        if h < l or h < max(o,c) - 1e-9 or l > min(o,c) + 1e-9: return False
+        price = c or o or h or l
+        if price and (h - l) > price * (0.05 if tf in ("1d","1wk") else 0.02): return False # 2% for intraday, 5% for daily
+        if b["ts"] > time.time() + 60: return False # future bar
+        return True
+    except: return False
+
+def _validate_bars(bars: list[dict[str, Any]], tf: str) -> list[dict[str, Any]]:
+    out = [b for b in bars if _is_valid_bar(b, tf)]
+    # Drop isolated spikes where close jumps >3% from neighbors (bad tick)
+    if len(out) >= 3:
+        filtered = [out[0]]
+        for i in range(1, len(out)-1):
+            prev, cur, nxt = out[i-1], out[i], out[i+1]
+            if abs(cur["close"]-prev["close"])/prev["close"] > 0.03 and abs(cur["close"]-nxt["close"])/nxt["close"] > 0.03:
+                continue # spike
+            filtered.append(cur)
+        filtered.append(out[-1])
+        return filtered
+    return out
+
+# S3 flatfiles fallback for historical when REST is 403/429 (uses same Massive S3 creds)
+async def _fetch_s3_flatfiles(symbol: str, tf: str, period: str) -> list[dict[str, Any]] | None:
+    s = load_settings()
+    ak = s.get("massive_s3_access_key") or s.get("massive_api_key","")
+    sk = s.get("massive_s3_secret") or s.get("massive_api_key","")
+    if not ak or not sk: return None
+    # Flatfiles are daily CSVs, not yet implemented for intraday — return None to fallback to Yahoo
+    return None
+
+def _aggregate_bars(bars: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i in range(0, len(bars), n):
+        chunk = bars[i:i + n]
+        out.append({"ts": chunk[0]["ts"], "open": chunk[0]["open"],
+                    "high": max(b["high"] for b in chunk), "low": min(b["low"] for b in chunk),
+                    "close": chunk[-1]["close"], "volume": sum(b["volume"] for b in chunk)})
+    return out
+
+async def _fetch_yahoo_chart(symbol: str, tf: str, period: str) -> Optional[list[dict[str, Any]]]:
+    interval = _TF_YAHOO_INTERVAL.get(tf.strip().lower(), "1h")
+    group = _TF_YAHOO_GROUP.get(tf.strip().lower(), 1)
+    try:
+        async with httpx.AsyncClient(timeout=15.0, headers=_YAHOO_HEADERS, follow_redirects=True) as client:
+            r = await client.get(YAHOO_CHART_URL + quote(symbol),
+                                 params={"interval": interval, "range": _yahoo_range(tf, period),
+                                         "includeAdjustedClose": "true"})
+        if r.status_code != 200:
+            return None
+        payload = r.json()
+        result = (payload.get("chart") or {}).get("result")
+        if not result:
+            return None
+        ts = result[0].get("timestamp") or []
+        q = ((result[0].get("indicators") or {}).get("quote") or [None])[0] or {}
+        o, h, l, c, v = q.get("open"), q.get("high"), q.get("low"), q.get("close"), q.get("volume")
+        if not ts or not c:
+            return None
+        rows = []
+        for i, t in enumerate(ts):
+            if i >= len(c) or c[i] is None:
+                continue  # market-closed gaps come back as nulls
+            rows.append({"ts": int(t), "open": float(o[i] if i < len(o) and o[i] is not None else c[i]),
+                         "high": float(h[i] if i < len(h) and h[i] is not None else c[i]),
+                         "low": float(l[i] if i < len(l) and l[i] is not None else c[i]),
+                         "close": float(c[i]),
+                         "volume": float(v[i] if i < len(v) and v[i] is not None else 0)})
+        if not rows:
+            return None
+        if group > 1:
+            rows = _aggregate_bars(rows, group)
+        return rows
+    except Exception:
+        return None
 
 @app.get("/api/market-data/securities")
 def api_securities():
@@ -1209,6 +1327,27 @@ async def api_market_data(symbol: str, timeframe: str = "1h", period: str = "200
         return result
 
 
+def _massive_ticker(yahoo_symbol: str) -> str:
+    s = yahoo_symbol.strip().upper()
+    # Yahoo futures: ES=F -> ES, YM=F -> YM, DX-Y.NYB -> DX
+    if s.endswith("=F") or s.endswith("-F"):
+        base = s.replace("=F","").replace("-F","")
+        # DX-Y.NYB is Yahoo's Dollar Index, Massive uses DX
+        if base == "DX-Y.NYB": return "DX"
+        return base
+    # Yahoo crypto: BTC-USD -> X:BTCUSD
+    if s.endswith("-USD"):
+        base = s.split("-")[0]
+        return f"X:{base}USD"
+    # Yahoo FX: EURUSD=X -> C:EURUSD, GBPUSD=X -> C:GBPUSD
+    if s.endswith("=X"):
+        base = s.replace("=X","").replace("USD","")
+        # EURUSD=X -> EURUSD, need C:EURUSD
+        # For pairs like EURUSD=X, already EURUSD, for USDJPY=X -> USDJPY
+        sym = s.replace("=X","")
+        return f"C:{sym}"
+    return s
+
 async def _fetch_market_data(symbol: str, tf: str, period: str, provider: Optional[str]) -> dict[str, Any]:
     used_provider = None
     bars = None
@@ -1225,36 +1364,44 @@ async def _fetch_market_data(symbol: str, tf: str, period: str, provider: Option
                 to_date = _time.strftime("%Y-%m-%d", _time.gmtime())
                 from_ts = _time.time() - int(period) * 86400 if period.isdigit() else _time.time() - 30 * 86400
                 from_date = _time.strftime("%Y-%m-%d", _time.gmtime(from_ts))
+                massive_sym = _massive_ticker(symbol)
+                # Rate-limit guard: if we got 403 recently, skip Massive for 60s
+                if getattr(_fetch_market_data, "_massive_blocked_until", 0) > _time.time():
+                    print(f"[massive] blocked until {_fetch_market_data._massive_blocked_until}", flush=True)
+                    raise Exception("massive rate limited")
+                print(f"[massive] {symbol} -> {massive_sym} {multiplier}/{timespan} {from_date}/{to_date}", flush=True)
                 async with httpx.AsyncClient(timeout=15.0) as client:
                     r = await client.get(
-                        f"https://api.massive.com/v2/aggs/ticker/{symbol}/range/{multiplier}/{timespan}/{from_date}/{to_date}",
+                        f"https://api.massive.com/v2/aggs/ticker/{massive_sym}/range/{multiplier}/{timespan}/{from_date}/{to_date}",
                         params={"adjusted": "true", "sort": "asc", "limit": "50000", "apiKey": api_key},
                     )
+                    if r.status_code in (403,429):
+                        _fetch_market_data._massive_blocked_until = _time.time() + 60
+                        print(f"[massive] {r.status_code} rate limited, blocking 60s", flush=True)
+                        # Try S3 flatfiles for historical fallback
+                        s3_bars = await _fetch_s3_flatfiles(symbol, tf, period)
+                        if s3_bars:
+                            bars = _validate_bars(s3_bars, tf)
+                            if bars: used_provider = "massive-s3"
+                        raise Exception(f"massive {r.status_code}")
                 if r.status_code == 200:
                     payload = r.json()
                     if payload.get("status") in ("OK", "DELAYED"):
                         results = payload.get("results") or []
-                        bars = [{"ts": float(row.get("t", 0)) / 1000, "open": row["o"], "high": row["h"], "low": row["l"], "close": row["c"], "volume": row.get("v", 0)} for row in results if all(k in row for k in ("o", "h", "l", "c"))]
-                        used_provider = "massive"
-            except Exception:
+                        raw = [{"ts": float(row.get("t", 0)) / 1000, "open": row["o"], "high": row["h"], "low": row["l"], "close": row["c"], "volume": row.get("v", 0)} for row in results if all(k in row for k in ("o", "h", "l", "c"))]
+                        bars = _validate_bars(raw, tf)
+                        if bars: used_provider = "massive"
+            except Exception as e:
+                print(f"[massive] exc {e}", flush=True)
                 pass
 
-    # Fallback to yfinance
-    if bars is None and (provider is None or provider == "yahoo"):
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker(symbol)
-            yf_interval = TF_INTERVAL_MAP.get(tf, "60m")
-            yf_period_val = _yf_period(tf, period)
-            df = ticker.history(period=yf_period_val, interval=yf_interval)
-            if not df.empty:
-                bars = []
-                for idx, row in df.iterrows():
-                    bars.append({"ts": int(idx.timestamp()), "open": float(row["Open"]), "high": float(row["High"]), "low": float(row["Low"]), "close": float(row["Close"]), "volume": float(row.get("Volume", 0))})
-                bars.sort(key=lambda b: b["ts"])
+    # Fallback to the free Yahoo chart endpoint (direct HTTP) — only for non-sub-minute (Yahoo has no 1s)
+    if bars is None and (provider is None or provider == "yahoo") and tf not in SUB_MINUTE_TIMEFRAMES:
+        yahoo_raw = await _fetch_yahoo_chart(symbol, tf, period)
+        if yahoo_raw:
+            bars = _validate_bars(yahoo_raw, tf)
+            if bars:
                 used_provider = "yahoo"
-        except Exception:
-            pass
 
     if not bars:
         raise HTTPException(status_code=404, detail=f"No data for {symbol}")
@@ -1298,9 +1445,10 @@ async def _fetch_quote(symbol: str, provider: str) -> dict[str, Any]:
         if not api_key:
             return {"ok": False, "detail": "massive not configured"}
         try:
+            massive_sym = _massive_ticker(symbol)
             async with httpx.AsyncClient(timeout=8.0) as client:
                 r = await client.get(
-                    f"https://api.massive.com/v2/last/trade/{symbol}",
+                    f"https://api.massive.com/v2/last/trade/{massive_sym}",
                     params={"apiKey": api_key},
                 )
             if r.status_code == 200:
@@ -1310,26 +1458,17 @@ async def _fetch_quote(symbol: str, provider: str) -> dict[str, Any]:
                 if price:
                     return {"ok": True, "symbol": symbol, "price": float(price),
                             "provider": "massive", "ts": res.get("t")}
+            elif r.status_code in (403,429):
+                print(f"[massive] quote {r.status_code} for {massive_sym}", flush=True)
         except Exception as e:
-            return {"ok": False, "detail": str(e)}
-        return {"ok": False, "detail": "massive quote unavailable"}
+            print(f"[massive] quote exc {e}", flush=True)
+        # Fallback to Yahoo for quotes when Massive 403/rate-limited
 
-    # Yahoo (free): fast_info first, fall back to the last 1m close.
+    # Yahoo (free): latest close from 1m bars via the chart endpoint.
     try:
-        import yfinance as yf
-        ticker = yf.Ticker(symbol)
-        price = None
-        try:
-            fi = ticker.fast_info
-            price = fi.get("last_price") if hasattr(fi, "get") else getattr(fi, "last_price", None)
-        except Exception:
-            price = None
-        if not price:
-            df = ticker.history(period="1d", interval="1m")
-            if not df.empty:
-                price = float(df["Close"].iloc[-1])
-        if price:
-            return {"ok": True, "symbol": symbol, "price": float(price), "provider": "yahoo"}
+        bars = await _fetch_yahoo_chart(symbol, "1m", "1")
+        if bars:
+            return {"ok": True, "symbol": symbol, "price": float(bars[-1]["close"]), "provider": "yahoo"}
     except Exception as e:
         return {"ok": False, "detail": str(e)}
     return {"ok": False, "detail": "quote unavailable"}

@@ -53,6 +53,7 @@ export class PaperBroker implements IBroker {
   private lastTimestamp = new Map<string, number>();
   private cash: number;
   private realizedPnL = 0;
+  private fills: Fill[] = [];
   private fillCbs: ((f: Fill) => void)[] = [];
   private orderCbs: ((o: Order) => void)[] = [];
 
@@ -71,9 +72,11 @@ export class PaperBroker implements IBroker {
   reset(): void {
     this.orders.clear();
     this.positions.clear();
+    this.fills = [];
     this.cash = this.config.startingCash;
     this.realizedPnL = 0;
   }
+  getFills(): Fill[] { return [...this.fills]; }
 
   onFill(cb: (fill: Fill) => void): void { this.fillCbs.push(cb); }
   onOrderUpdate(cb: (order: Order) => void): void { this.orderCbs.push(cb); }
@@ -313,11 +316,14 @@ export class PaperBroker implements IBroker {
 
     this.cash += -signedQty * fillPrice - commission;
 
-    this.emitOrder(order);
-    this.emitFill({
+    const fill: Fill = {
       orderId: order.id, symbol: order.symbol, side: order.side, qty: order.qty,
       price: fillPrice, commission, slippage: slipPerUnit * order.qty, timestamp: order.filledAt,
-    });
+    };
+    this.fills.push(fill);
+    if (this.fills.length > 500) this.fills.shift();
+    this.emitOrder(order);
+    this.emitFill(fill);
   }
 
   private emitOrder(o: Order): void { for (const cb of this.orderCbs) cb(o); }

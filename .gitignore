@@ -36,3 +36,14 @@ models/*.bin
 # Nested scaffold repo checked out inside the project root — has its own .git,
 # never intended to be tracked as part of this repo's history.
 /DAFECharts/
+
+# APK release artifacts + build logs (never track binaries)
+*.apk
+releases/
+gradle-out*.txt
+
+# Local screenshots / scratch copies
+Mobile Images/
+tested-engines/
+relay/
+site/

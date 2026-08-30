@@ -491,7 +491,16 @@ function callUserFunction(decl: FunctionDecl, args: RuntimeValue[], ctx: Runtime
 
 function evaluateVarDecl(stmt: VarDecl, ctx: RuntimeContext): void {
   let value: RuntimeValue = null;
-  if (stmt.value.type !== 'NilLiteral') {
+  // Mirrors evaluateAssignment's override check below — `var x = input(...)`
+  // is a rarer declaration shape than the bare `x = input(...)` most scripts
+  // use, but without this it silently ignores the same panel/optimizer
+  // overrides that path already respects.
+  if (stmt.value.type === 'CallExpr'
+      && (stmt.value as CallExpr).callee?.type === 'Identifier'
+      && ((stmt.value as CallExpr).callee as Identifier).name === 'input'
+      && ctx.inputOverrides?.has(stmt.name)) {
+    value = ctx.inputOverrides.get(stmt.name)!;
+  } else if (stmt.value.type !== 'NilLiteral') {
     value = evaluateExpression(stmt.value, ctx);
   }
   if (stmt.isVar || stmt.isVarip) {
@@ -835,6 +844,7 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
             }
             else if (funcName === 'vwap') result = fn.call(StdLib, series, ctx.bars.volume);
             else if (funcName === 'macd') result = fn.call(StdLib, series, param1, param2, param3);
+            else if (funcName === 'linreg') result = fn.call(StdLib, series, param1, typeof args[2] === 'number' ? args[2] : 0);
             else if (funcName === 'cci') result = fn.call(StdLib, ctx.bars.high, ctx.bars.low, ctx.bars.close, lenParam);
             else if (funcName === 'atr') result = fn.call(StdLib, ctx.bars.high, ctx.bars.low, ctx.bars.close, lenParam);
             else if (funcName === 'adx') result = fn.call(StdLib, ctx.bars.high, ctx.bars.low, ctx.bars.close, lenParam);

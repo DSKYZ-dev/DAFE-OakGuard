@@ -85,7 +85,7 @@ export const BUILTIN_REGISTRY: BuiltinDef[] = [
   { name: 'change', category: 'existing', minArgs: 1, maxArgs: 1, argDescriptions: ['source'], summary: 'Bar-to-bar difference of a series.' },
   { name: 'barssince', category: 'existing', minArgs: 1, maxArgs: 1, argDescriptions: ['condition'], summary: 'Bars elapsed since a condition was last true.' },
   { name: 'vwap', category: 'existing', minArgs: 2, maxArgs: 2, argDescriptions: ['close', 'volume'], summary: 'Volume-weighted average price.' },
-  { name: 'linreg', category: 'existing', minArgs: 3, maxArgs: 3, argDescriptions: ['source', 'length', 'offset'], summary: 'Linear regression value (SMA approximation).' },
+  { name: 'linreg', category: 'existing', minArgs: 3, maxArgs: 3, argDescriptions: ['source', 'length', 'offset'], summary: 'Least-squares linear regression value.' },
   { name: 'correlation', category: 'existing', minArgs: 3, maxArgs: 3, argDescriptions: ['a', 'b', 'length'], summary: 'Pearson correlation between two series over a window.' },
   { name: 'cci', category: 'existing', minArgs: 4, maxArgs: 4, argDescriptions: ['high', 'low', 'close', 'length'], summary: 'Commodity Channel Index.' },
   { name: 'atr', category: 'existing', minArgs: 4, maxArgs: 4, argDescriptions: ['high', 'low', 'close', 'length'], summary: 'Average True Range.' },

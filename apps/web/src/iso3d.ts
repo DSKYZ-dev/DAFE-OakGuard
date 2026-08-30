@@ -5,6 +5,8 @@ import {
   getVisibleRange, barX, chartRight, priceToY, logicalSize,
   TOP_FRAC, BOT_FRAC, RIGHT_MARGIN, type ViewState,
 } from './chart-renderer';
+import { resolveTheme } from './theme-engine';
+import { isBrickType, isCurveType, isZigzagType, isProfileType, engineTreatment } from './rendering-matrix';
 
 // ─── Isometric projection ───────────────────────────────────────────
 // Cabinet projection: the depth axis recedes up-and-to-the-left.
@@ -24,13 +26,7 @@ function project(x: number, y: number, z: number): { x: number; y: number } {
 
 /** Deep blue → cyan → green → yellow → red thermal-camera palette keyed by 0..1 intensity. */
 function heatColor(t: number): string {
-  const stops: [number, number, number, number][] = [
-    [0.00, 20, 20, 90],
-    [0.25, 20, 140, 220],
-    [0.50, 40, 200, 90],
-    [0.75, 240, 210, 30],
-    [1.00, 255, 60, 20],
-  ];
+  const stops = resolveTheme().thermalStops;
   const c = Math.max(0, Math.min(1, t));
   for (let i = 0; i < stops.length - 1; i++) {
     const [t0, r0, g0, b0] = stops[i];
@@ -195,7 +191,8 @@ function draw3DKagiSeries(
   const span = Math.max(1, rightEdge - left);
   const xs: number[] = [];
   for (let i = 0; i < vLen; i++) xs.push(left + (i / (vLen - 1)) * span);
-  const up = '#1affa0', dn = '#ff3b6b';
+  const theme = resolveTheme();
+  const up = theme.bull, dn = theme.bear;
 
   ctx.save();
   ctx.lineJoin = 'round';
@@ -652,9 +649,10 @@ function draw3DVolume(
       if (ratio < 0.02) continue;
       const dz = 0.18 * bs + ratio * BAR_DEPTH * bs * 3.2;
       const buyRatio = lv.buyVol / Math.max(lv.volume, 0.001);
+      const theme = resolveTheme();
       const baseCol = colors
         ? (buyRatio > 0.55 ? colors.bull : buyRatio < 0.45 ? colors.bear : '#b48cff')
-        : (buyRatio > 0.55 ? '#1affa0' : buyRatio < 0.45 ? '#ff3b6b' : '#b48cff');
+        : (buyRatio > 0.55 ? theme.bull : buyRatio < 0.45 ? theme.bear : '#b48cff');
 
       // Volume bar starts at the candle front plane (z=0) and extrudes backward.
       const zFront = 0;
@@ -696,6 +694,94 @@ export interface Scene3DOptions {
   profileWidth?: number;
   vpComputed?: VPComputed;
   bgViz?: 'particles' | 'stars' | 'graph' | 'plain';
+  plots?: Array<{
+    type?: string;
+    name?: string;
+    series?: number[];
+    color?: string;
+    barIdx?: number;
+    price?: number;
+    size?: number;
+    z_level?: number;
+  }>;
+}
+
+function draw3DIndicatorPlots(
+  ctx: CanvasRenderingContext2D,
+  plots: NonNullable<Scene3DOptions['plots']>,
+  start: number,
+  vLen: number,
+  width: number,
+  height: number,
+  bs: number,
+  view: ViewState,
+  minP: number,
+  pRange: number,
+): void {
+  for (const plot of plots) {
+    const color = plot.color || '#b48cff';
+    if (plot.type === 'plot3d' && Array.isArray(plot.series)) {
+      const series = plot.series;
+      const values = plot.series.slice(start, start + vLen).filter(Number.isFinite);
+      if (values.length < 2) continue;
+      const lo = Math.min(...values);
+      const span = Math.max(Number.EPSILON, Math.max(...values) - lo);
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 2;
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = color;
+      const depth = Math.max(5, bs * 0.9);
+      const drawPath = (offset: number): void => {
+        ctx.beginPath();
+        let moved = false;
+        for (let i = 0; i < vLen; i++) {
+          const value = series[start + i];
+          if (!Number.isFinite(value)) { moved = false; continue; }
+          const x = barX(i, vLen, width, bs, view.scrollX);
+          const y = priceToY(minP + ((value - lo) / span) * pRange, minP, pRange, height, view);
+          const point = project(x, y, offset);
+          if (!moved) { ctx.moveTo(point.x, point.y); moved = true; }
+          else ctx.lineTo(point.x, point.y);
+        }
+        ctx.stroke();
+      };
+      ctx.globalAlpha = 0.3;
+      drawPath(depth);
+      ctx.globalAlpha = 0.9;
+      drawPath(0);
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1;
+      for (let i = 1; i < vLen; i++) {
+        const a = series[start + i - 1];
+        const b = series[start + i];
+        if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
+        const ay = priceToY(minP + ((a - lo) / span) * pRange, minP, pRange, height, view);
+        const by = priceToY(minP + ((b - lo) / span) * pRange, minP, pRange, height, view);
+        const a0 = project(barX(i - 1, vLen, width, bs, view.scrollX), ay, 0);
+        const a1 = project(barX(i - 1, vLen, width, bs, view.scrollX), ay, depth);
+        const b0 = project(barX(i, vLen, width, bs, view.scrollX), by, 0);
+        const b1 = project(barX(i, vLen, width, bs, view.scrollX), by, depth);
+        ctx.beginPath(); ctx.moveTo(a0.x, a0.y); ctx.lineTo(a1.x, a1.y); ctx.lineTo(b1.x, b1.y); ctx.lineTo(b0.x, b0.y); ctx.closePath(); ctx.fillStyle = color; ctx.globalAlpha = 0.12; ctx.fill();
+      }
+      ctx.restore();
+    } else if (plot.type === 'plot3d_shape' && typeof plot.barIdx === 'number' && typeof plot.price === 'number') {
+      const idx = plot.barIdx - start;
+      if (idx < 0 || idx >= vLen || !Number.isFinite(plot.price)) continue;
+      const x = barX(idx, vLen, width, bs, view.scrollX);
+      const point = project(x, priceToY(plot.price, minP, pRange, height, view), (plot.z_level || 0) * bs * 0.15);
+      const radius = Math.max(3, Math.min(12, (plot.size || 1) * 4));
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = color;
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
 }
 
 export function draw3DScene(
@@ -736,15 +822,19 @@ export function draw3DScene(
   const p2y = (p: number) => priceToY(p, minP, pRange, height, view);
   const depth = BAR_DEPTH * bs;
 
+  // ── Adaptive bar-type dispatch ──
   // Line / area chart types are a continuous curve, not per-bar solids — draw
-  // them as a projected 3D ribbon instead of candles (they were previously
-  // falling through to the candle loop, so "Line" looked identical to bars).
-  if (opts.barType === 'line' || opts.barType === 'area') {
+  // them as a projected 3D ribbon instead of candles.
+  if (isCurveType(opts.barType as any)) {
     draw3DLineSeries(ctx, visible, vLen, p2y, view, bs, width, height, opts.barType === 'area');
-  } else if (opts.barType === 'kagi') {
+  } else if (isZigzagType(opts.barType as any)) {
     draw3DKagiSeries(ctx, visible, vLen, p2y, view, width);
   } else {
-  // ── Candles: paint right-to-left so left bars (front) occlude right bars' tails ──
+  // ── Candles / bricks / footprint: paint right-to-left so left bars (front) occlude right bars' tails ──
+  const theme = resolveTheme();
+  const treatment = engineTreatment(opts.visualEngine);
+  const isBrick = isBrickType(opts.barType as any);
+  const isFootprint = isProfileType(opts.barType as any);
   ctx.save();
   for (let i = vLen - 1; i >= 0; i--) {
     const bar = visible[i];
@@ -755,7 +845,9 @@ export function draw3DScene(
     const highY = p2y(bar.high);
     const lowY = p2y(bar.low);
     const isBull = bar.close >= bar.open;
-    const color = isBull ? '#1affa0' : '#ff3b6b';
+    const intensity = Math.min(1, bar.volume / 3000);
+    // Apply the visual engine's body color treatment
+    const color = treatment.bodyColor(isBull, intensity);
     const bTop = Math.min(openY, closeY);
     const bBot = Math.max(openY, closeY);
     const bH = Math.max(1.5, bBot - bTop);
@@ -763,24 +855,49 @@ export function draw3DScene(
     // Atmospheric depth fade: bars further "back" (right, higher z) dim slightly
     const depthFade = 1 - (i / vLen) * 0.18;
 
-    // Stronger glow halo
-    ctx.shadowBlur = 14;
+    // Stronger glow halo (engine-dependent)
+    ctx.shadowBlur = treatment.glow ? 14 : 4;
     ctx.shadowColor = withAlpha(color, 0.45 * depthFade);
 
-    // Wick: bold extruded line from low to high. Renko/range/volume/dollar/
-    // tick/imbalance bars carry no meaningful wick (open==high or ==low after
-    // transform), so this naturally renders as a clean brick for them.
-    const wFront = project(x, highY, 0);
-    const wBack = project(x, lowY, 0);
-    ctx.strokeStyle = withAlpha(color, 0.95 * depthFade);
-    ctx.lineWidth = 3.6;
-    ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(wFront.x, wFront.y); ctx.lineTo(wBack.x, wBack.y); ctx.stroke();
-    ctx.lineCap = 'butt';
+    // Wick: bold extruded line from low to high. Brick types carry no
+    // meaningful wick (open==high or ==low after transform), so this
+    // naturally renders as a clean brick for them.
+    if (!isBrick) {
+      const wFront = project(x, highY, 0);
+      const wBack = project(x, lowY, 0);
+      ctx.strokeStyle = withAlpha(color, 0.95 * depthFade);
+      ctx.lineWidth = 3.6;
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(wFront.x, wFront.y); ctx.lineTo(wBack.x, wBack.y); ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
 
     // Body as extruded pillar (hex color so face-shading works)
-    ctx.shadowBlur = 12;
+    ctx.shadowBlur = treatment.glow ? 12 : 4;
     extrudedBox(ctx, x, bTop, bBot, bw, depth, color);
+
+    // Wireframe overlay for Quantum/Neon Wireframe/Constellation engines
+    if (treatment.wireframe) {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = withAlpha(color, 0.8);
+      ctx.lineWidth = 1.2;
+      const fb = project(x, bBot, 0);
+      const ft = project(x, bTop, 0);
+      const fbR = project(x + bw, bBot, 0);
+      const ftR = project(x + bw, bTop, 0);
+      const bb = project(x, bBot, depth);
+      const bt = project(x, bTop, depth);
+      const bbR = project(x + bw, bBot, depth);
+      const btR = project(x + bw, bTop, depth);
+      ctx.beginPath();
+      ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(ftR.x, ftR.y); ctx.lineTo(fbR.x, fbR.y); ctx.closePath();
+      ctx.moveTo(bb.x, bb.y); ctx.lineTo(bt.x, bt.y); ctx.lineTo(btR.x, btR.y); ctx.lineTo(bbR.x, bbR.y); ctx.closePath();
+      ctx.moveTo(fb.x, fb.y); ctx.lineTo(bb.x, bb.y);
+      ctx.moveTo(ft.x, ft.y); ctx.lineTo(bt.x, bt.y);
+      ctx.moveTo(fbR.x, fbR.y); ctx.lineTo(bbR.x, bbR.y);
+      ctx.moveTo(ftR.x, ftR.y); ctx.lineTo(btR.x, btR.y);
+      ctx.stroke();
+    }
 
     // Thin black definition border on the right edge of the front face
     ctx.shadowBlur = 0;
@@ -813,6 +930,10 @@ export function draw3DScene(
   const isCurve = opts.barType === 'line' || opts.barType === 'area' || opts.barType === 'kagi';
   if (!isCurve && opts.volumeEnabled && (opts.volumeMode === '3D-Extrude' || opts.volumeMode === '3D-Heatmap')) {
     draw3DVolume(ctx, visible, start, vLen, minP, pRange, view, opts.perBarVols, opts.vpiEnabled, opts.volumeMode, opts.visualEngine, opts.profileWidth ?? 50, opts.vpComputed);
+  }
+
+  if (opts.plots?.length) {
+    draw3DIndicatorPlots(ctx, opts.plots, start, vLen, width, height, bs, view, minP, pRange);
   }
 
   // Right-edge price axis (in 3D space, receding)

@@ -13,7 +13,7 @@ import {
   drawOHLCTooltip, drawOakScriptPlots,
   drawSecondaryChart, drawTradeMarkers,
   updateParticles, drawParticles,
-  getVisibleRange, visibleBarCount,
+  getVisibleRange, visibleBarCount, getPriceRange,
   DEFAULT_BAR_SPACING, MIN_BAR_SPACING, MAX_BAR_SPACING, chartRight,
   setPerfMode,
   type ViewState, type TradeMarker,
@@ -67,6 +67,8 @@ import {
   isAccessiblePaletteEnabled, setAccessiblePaletteEnabled,
   isSonificationEnabled, setSonificationEnabled,
 } from './accessibility';
+import { invalidateThemeCache } from './theme-engine';
+import { validateCombination } from './rendering-matrix';
 import { detectCurrency } from './trading/currency';
 import type { OrderType } from './trading/broker-port';
 import {
@@ -208,44 +210,64 @@ function startLiveTicks(): void {
         timestamp: nextBarTs,
         open: last.close, high: last.close, low: last.close, close: last.close, volume: 0,
       };
-      transformed.push(newBar);
+      // Transform-aware: push the bar through the current barType transform
+      // so non-candlestick types (renko, kagi, range-bar, etc.) get proper
+      // live bars instead of raw untransformed candles.
       bars.push({ ...newBar });
+      const transformedNew = transformBars(bars, barType);
+      // If the transform produced a new bar (e.g. renko brick), use it;
+      // otherwise the raw bar is the live bar.
+      if (transformedNew.length > transformed.length) {
+        transformed = transformedNew;
+      } else {
+        transformed.push(newBar);
+      }
       // Extend the per-bar volume profile so the new bar gets the same VPI
-      // voxel/extrusion treatment as historical bars. Without this the fresh
-      // bar has no perBarVols entry and the 3D scene renders it as a plain
-      // flat candle (looked like a stray 2D bar among the extruded ones).
-      perBarVols.push(generatePerBarVolumes([newBar], 12)[0]);
+      // voxel/extrusion treatment as historical bars.
+      perBarVols = generatePerBarVolumes(transformed, 12);
       if (useHybrid && hybridEngine.isActive()) {
         // Re-anchor the new bar to the last close, but do NOT recalibrate from
-        // synthetic-polluted bars — that creates a drift feedback loop. The
-        // original real-bar calibration (from live-tick start) stays in effect.
-        hybridEngine.start(currentSymbol, newBar.close);
+        // synthetic-polluted bars — that creates a drift feedback loop.
+        hybridEngine.start(currentSymbol, transformed[transformed.length - 1].close);
       }
       // fall through so the fresh bar gets an immediate price move this tick
     }
 
     const live = transformed[transformed.length - 1];
+    // Wild candle guard: 1m should never move >2% intrabar, clamp to 1.2%
+    const maxMove = live.close * 0.012;
     if (useHybrid && hybridEngine.isActive()) {
-      // Correction-anchored synthesis: real quotes snap the price to truth.
       const price = hybridEngine.tick(now);
       const prev = live.close;
-      live.close = Math.max(0.01, price);
-      if (live.close > live.high) live.high = live.close;
-      if (live.close < live.low) live.low = live.close;
-      live.volume += Math.round(Math.abs((live.close - prev) * 10000) + Math.random() * 50);
+      let newClose = Math.max(0.01, price);
+      if (Math.abs(newClose - prev) > maxMove) newClose = prev + Math.sign(newClose - prev) * maxMove;
+      live.close = newClose;
+      if (live.close > live.high) live.high = Math.min(live.close, live.open * 1.012, prev + maxMove);
+      if (live.close < live.low) live.low = Math.max(live.close, live.open * 0.988, prev - maxMove);
+      live.volume += Math.round(Math.abs((live.close - prev) * 10000) + Math.random() * 20);
     } else {
-      // Plain synthetic tick (non-hybrid live mode).
       const volatility = live.close * 0.0003;
-      const change = (Math.random() - 0.5) * volatility * 2;
+      let change = (Math.random() - 0.5) * volatility * 2;
+      if (Math.abs(change) > maxMove) change = Math.sign(change) * maxMove;
       live.close = Math.max(0.01, live.close + change);
-      if (live.close > live.high) live.high = live.close;
-      if (live.close < live.low) live.low = live.close;
-      live.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
+      if (live.close > live.high) live.high = Math.min(live.close, live.open * 1.012);
+      if (live.close < live.low) live.low = Math.max(live.close, live.open * 0.988);
+      live.volume += Math.round(Math.abs(change * 10000) + Math.random() * 20);
+    }
+    // Clamp wicks to 2% max range
+    if (live.high - live.low > live.close * 0.02) {
+      const mid = (live.high + live.low)/2;
+      live.high = mid + live.close*0.01;
+      live.low = mid - live.close*0.01;
     }
     // Refresh the live bar's per-bar volume so its VPI voxels grow with it
     // (keeps the newest bar visually consistent with the extruded history).
+    // Only regenerate when the bar's OHLC actually changed — not every tick.
     if (perBarVols.length === transformed.length) {
-      perBarVols[perBarVols.length - 1] = generatePerBarVolumes([live], 12)[0];
+      const lastPv = perBarVols[perBarVols.length - 1];
+      if (!lastPv || lastPv.levels.length === 0 || Math.abs(live.close - (lastPv.levels[Math.floor(lastPv.levels.length / 2)]?.price ?? live.close)) > live.close * 0.0005) {
+        perBarVols[perBarVols.length - 1] = generatePerBarVolumes([live], 12)[0];
+      }
     }
     // Keep the one-click trading panel (buy/sell/spread) in sync with the tick.
     updateTradingPanel();
@@ -604,6 +626,18 @@ const ctx = canvas.getContext('2d')!;
 const secCtx = secCanvas.getContext('2d')!;
 const SEC_HEIGHT = 120;
 let lowerHeight = 220; // dynamic for 3D pane and resizable divider
+let paneDominance: 'both' | 'main' | 'lower' = (localStorage.getItem('dafe_pane_dominance') as any) || 'both';
+
+function applyPaneDominance(){
+  const chartArea = document.getElementById('chart-area') as HTMLElement;
+  const splitterEl = document.getElementById('chart-splitter') as HTMLElement;
+  const secEl = document.getElementById('secondary-canvas') as HTMLElement;
+  const canvas3dEl = document.getElementById('canvas-3d') as HTMLElement;
+  if(!chartArea || !secEl) return;
+  if(paneDominance==='main'){ secEl.style.display='none'; if(splitterEl) splitterEl.style.display='none'; chartArea.style.flex='1'; }
+  else if(paneDominance==='lower'){ (document.getElementById('chart-canvas') as HTMLElement).style.display='none'; if(canvas3dEl) canvas3dEl.style.display='none'; secEl.style.display='block'; secEl.style.flex='1'; if(splitterEl) splitterEl.style.display='none'; }
+  else { (document.getElementById('chart-canvas') as HTMLElement).style.display='block'; secEl.style.display='block'; if(splitterEl) splitterEl.style.display='flex'; secEl.style.flex=''; chartArea.style.flex='1'; }
+}
 
 function resize() {
   const w = window.innerWidth;
@@ -1457,16 +1491,26 @@ function setupVPSettingsPanel() {
   const showDelta = document.getElementById('vp-show-delta') as HTMLInputElement;
   const showNodes = document.getElementById('vp-show-nodes') as HTMLInputElement;
 
-  modeSel?.addEventListener('change', () => { vpSettings.mode = modeSel.value as VolumeProfileMode; volumeEnabled = true; vpCacheKey = ''; updateUI(); });
-  engineSel?.addEventListener('change', () => { vpSettings.visualEngine = engineSel.value as any; updateUI(); });
-  widthIn?.addEventListener('input', () => { vpSettings.profileWidth = parseInt(widthIn.value, 10); vpCacheKey = ''; updateUI(); });
-  binsIn?.addEventListener('input', () => { vpSettings.binCount = parseInt(binsIn.value, 10); vpCacheKey = ''; updateUI(); });
-  lbIn?.addEventListener('input', () => { vpSettings.lookbackBars = parseInt(lbIn.value, 10); vpCacheKey = ''; updateUI(); });
-  vaIn?.addEventListener('input', () => { vpSettings.valueAreaPct = parseInt(vaIn.value, 10); vpCacheKey = ''; updateUI(); });
-  themeSel?.addEventListener('change', () => { vpSettings.colorTheme = themeSel.value as any; updateUI(); });
-  showVA?.addEventListener('change', () => { vpSettings.showValueArea = showVA.checked; updateUI(); });
-  showDelta?.addEventListener('change', () => { vpSettings.showDelta = showDelta.checked; updateUI(); });
-  showNodes?.addEventListener('change', () => { vpSettings.showNodes = showNodes.checked; updateUI(); });
+  // Every VP setting change must: (1) invalidate the VP cache, (2) mark the
+  // 3D scene dirty so Three.js rebuilds, (3) invalidate the theme cache when
+  // the color theme changes, and (4) refresh the UI. Previously most of these
+  // only cleared vpCacheKey — the 3D scene never rebuilt and the theme never
+  // propagated to candles/grid/background.
+  const invalidateAll = () => {
+    vpCacheKey = '';
+    mark3DSceneDirty();
+    updateUI();
+  };
+  modeSel?.addEventListener('change', () => { vpSettings.mode = modeSel.value as VolumeProfileMode; volumeEnabled = true; invalidateAll(); });
+  engineSel?.addEventListener('change', () => { vpSettings.visualEngine = engineSel.value as any; invalidateAll(); });
+  widthIn?.addEventListener('input', () => { vpSettings.profileWidth = parseInt(widthIn.value, 10); invalidateAll(); });
+  binsIn?.addEventListener('input', () => { vpSettings.binCount = parseInt(binsIn.value, 10); invalidateAll(); });
+  lbIn?.addEventListener('input', () => { vpSettings.lookbackBars = parseInt(lbIn.value, 10); invalidateAll(); });
+  vaIn?.addEventListener('input', () => { vpSettings.valueAreaPct = parseInt(vaIn.value, 10); invalidateAll(); });
+  themeSel?.addEventListener('change', () => { vpSettings.colorTheme = themeSel.value as any; invalidateThemeCache(); invalidateAll(); });
+  showVA?.addEventListener('change', () => { vpSettings.showValueArea = showVA.checked; invalidateAll(); });
+  showDelta?.addEventListener('change', () => { vpSettings.showDelta = showDelta.checked; invalidateAll(); });
+  showNodes?.addEventListener('change', () => { vpSettings.showNodes = showNodes.checked; invalidateAll(); });
 
   // Bar view toggle (2D / 3D Isometric) — controls is3DMode
   const barViewSel = document.getElementById('vp-bar-view') as HTMLSelectElement;
@@ -2473,6 +2517,11 @@ CRITICAL RULES:
     paletteEl.checked = isAccessiblePaletteEnabled();
     paletteEl.addEventListener('change', () => {
       setAccessiblePaletteEnabled(paletteEl.checked);
+      // The accessible palette now reaches candles/grid/background via the
+      // theme engine — invalidate its cache so the next frame re-resolves.
+      invalidateThemeCache();
+      vpCacheKey = '';
+      mark3DSceneDirty();
       renderTradePositions();
     });
   }
@@ -3406,17 +3455,29 @@ CRITICAL RULES:
     });
   }
 
-  // Resizable chart divider handler
+  // Pane dominance control
+  const domSel = document.getElementById('pane-dominance') as HTMLSelectElement | null;
+  if(domSel){ domSel.value = paneDominance; domSel.addEventListener('change', (e)=>{
+    paneDominance = (e.target as HTMLSelectElement).value as any;
+    try{ localStorage.setItem('dafe_pane_dominance', paneDominance); }catch{}
+    applyPaneDominance(); resize();
+  }); applyPaneDominance(); }
+
+  // Resizable chart divider handler — percentage-aware, shows live split
   if (splitter) {
     let sY = 0;
     splitter.addEventListener('mousedown', (e) => {
-      sY = e.clientY;
+      if(paneDominance!=='both') return;
+      sY = e.clientY; splitter.classList.add('dragging');
       const onMove = (ev: MouseEvent) => {
-        lowerHeight = Math.max(80, Math.min(500, lowerHeight + (sY - ev.clientY)));
+        const avail = Math.max(200, window.innerHeight - (document.getElementById('toolbar')?.getBoundingClientRect().top ?? window.innerHeight) + 8);
+        lowerHeight = Math.max(avail*0.1, Math.min(avail*0.9, lowerHeight + (sY - ev.clientY)));
         sY = ev.clientY;
+        const pctLower = Math.round(lowerHeight/avail*100);
+        splitter.title = `Lower ${pctLower}% — Main ${100-pctLower}% — drag to adjust`;
         resize();
       };
-      const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+      const onUp = () => { splitter.classList.remove('dragging'); document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
       e.preventDefault();
@@ -3475,8 +3536,11 @@ function frameBody(now: number) {
   // Compute visible range once per frame — shared by all drawing functions
   const { start: visStart, end: visEnd } = getVisibleRange(view, canvas.clientWidth, transformed.length);
 
-  // Volume profile with cache
-  const vpKey = `${visStart}_${visEnd}_${vpSettings.lookbackBars}_${vpSettings.binCount}_${vpSettings.valueAreaPct}_${vpSettings.mode}_${vpSettings.profileWidth}`;
+  // Volume profile with cache — the key MUST include every setting that
+  // affects the computed profile or its rendering. Previously missing:
+  // colorTheme, visualEngine, showValueArea, showDelta, showNodes. Without
+  // them, toggling any of those returned stale cached data.
+  const vpKey = `${visStart}_${visEnd}_${vpSettings.lookbackBars}_${vpSettings.binCount}_${vpSettings.valueAreaPct}_${vpSettings.mode}_${vpSettings.profileWidth}_${vpSettings.colorTheme}_${vpSettings.visualEngine}_${vpSettings.showValueArea}_${vpSettings.showDelta}_${vpSettings.showNodes}`;
   let vpComputed: VPComputed;
   let volumeBins: VolumeBin[];
   if (vpKey === vpCacheKey && vpCacheResult) {
@@ -3515,6 +3579,15 @@ function frameBody(now: number) {
       }
     }
   }
+
+  // Validate the current combination against the rendering matrix — logs a
+  // one-time warning if the combination falls back to a different renderer.
+  validateCombination({
+    barType,
+    view: hasPane3d ? '3D-Three' : (is3DMode ? '3D' : '2D'),
+    mode: vpSettings.mode,
+    engine: vpSettings.visualEngine,
+  });
 
   if (hasPane3d) {
     // 3D indicator mode: render bars + indicator geometry + 3D shapes in Three.js
@@ -3558,7 +3631,10 @@ function frameBody(now: number) {
 
   const is2DVolMode = vpSettings.mode === '2D-Side' || vpSettings.mode === '2D-Per-Bar';
   if (volumeEnabled && !hasPane3d && (!is3DMode || is2DVolMode)) {
-    drawVolumeProfile(ctx, volumeBins, vpSettings.mode, time, vpComputed, vpSettings.profileWidth);
+    const vpAlignSrc = vpComputed && vpComputed.bins.length > 0 ? transformed : null;
+    const pr = vpAlignSrc ? getPriceRange(vpAlignSrc, view, width) : null;
+    drawVolumeProfile(ctx, volumeBins, vpSettings.mode, time, vpComputed, vpSettings.profileWidth,
+      pr ? { minP: pr.minP, pRange: pr.pRange, view } : undefined);
   }
 
   // OakScript plots — combined from all active indicator instances

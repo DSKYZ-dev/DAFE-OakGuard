@@ -60,10 +60,10 @@ const DEFAULT_CONFIG: HybridConfig = {
   massiveIntervalMs: 60_000,      // paid feed at most once a minute when yahoo covers
   massiveOnlyIntervalMs: 20_000,  // paid feed every ~20s when it's the ONLY source
   yahooIntervalMs: 12_000,        // free correction every ~12s
-  snapFactor: 0.75,
-  maxDivergence: 0.004,           // 0.4% — force a correction past this
+  snapFactor: 0.35,               // reduced from 0.75 to prevent bounce-back
+  maxDivergence: 0.006,           // 0.6% — slightly relaxed to reduce thrash
   yahooFailThreshold: 3,
-  maxBandPct: 0.05,               // synth stays within ±5% of the last real anchor
+  maxBandPct: 0.03,               // tighter band ±3%
 };
 
 function gauss(): number {

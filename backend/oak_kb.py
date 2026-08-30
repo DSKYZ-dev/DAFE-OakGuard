@@ -826,6 +826,65 @@ SECTIONS: list[dict] = [
             "confirmed", "timeframe",
         ],
     },
+    {
+        "title": "Domain Safeguards — Trading-Only Scope",
+        "content": (
+            "The Advisor and Editor are TRADING-ONLY. If the user asks about dating, "
+            "weather, politics, recipes, jokes, or any non-trading general knowledge, "
+            "REFUSE politely and redirect: 'I'm a trading-only assistant for DAFE Charts "
+            "— tell me your market, timeframe and signal goal and I'll craft it.' Never "
+            "provide dating advice, weather forecasts, or off-topic content. For vague "
+            "requests like 'make me a good indicator,' DO NOT generate code immediately — "
+            "ask 2-3 targeted clarification questions (market/symbol, timeframe, "
+            "scalp/swing/trend goal, signal style, 3D vs lower-panel preference) and only "
+            "generate after the user elaborates. This is how 100% accuracy is achieved."
+        ),
+        "keywords": ["safeguard", "off-topic", "refuse", "redirect", "vague", "clarification", "dating", "weather", "domain", "trading-only"],
+    },
+    {
+        "title": "Complex Visual Coherence — ATR Threshold & Beyond (131 Pine Corpus Baseline)",
+        "content": (
+            "Every Pine in C:/dafe-forge/corpus/pine (131 files) sets the bar — e.g. "
+            "ATR Threshold: 5 ATR methods (Wilder/SMA/EMA/WMA/Hull) × 6 zero-lag corrections "
+            "(Double-EMA, Hull, LSMA, Kalman, KAMA, Ehlers Super Smoother = 30 combos), "
+            "dual Raw/ZL Chandelier stops, Keltner bands, percentile storm regime, "
+            "self-normalized velocity/acceleration, and a Volatility Storm Field: concentric "
+            "intensity shells, wind spiral flipping with trend, pulsing eye sized by volatility, "
+            "and a Stop Radius Ring — all as ONE coherent manifold (spinAngleDeg = Date.now()/1000*rotationRate+spinOffset, Date.now() drives pseudo-animation, not bar count). "
+            "Dimensional Resonance adds Takens embedding, permutation entropy, Hilbert phase, "
+            "Lyapunov, Higuchi fractal, transfer entropy. Trinity Flow fuses Flow Elastic + "
+            "Deep Kernel RL + Riemannian curvature."
+            "COHERENCE RULES: 3D pane=\"3d\" ribbon/surface for main trend, pane=\"separate\" "
+            "manifold/ridgeline/nebula for lower oscillator — never both for same series, never "
+            "abstract art. Storm field = manifold with zLevel stacking, wind spiral via waveY = "
+            "sin(angle)*intensityAmp, depthZ = softScale(acc). Lower panel = line/area/histogram "
+            "with fill/bgcolor, not 3D unless pane=\"separate\". Every element must tie to a "
+            "computed variable (ATR, regime, velocity) — no decorative geometry. Beauty = "
+            "precise engineering visualized."
+        ),
+        "keywords": ["ATR Threshold", "storm field", "manifold", "3d", "lower panel", "coherence", "pseudo-animation", "Date.now", "corpus", "complex", "Dimensional Resonance", "Trinity Flow", "visual", "beautiful"],
+    },
+    {
+        "title": "Universal Lower-Manifold Adapter — Movement & Pseudo-Animation Engine",
+        "content": (
+            "Hardcoded adapter that makes every lower-panel mode living between bars. "
+            "CLOCK: wallMs=Date.now()||n*1000, barMod12=(n%12)/12, phase12=barMod12*2π, "
+            "hashRand(seed)=frac(sin(seed*12.9898)*43758.5453), seededPhase(idx,salt). "
+            "PANEL_GEOMETRY registry maps 26+ modes to G1..G9 (e.g. Pulse→G1_RIBBON, Spike Raster→G2_RASTER, Living Lattice→G4_LATTICE, Phase-Space→G5_PHASE, Advanced Dynamic Field→G7_SCENE; never user-exposed). "
+            "ENGINES: G1 Ribbon=traveling glint (x=lastBar-wallMs/1000*glintSpeed % trailLen) + edge-breathing dashOffset + halo breathe; "
+            "G2 Raster=Poisson ghost-flicker (hashRand(row*997+floor(wallMs/120))<0.04) + refractory dim-pulse + cascade shockwave point t=(wallMs-eventMs)/travelMs along arc + ambient shimmer; "
+            "G3 Network=edge current dot speed∝weight + per-node jitter x+=amp*sin(wallMs*freq_i+phaseSeed_i) + scan-line; "
+            "G4 Lattice=breathing rings n%8 + neighbor ripple delay=d*80 + idle shimmer; "
+            "G5 Phase=comet head streak along velocity + contour dashOffset + twinkle; "
+            "G6 Field=ridge-light sweep x=domainMin+wallMs/3000%1*range + needle jitter + fill breathe; "
+            "G7 Scene=wall-clock spin + parallax 0.4× background + micro-tilt 1.5*sin(wallMs*0.0004) + cone pulse; "
+            "G8 Radial=orbital creep ang=base+wallMs*0.00005*dir_i + agreement-web pulse + corona heartbeat; "
+            "G9 Text=gauge drift + color pulse. "
+            "CROSS-CUTTING: lightning jitter (3-5 segment polyline, perp offset hashRand re-rolled /150ms), chromatic drift (2 copies ±1px), swarm orbit (anchor+radius*[cos,sin](wallMs*speed_i+phase_i)), depth-of-field alpha (|z|→alpha), lensing warp (rare, k/distance²*life), heartbeat master CLOCK passed once. "
+            "Dispatch: renderLowerManifold(modeName, datasets, n) → ANIMATION_ENGINES[PANEL_GEOMETRY[modeName]] is a pure decorator; real data > decoration contrast, no animation input exists, graceful fallback to barMod when !hasClock."
+        ),
+        "keywords": ["lower-manifold", "adapter", "movement", "pseudo-animation", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8", "G9", "CLOCK", "wallMs", "hashRand", "ghost-flicker", "glint", "jitter", "swarm", "chromatic", "heartbeat"],
+    },
 ]
 
 # ─── Function index: {"name": ..., "signature": ..., "desc": ..., "category": ...} ──

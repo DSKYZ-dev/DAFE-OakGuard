@@ -1,9 +1,10 @@
 import type { BaseBar, VolumeBin, VolumeProfileMode } from '@dafe/types';
 import type { BarType, PerBarVolume } from './data-generator';
 import type { OakPlot } from './oakscript';
-import type { VPComputed } from './volume-profile';
+import type { VPComputed, VPColorTheme } from './volume-profile';
 import { resolveImage } from './image-cache';
 import { signalColors } from './accessibility';
+import { resolveTheme } from './theme-engine';
 
 export type PerfMode = 'low' | 'medium' | 'high' | 'ultra';
 let _perf: PerfMode = 'high';
@@ -114,7 +115,8 @@ export function priceToY(price: number, minP: number, pRange: number, height: nu
   const cTop = height * TOP_FRAC;
   const cBot = height * BOT_FRAC;
   const cH = (cBot - cTop) * (view.scaleY || 1);
-  return cBot - ((price - minP) / pRange) * cH + (view.offsetY || 0);
+  const pr = Math.max(pRange, 1e-9);
+  return cBot - ((price - minP) / pr) * cH + (view.offsetY || 0);
 }
 
 /**
@@ -297,34 +299,42 @@ export function drawBackground(ctx: CanvasRenderingContext2D, time: number): voi
 }
 
 // ─── TIME AXIS LABELS ──────────────────────────────────────────────
-export function drawTimeAxis(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState): void {
+export function drawTimeAxis(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: ViewState, timeframe?: string): void {
   const { width, height } = logicalSize(ctx);
   const { start, end } = getVisibleRange(view, width, bars.length);
   if (start >= bars.length) return;
   const visible = bars.slice(start, Math.min(end + 1, bars.length));
   const vLen = visible.length;
   if (vLen === 0) return;
-
   const chartBot = height * BOT_FRAC;
-
-  // Aim for a label roughly every ~110px
-  const targetLabels = Math.max(2, Math.floor(chartRight(width) / 110));
+  const targetLabels = Math.max(3, Math.floor(chartRight(width) / 90));
   const step = Math.max(1, Math.floor(vLen / targetLabels));
-
+  const isDaily = timeframe === '1d' || timeframe === '1w';
+  const isHourly = timeframe === '1h' || timeframe === '4h';
   ctx.font = '10px "Inter", monospace';
+  // Axis baseline
+  ctx.strokeStyle = 'rgba(180,140,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, chartBot); ctx.lineTo(chartRight(width), chartBot); ctx.stroke();
   for (let i = 0; i < vLen; i += step) {
     const bar = visible[i];
     const x = barX(i, vLen, width, view.barSpacing, view.scrollX);
-    if (x < 0 || x > chartRight(width)) continue;
+    if (x < 8 || x > chartRight(width) - 8) continue;
     const d = new Date(bar.timestamp);
-    const label = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-    ctx.fillStyle = 'rgba(180, 140, 255, 0.1)';
-    ctx.fillRect(x, chartBot, 1, 6);
-    ctx.fillStyle = 'rgba(180, 140, 255, 0.4)';
+    let label: string;
+    if (isDaily) label = `${d.getMonth()+1}/${d.getDate()}`;
+    else if (isHourly) label = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}h`;
+    else label = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    ctx.fillStyle = 'rgba(180, 140, 255, 0.25)';
+    ctx.fillRect(x, chartBot, 1, 8);
+    ctx.fillStyle = 'rgba(200, 180, 255, 0.75)';
     ctx.textAlign = 'center';
-    ctx.fillText(label, x, chartBot + 16);
+    ctx.fillText(label, x, chartBot + 18);
   }
   ctx.textAlign = 'left';
+  // Y-axis right border
+  ctx.strokeStyle = 'rgba(180,140,255,0.12)';
+  ctx.beginPath(); ctx.moveTo(chartRight(width), height * TOP_FRAC); ctx.lineTo(chartRight(width), chartBot); ctx.stroke();
 }
 
 // ─── GLOWING GRID ───────────────────────────────────────────────────
@@ -370,10 +380,17 @@ export function drawGrid(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
       ctx.shadowBlur = 0;
     }
 
-    // Price label on the right axis
-    ctx.fillStyle = isMajor ? 'rgba(200, 180, 255, 0.55)' : 'rgba(180, 140, 255, 0.35)';
+    // Price label on the right axis — dynamic decimals for forex/crypto
+    const dec = price >= 1000 ? 0 : price >= 10 ? 2 : price >= 1 ? 3 : 4;
+    ctx.fillStyle = isMajor ? 'rgba(200, 180, 255, 0.85)' : 'rgba(180, 140, 255, 0.5)';
     ctx.font = '10px "Inter", monospace';
-    ctx.fillText(price.toFixed(0), right + 6, y + 3);
+    // Label background for readability
+    const txt = price.toFixed(dec);
+    const tw = ctx.measureText(txt).width;
+    ctx.fillStyle = 'rgba(10,10,24,0.85)';
+    ctx.fillRect(right + 2, y - 8, tw + 8, 12);
+    ctx.fillStyle = isMajor ? 'rgba(200, 180, 255, 0.95)' : 'rgba(180, 140, 255, 0.65)';
+    ctx.fillText(txt, right + 6, y + 3);
   }
 
   // Vertical time-grid lines with subtle glow
@@ -442,6 +459,7 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
     if (perBarVol && perBarVol[i + start]) {
       const pv = perBarVol[i + start];
       if (pv.maxVol > 0) {
+        const theme = resolveTheme();
         const minVol = pv.maxVol * 0.05; // skip levels below 5% of max
         for (const level of pv.levels) {
           if (level.volume < minVol) continue;
@@ -450,8 +468,8 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
           if (volW < 0.5 || isNaN(volW)) continue;
           const ratio = level.buyVol / Math.max(level.volume, 0.001);
           ctx.fillStyle = ratio > 0.5
-            ? `rgba(34, 204, 136, ${0.08 + (level.volume / pv.maxVol) * 0.15})`
-            : `rgba(255, 68, 119, ${0.06 + (level.volume / pv.maxVol) * 0.12})`;
+            ? `rgba(${theme.bullRgb}, ${0.08 + (level.volume / pv.maxVol) * 0.15})`
+            : `rgba(${theme.bearRgb}, ${0.06 + (level.volume / pv.maxVol) * 0.12})`;
           ctx.fillRect(x - hW - volW, lx - 1, volW, 2);
           ctx.fillRect(x + hW, lx - 1, volW, 2);
         }
@@ -465,22 +483,65 @@ export function drawBars(ctx: CanvasRenderingContext2D, bars: BaseBar[], view: V
       case 'kagi': drawKagiBar(ctx, x, hy, ly, bar, isBull, visible, i, vLen, minP, pRange, height, view, bs, width, overrideColor); break;
       case 'footprint': drawFootprintBar(ctx, x, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start], overrideColor); break;
       case 'imbalance-bar': drawImbalanceBar(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, perBarVol?.[i + start], overrideColor); break;
+      case 'range-bar': case 'volume-bar': case 'tick-bar': case 'dollar-bar':
+        drawOHLCBar(ctx, x, oy, cy, hy, ly, cW, hW, bar, isBull, time, intensity, overrideColor);
+        break;
       default: drawStandardCandle(ctx, x, oy, cy, hy, ly, bTop, bBot, bH, cW, hW, bar, isBull, time, intensity, overrideColor); break;
     }
   }
   ctx.restore();
 }
 
+// Classic OHLC bar: thin vertical line with open-tick (left) and close-tick
+// (right), direction-colored. Distinct visual identity for range/volume/tick/
+// dollar bar types so they no longer look like plain candles.
+function drawOHLCBar(ctx: CanvasRenderingContext2D, x: number, oy: number, cy: number, hy: number, ly: number,
+  cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, overrideColor?: string): void {
+  const theme = resolveTheme();
+  const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
+  const rgb = overrideRgb || (isBull ? theme.bullRgb : theme.bearRgb);
+  const col = `rgba(${rgb},0.95)`;
+  const glowCol = isBull ? `rgba(${theme.bullRgb},0.35)` : `rgba(${theme.bearRgb},0.35)`;
+
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = col;
+  ctx.shadowBlur = 8 + intensity * 8;
+  ctx.shadowColor = glowCol;
+
+  // Stem
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x, hy); ctx.lineTo(x, ly); ctx.stroke();
+
+  // Open tick (left), close tick (right)
+  const tickW = Math.max(2.5, cW * 0.5);
+  ctx.lineWidth = 2.6;
+  ctx.beginPath();
+  ctx.moveTo(x - hW, oy); ctx.lineTo(x - hW + tickW, oy);
+  ctx.moveTo(x + hW - tickW, cy); ctx.lineTo(x + hW, cy);
+  ctx.stroke();
+
+  // High-volume flare
+  if (intensity > 0.3) {
+    ctx.globalAlpha = 0.2 + intensity * 0.25;
+    ctx.lineWidth = 6;
+    ctx.shadowBlur = 0;
+    ctx.beginPath(); ctx.moveTo(x, hy); ctx.lineTo(x, ly); ctx.stroke();
+  }
+  ctx.restore();
+}
+
 function drawStandardCandle(ctx: CanvasRenderingContext2D, x: number, oy: number, cy: number, hy: number, ly: number,
   bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, overrideColor?: string): void {
-  const bullCol = '#1affa0';
-  const bearCol = '#ff3b6b';
+  const theme = resolveTheme();
+  const bullCol = theme.bull;
+  const bearCol = theme.bear;
   const color = isBull ? bullCol : bearCol;
   // barcolor() override: same RGB triple used for both directions when present,
   // substituted into the existing isBull-branched literals below (structure unchanged).
   const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
-  const rgbBull = overrideRgb || '26,255,160';
-  const rgbBear = overrideRgb || '255,59,107';
+  const rgbBull = overrideRgb || theme.bullRgb;
+  const rgbBear = overrideRgb || theme.bearRgb;
 
   // Wick — bold with rounded ends
   ctx.shadowBlur = 10;
@@ -556,25 +617,31 @@ function drawAreaBar(ctx: CanvasRenderingContext2D, x: number, cy: number, visib
 
 function drawRenkoBar(ctx: CanvasRenderingContext2D, x: number, bTop: number, bBot: number, bH: number,
   cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, overrideColor?: string): void {
+  const theme = resolveTheme();
   const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
+  const bullRgb = theme.bullRgb;
+  const bearRgb = theme.bearRgb;
   ctx.shadowBlur = 6;
-  ctx.shadowColor = overrideRgb ? `rgba(${overrideRgb}, 0.3)` : (isBull ? 'rgba(34, 204, 136, 0.3)' : 'rgba(255, 68, 119, 0.3)');
+  ctx.shadowColor = overrideRgb ? `rgba(${overrideRgb}, 0.3)` : (isBull ? `rgba(${bullRgb}, 0.3)` : `rgba(${bearRgb}, 0.3)`);
   ctx.fillStyle = overrideRgb
     ? `rgba(${overrideRgb}, ${(isBull ? 0.5 : 0.4) + intensity * 0.3})`
     : isBull
-      ? `rgba(34, 204, 136, ${0.5 + intensity * 0.3})`
-      : `rgba(255, 68, 119, ${0.4 + intensity * 0.3})`;
+      ? `rgba(${bullRgb}, ${0.5 + intensity * 0.3})`
+      : `rgba(${bearRgb}, ${0.4 + intensity * 0.3})`;
   ctx.fillRect(x - hW * 0.6, bTop, cW * 0.6, bH);
 }
 
 function drawKagiBar(ctx: CanvasRenderingContext2D, x: number, hy: number, ly: number, bar: BaseBar, isBull: boolean,
   visible: BaseBar[], i: number, vLen: number, minP: number, pRange: number, height: number, view: ViewState, bs: number, width: number, overrideColor?: string): void {
+  const theme = resolveTheme();
   const lineW = isBull ? 3 : 1;
   const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
-  ctx.strokeStyle = overrideRgb ? `rgba(${overrideRgb}, ${isBull ? 0.7 : 0.5})` : (isBull ? 'rgba(34, 204, 136, 0.7)' : 'rgba(255, 68, 119, 0.5)');
+  const bullRgb = theme.bullRgb;
+  const bearRgb = theme.bearRgb;
+  ctx.strokeStyle = overrideRgb ? `rgba(${overrideRgb}, ${isBull ? 0.7 : 0.5})` : (isBull ? `rgba(${bullRgb}, 0.7)` : `rgba(${bearRgb}, 0.5)`);
   ctx.lineWidth = lineW;
   ctx.shadowBlur = 4;
-  ctx.shadowColor = overrideRgb ? `rgba(${overrideRgb}, ${isBull ? 0.2 : 0.15})` : (isBull ? 'rgba(34, 204, 136, 0.2)' : 'rgba(255, 68, 119, 0.15)');
+  ctx.shadowColor = overrideRgb ? `rgba(${overrideRgb}, ${isBull ? 0.2 : 0.15})` : (isBull ? `rgba(${bullRgb}, 0.2)` : `rgba(${bearRgb}, 0.15)`);
   ctx.beginPath(); ctx.moveTo(x, hy); ctx.lineTo(x, ly); ctx.stroke();
   ctx.shadowBlur = 0;
   if (i > 0) {
@@ -593,8 +660,11 @@ function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number
     return;
   }
 
-  const bullCol = '#1affa0';
-  const bearCol = '#ff3b6b';
+  const theme = resolveTheme();
+  const bullCol = theme.bull;
+  const bearCol = theme.bear;
+  const bullRgb = theme.bullRgb;
+  const bearRgb = theme.bearRgb;
   const barW = cW * 2.8;
   const halfW = barW / 2;
   const levels = pv.levels;
@@ -622,8 +692,8 @@ function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number
     // Level background
     const alpha = 0.12 + (level.volume / pv.maxVol) * 0.3;
     ctx.fillStyle = isBuyDom
-      ? `rgba(34, 204, 136, ${alpha})`
-      : `rgba(255, 68, 119, ${alpha})`;
+      ? `rgba(${bullRgb}, ${alpha})`
+      : `rgba(${bearRgb}, ${alpha})`;
     ctx.fillRect(x - halfW + 1, ly, barW - 2, levelH - 1);
 
     // Volume text: sellVol | buyVol
@@ -633,11 +703,11 @@ function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number
       const buyTxt = compactVol(level.buyVol);
 
       ctx.textAlign = 'right';
-      ctx.fillStyle = `rgba(255, 68, 119, ${0.6 + ratio * 0.4})`;
+      ctx.fillStyle = `rgba(${bearRgb}, ${0.6 + ratio * 0.4})`;
       ctx.fillText(sellTxt, x - 2, textY);
 
       ctx.textAlign = 'left';
-      ctx.fillStyle = `rgba(34, 204, 136, ${0.6 + (1 - ratio) * 0.4})`;
+      ctx.fillStyle = `rgba(${bullRgb}, ${0.6 + (1 - ratio) * 0.4})`;
       ctx.fillText(buyTxt, x + 2, textY);
     }
   }
@@ -655,10 +725,13 @@ function drawFootprintBar(ctx: CanvasRenderingContext2D, x: number, bTop: number
 
 function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, cy: number, hy: number, ly: number,
   bTop: number, bBot: number, bH: number, cW: number, hW: number, bar: BaseBar, isBull: boolean, time: number, intensity: number, pv?: PerBarVolume, overrideColor?: string): void {
-  const bullCol = '#1affa0';
-  const bearCol = '#ff3b6b';
+  const theme = resolveTheme();
+  const bullCol = theme.bull;
+  const bearCol = theme.bear;
   const color = overrideColor || (isBull ? bullCol : bearCol);
   const overrideRgb = overrideColor ? hexToRgb(overrideColor) : null;
+  const bullRgb = theme.bullRgb;
+  const bearRgb = theme.bearRgb;
 
   // Wicks
   ctx.strokeStyle = color;
@@ -673,7 +746,7 @@ function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, 
   // Body — thicker when higher volume intensity
   const bodyW = cW * (1 + intensity * 0.5);
   const bodyGrad = ctx.createLinearGradient(x - bodyW, bTop, x + bodyW, bTop);
-  const rgb = overrideRgb || (isBull ? '34,204,136' : '255,68,119');
+  const rgb = overrideRgb || (isBull ? bullRgb : bearRgb);
   bodyGrad.addColorStop(0, `rgba(${rgb}, 0.15)`);
   bodyGrad.addColorStop(0.5, `rgba(${rgb}, ${0.4 + intensity * 0.4})`);
   bodyGrad.addColorStop(1, `rgba(${rgb}, 0.15)`);
@@ -705,14 +778,14 @@ function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, 
       const ratio = level.buyVol / Math.max(level.volume, 0.001);
       const isBuyDom = ratio > 0.5;
       const alpha = 0.08 + (level.volume / pv.maxVol) * 0.18;
-      ctx.fillStyle = isBuyDom ? `rgba(34,204,136,${alpha})` : `rgba(255,68,119,${alpha})`;
+      ctx.fillStyle = isBuyDom ? `rgba(${bullRgb},${alpha})` : `rgba(${bearRgb},${alpha})`;
       ctx.fillRect(x - bodyW, lvlY, bodyW * 2, levelH - 1);
       if (levelH >= 9) {
         ctx.textAlign = 'right';
-        ctx.fillStyle = `rgba(255,68,119,0.5)`;
+        ctx.fillStyle = `rgba(${bearRgb},0.5)`;
         ctx.fillText(compactVol(level.sellVol), x - 2, lvlY + levelH / 2);
         ctx.textAlign = 'left';
-        ctx.fillStyle = `rgba(34,204,136,0.5)`;
+        ctx.fillStyle = `rgba(${bullRgb},0.5)`;
         ctx.fillText(compactVol(level.buyVol), x + 2, lvlY + levelH / 2);
       }
     }
@@ -726,7 +799,11 @@ function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, 
 
 // ─── VOLUME PROFILE ────────────────────────────────────────────────
 let volPulse = 0;
-export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin[], mode: VolumeProfileMode, time: number, vp?: VPComputed, profileWidth = 86): void {
+/** Optional live alignment: map bins through the chart's current price→Y transform
+ *  so the profile tracks pan/zoom exactly like the candles instead of sitting in a
+ *  fixed panel space. minP/pRange come from getPriceRange() over the visible slice. */
+export interface VPAlign { minP: number; pRange: number; view: ViewState; }
+export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin[], mode: VolumeProfileMode, time: number, vp?: VPComputed, profileWidth = 86, align?: VPAlign): void {
   volPulse += 0.02;
   if (bins.length === 0) return;
   const { width, height } = logicalSize(ctx);
@@ -738,7 +815,6 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
   if (mode === '2D-Side') {
     const pW = Math.max(50, Math.min(RIGHT_MARGIN - 10, profileWidth));
     const px = width - pW;
-    const bH = cArea / bins.length;
     const pulse = Math.sin(volPulse) * 0.06 + 0.06;
     const colors = vp?.colors;
     const bullCol = colors?.bull || 'rgba(34, 204, 136, 1)';
@@ -749,6 +825,23 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
     const hvnCol = colors?.hvn || '#00FF88';
     const lvnCol = colors?.lvn || '#FF4444';
 
+    // Aligned mode: bins land at their true price levels and move with pan/zoom.
+    // Legacy mode: even division across a fixed panel (unchanged for callers that
+    // don't pass align).
+    const aligned = !!align && align.pRange > 0;
+    const yFor = (p: number): number => priceToY(p, align!.minP, align!.pRange, height, align!.view);
+    const binnedY = (bin: VolumeBin): { top: number; bot: number } => {
+      if (aligned) {
+        const top = yFor(bin.high ?? bin.price);
+        const bot = yFor(bin.low ?? bin.price);
+        return { top, bot };
+      }
+      const idx = bins.indexOf(bin);
+      const bH = cArea / bins.length;
+      const top = cTop + idx * bH;
+      return { top, bot: top + bH };
+    };
+
     const panelGrad = ctx.createLinearGradient(px, 0, width, 0);
     panelGrad.addColorStop(0, 'rgba(180, 140, 255, 0.03)');
     panelGrad.addColorStop(1, 'rgba(180, 140, 255, 0.06)');
@@ -757,12 +850,18 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
 
     // Value area background band
     if (vp?.showValueArea && vp.vah !== null && vp.val !== null) {
-      const minP = Math.min(...bins.map(b => b.price));
-      const maxP = Math.max(...bins.map(b => b.price));
-      const pRange = maxP - minP || 1;
-      const priceToPanelY = (p: number) => cTop + ((maxP - p) / pRange) * cArea;
-      const yTop = priceToPanelY(vp.vah);
-      const yBot = priceToPanelY(vp.val);
+      const yTop = aligned ? yFor(vp.vah) : (() => {
+        const minP = Math.min(...bins.map(b => b.price));
+        const maxP = Math.max(...bins.map(b => b.price));
+        const pRange = maxP - minP || 1;
+        return cTop + ((maxP - vp.vah!) / pRange) * cArea;
+      })();
+      const yBot = aligned ? yFor(vp.val) : (() => {
+        const minP = Math.min(...bins.map(b => b.price));
+        const maxP = Math.max(...bins.map(b => b.price));
+        const pRange = maxP - minP || 1;
+        return cTop + ((maxP - vp.val!) / pRange) * cArea;
+      })();
       ctx.fillStyle = vaFill;
       ctx.fillRect(px, Math.min(yTop, yBot), pW, Math.abs(yBot - yTop));
       ctx.strokeStyle = vaLine;
@@ -784,7 +883,8 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
     for (let i = 0; i < bins.length; i++) {
       const bin = bins[i];
       const barW = (bin.volume / maxVol) * (pW - 28) + pulse * 3;
-      const y = cTop + i * bH;
+      const { top, bot } = binnedY(bin);
+      const barH = Math.max(1, bot - top);
       const ratio = bin.buyVolume / Math.max(bin.volume, 0.001);
       const isDominant = ratio > 0.5;
       const intensity = Math.min(1, bin.volume / maxVol);
@@ -796,24 +896,28 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
       grad.addColorStop(0, `rgba(${rgb}, ${0.1 + intensity * 0.5})`);
       grad.addColorStop(1, `rgba(${rgb}, ${0.3 + intensity * 0.7})`);
       ctx.fillStyle = grad;
-      ctx.fillRect(px + 4, y, barW, bH - 1);
+      ctx.fillRect(px + 4, top, barW, barH - 1);
 
       // High / low volume node markers
       if (vp?.showNodes) {
         if (vp.highNodes.includes(bin)) {
           ctx.fillStyle = hvnCol;
-          ctx.beginPath(); ctx.arc(px + pW - 6, y + bH / 2, 2, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(px + pW - 6, top + barH / 2, 2, 0, Math.PI * 2); ctx.fill();
         } else if (vp.lowNodes.includes(bin) && bin.volume > 0) {
           ctx.fillStyle = lvnCol;
-          ctx.beginPath(); ctx.arc(px + pW - 6, y + bH / 2, 1.5, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.arc(px + pW - 6, top + barH / 2, 1.5, 0, Math.PI * 2); ctx.fill();
         }
       }
     }
     ctx.shadowBlur = 0;
 
     const poc = vp?.poc || bins.reduce((max, b) => b.volume > max.volume ? b : max, bins[0]);
-    const pocIdx = bins.findIndex(b => b.price === poc.price);
-    const pocY = cTop + (pocIdx >= 0 ? pocIdx : 0) * bH + bH / 2;
+    const pocY = aligned ? yFor(poc.price)
+      : (() => {
+          const pocIdx = bins.findIndex(b => b.price === poc.price);
+          const bH = cArea / bins.length;
+          return cTop + (pocIdx >= 0 ? pocIdx : 0) * bH + bH / 2;
+        })();
     ctx.shadowBlur = 12;
     ctx.shadowColor = `${pocCol}4d`;
     ctx.strokeStyle = pocCol;
@@ -824,6 +928,7 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
     ctx.fillStyle = pocCol;
     ctx.font = '9px monospace';
     ctx.fillText(`POC $${poc.price.toFixed(0)}`, px + 6, pocY - 4);
+
     ctx.fillStyle = 'rgba(180, 140, 255, 0.15)';
     ctx.font = '7px monospace';
     ctx.fillText('VOL', px + 6, 14);
@@ -838,6 +943,7 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
     }
 
   } else if (mode === '2D-Per-Bar') {
+    const theme = resolveTheme();
     const bH = cArea / bins.length;
     const maxW = 28;
     for (let i = 0; i < bins.length; i++) {
@@ -845,7 +951,7 @@ export function drawVolumeProfile(ctx: CanvasRenderingContext2D, bins: VolumeBin
       const barW = (bin.volume / maxVol) * maxW;
       const y = cTop + i * bH;
       const ratio = bin.buyVolume / Math.max(bin.volume, 0.001);
-      ctx.fillStyle = ratio > 0.5 ? `rgba(34, 204, 136, ${0.3 + ratio * 0.5})` : `rgba(255, 68, 119, ${0.2 + (1 - ratio) * 0.5})`;
+      ctx.fillStyle = ratio > 0.5 ? `rgba(${theme.bullRgb}, ${0.3 + ratio * 0.5})` : `rgba(${theme.bearRgb}, ${0.2 + (1 - ratio) * 0.5})`;
       ctx.fillRect(6, y, barW, bH - 1);
     }
   }
@@ -1753,7 +1859,30 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
         }
         if (cell.text) {
           ctx.fillStyle = cell.textColor || 'rgba(230,230,255,0.9)';
-          ctx.fillText(cell.text, cx + 4, cy + ch / 2 + 3);
+          // Adaptive metrics: mindfully round long decimals and truncate to fit cell width
+          let txt = cell.text;
+          // If text looks numeric with many decimals, round to adaptive precision
+          if (/^-?\d+\.\d{5,}$/.test(txt)) {
+            const num = parseFloat(txt);
+            if (!isNaN(num)) {
+              const abs = Math.abs(num);
+              if (abs >= 1000) txt = num.toFixed(1);
+              else if (abs >= 10) txt = num.toFixed(2);
+              else if (abs >= 1) txt = num.toFixed(3);
+              else txt = num.toFixed(4);
+              // Trim trailing zeros
+              txt = txt.replace(/\.?0+$/, '');
+              if (txt === '-0') txt = '0';
+            }
+          }
+          // Truncate with ellipsis if exceeds cell width
+          const maxW = cw - 8;
+          if (ctx.measureText(txt).width > maxW) {
+            let short = txt;
+            while (short.length > 1 && ctx.measureText(short + '…').width > maxW) short = short.slice(0, -1);
+            txt = short + '…';
+          }
+          ctx.fillText(txt, cx + 4, cy + ch / 2 + 3);
         }
       }
     }

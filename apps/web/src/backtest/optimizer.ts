@@ -60,21 +60,26 @@ export function formatNumber(n: number): string {
   return Number.isInteger(n) ? String(n) : String(round6(n));
 }
 
-/** A small, evenly-spaced candidate set across the input's declared (or
- * inferred) range, always including its own default. */
+/** Candidate set — log-spaced for length-like params, linear otherwise. */
 function candidateValuesFor(inp: InputDef): number[] {
   const base = typeof inp.defaultValue === 'number' ? inp.defaultValue : 0;
-  // No declared min/max — infer a symmetric spread around the default so
-  // there's still something meaningful to search.
   const spread = Math.max(Math.abs(base) * 0.5, 1);
   const min = inp.min ?? (base - spread);
   const max = inp.max ?? (base + spread);
   const step = inp.step && inp.step > 0 ? inp.step : undefined;
+  const isLogScale = /len|period|lookback|window|length/i.test(inp.name);
 
   const values = new Set<number>([round6(base)]);
   for (let k = 0; k < POINTS_PER_INPUT; k++) {
-    const t = POINTS_PER_INPUT === 1 ? 0.5 : k / (POINTS_PER_INPUT - 1);
-    let v = min + t * (max - min);
+    let v: number;
+    if (isLogScale && min > 0 && max > 0) {
+      const t = POINTS_PER_INPUT === 1 ? 0.5 : k / (POINTS_PER_INPUT - 1);
+      const logMin = Math.log(min), logMax = Math.log(max);
+      v = Math.exp(logMin + t * (logMax - logMin));
+    } else {
+      const t = POINTS_PER_INPUT === 1 ? 0.5 : k / (POINTS_PER_INPUT - 1);
+      v = min + t * (max - min);
+    }
     if (step) v = Math.round(v / step) * step;
     v = round6(Math.max(min, Math.min(max, v)));
     values.add(v);
@@ -161,12 +166,14 @@ export function buildOptimizerGrid(inputs: InputDef[]): OptimizerGrid {
 }
 
 function profitFactor(trades: ClosedTrade[], splitBarIdx: number, sample: 'in' | 'out'): number {
-  let grossProfit = 0, grossLoss = 0;
+  let grossProfit = 0, grossLoss = 0, count=0;
   for (const t of trades) {
     if (sample === 'in' ? t.barIdx > splitBarIdx : t.barIdx <= splitBarIdx) continue;
+    count++;
     if (t.pnl > 0) grossProfit += t.pnl;
     else if (t.pnl < 0) grossLoss += -t.pnl;
   }
+  if (count===0) return 0;
   return grossProfit / (grossLoss || 1e-6);
 }
 

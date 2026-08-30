@@ -116,6 +116,17 @@ function avgBarRange(bars: BaseBar[]): number {
   return (sum / bars.length) || 1;
 }
 
+/** Precision-preserving price rounding. Fixed 2-decimal rounding corrupts
+ *  instruments trading below ~$10 with tight ticks (forex 1.08543 → 1.09).
+ *  Keeps 2–6 decimals scaled to magnitude so tick resolution survives. */
+function roundPrice(p: number): number {
+  if (!Number.isFinite(p)) return p;
+  const mag = Math.abs(p);
+  const dp = mag >= 1000 ? 2 : mag >= 10 ? 4 : mag >= 0.1 ? 5 : 6;
+  const f = Math.pow(10, dp);
+  return Math.round(p * f) / f;
+}
+
 /** Average bar volume — used to derive volume/dollar-bar targets. */
 function avgBarVolume(bars: BaseBar[]): number {
   if (bars.length === 0) return 1;
@@ -135,8 +146,16 @@ export function transformBars(bars: BaseBar[], type: BarType, params?: Record<st
   switch (type) {
     case 'candlestick': return bars;
     case 'heikin-ashi': return transformHeikinAshi(bars);
-    case 'renko': return transformRenko(bars, params?.brickSize ?? Math.max(rng * 0.75, avgClose * 1e-4));
-    case 'range-bar': return transformRangeBar(bars, params?.range ?? Math.max(rng * 1.5, avgClose * 2e-4));
+    case 'renko': {
+      const raw = Math.max(rng * 0.75, avgClose * 1e-4);
+      const brick = Math.min(Math.max(raw, avgClose * 1e-4), avgClose * 0.02);
+      return transformRenko(bars, params?.brickSize ?? brick);
+    }
+    case 'range-bar': {
+      const raw = Math.max(rng * 1.5, avgClose * 2e-4);
+      const range = Math.min(Math.max(raw, avgClose * 2e-4), avgClose * 0.02);
+      return transformRangeBar(bars, params?.range ?? range);
+    }
     case 'volume-bar': return transformVolumeBar(bars, params?.volTarget ?? Math.max(vol * 3, 1));
     case 'tick-bar': return transformTickBar(bars, params?.tickCount ?? 5);
     case 'kagi': return transformKagi(bars, params?.reversal ?? Math.max(rng * 0.9, avgClose * 1.2e-4));
@@ -162,10 +181,10 @@ function transformHeikinAshi(bars: BaseBar[]): BaseBar[] {
     const haLow = Math.min(bar.low, haOpen, haClose);
     ha.push({
       timestamp: bar.timestamp,
-      open: Math.round(haOpen * 100) / 100,
-      high: Math.round(haHigh * 100) / 100,
-      low: Math.round(haLow * 100) / 100,
-      close: Math.round(haClose * 100) / 100,
+      open: roundPrice(haOpen),
+      high: roundPrice(haHigh),
+      low: roundPrice(haLow),
+      close: roundPrice(haClose),
       volume: bar.volume,
     });
     prevHaOpen = haOpen;
@@ -344,7 +363,10 @@ function transformDollarBar(bars: BaseBar[], dollarTarget: number): BaseBar[] {
 function transformImbalanceBar(bars: BaseBar[], imbalanceThreshold: number): BaseBar[] {
   // Closes a bar once the running buy/sell volume imbalance (using close>=open
   // as a buy-tick proxy) exceeds the threshold fraction of accumulated volume.
+  // Min-volume gate uses the series' average bar volume (not the arbitrary first
+  // bar) so a single quiet bar can't instantly satisfy the gate.
   const result: BaseBar[] = [];
+  const minVol = Math.max(avgBarVolume(bars) * 0.5, 1);
   let openB = bars[0].open;
   let highB = bars[0].high;
   let lowB = bars[0].low;
@@ -360,7 +382,7 @@ function transformImbalanceBar(bars: BaseBar[], imbalanceThreshold: number): Bas
     volB += bar.volume;
     signedVolB += sign * bar.volume;
     closeB = bar.close;
-    if (volB > 0 && Math.abs(signedVolB) / volB >= imbalanceThreshold && volB > (bars[0].volume || 1)) {
+    if (volB > 0 && volB >= minVol && Math.abs(signedVolB) / volB >= imbalanceThreshold) {
       result.push({ timestamp: tsB, open: openB, high: highB, low: lowB, close: closeB, volume: volB });
       openB = bar.close;
       highB = bar.high;
@@ -394,30 +416,41 @@ export function aggregateTimeframe(bars: BaseBar[], tf: Timeframe): BaseBar[] {
     .sort(([a], [b]) => a - b)
     .map(([timestamp, d]) => ({
       timestamp,
-      open: Math.round(d.open * 100) / 100,
-      high: Math.round(d.high * 100) / 100,
-      low: Math.round(d.low * 100) / 100,
-      close: Math.round(d.close * 100) / 100,
+      open: roundPrice(d.open),
+      high: roundPrice(d.high),
+      low: roundPrice(d.low),
+      close: roundPrice(d.close),
       volume: Math.round(d.volume),
     }));
 }
 
 // ─── PER-BAR VOLUME DISTRIBUTION ──────────────────────────────────
+// Deterministic seeded RNG — per-bar/per-level stable so 3D isotropic
+// VolP voxels don't jump colors/volumes when Hybrid appends a bar.
+function seededUnit(seed: number): number {
+  let x = seed | 0;
+  x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+  return ((x >>> 0) % 1_000_000) / 1_000_000;
+}
+function barSeed(bar: BaseBar, salt: number): number {
+  return (bar.timestamp ^ Math.floor(bar.close * 100) ^ Math.floor(bar.volume) ^ (salt * 0x9e3779b9)) | 0;
+}
 export function generatePerBarVolumes(bars: BaseBar[], levelCount: number = 8): PerBarVolume[] {
   return bars.map(bar => {
-    const step = (bar.high - bar.low) / levelCount;
+    const step = (bar.high - bar.low) / levelCount || 1;
     const levels: PerBarVolume['levels'] = [];
     let maxVol = 0;
-    // Use bar range as volume proxy when real volume is 0 (forex, crypto)
     const effectiveVol = bar.volume > 0 ? bar.volume : (bar.high - bar.low) * 1000 || 1;
-
     for (let i = 0; i < levelCount; i++) {
       const price = bar.low + step * (i + 0.5);
       const distFactor = 1 - Math.abs(i - levelCount / 2) / (levelCount / 2);
-      const noise = 0.5 + Math.random() * 1.0;
+      const n1 = seededUnit(barSeed(bar, i * 3 + 1));
+      const n2 = seededUnit(barSeed(bar, i * 3 + 2));
+      const n3 = seededUnit(barSeed(bar, i * 3 + 3));
+      const noise = 0.5 + n1 * 1.0;
       const vol = Math.round(effectiveVol / levelCount * distFactor * noise);
-      const isBuyAtLevel = Math.random() > 0.4;
-      const buyVol = Math.round(vol * (isBuyAtLevel ? (0.5 + Math.random() * 0.4) : (0.1 + Math.random() * 0.3)));
+      const isBuyAtLevel = n2 > 0.4;
+      const buyVol = Math.round(vol * (isBuyAtLevel ? (0.5 + n3 * 0.4) : (0.1 + n3 * 0.3)));
       const sellVol = vol - buyVol;
       if (vol > maxVol) maxVol = vol;
       levels.push({ price: Math.round(price * 100) / 100, volume: vol, buyVol, sellVol });

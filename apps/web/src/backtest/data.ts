@@ -1,5 +1,6 @@
 import type { BaseBar } from '@dafe/types';
 import { LiveDataStream } from '../data-stream/live-data';
+import { generateBars, type Timeframe } from '../data-generator';
 import type { RuntimeBarData } from '../oakscript/interpreter';
 
 /**
@@ -17,10 +18,14 @@ export async function fetchBacktestBars(
   symbol: string,
   timeframe: string,
   barCount: number,
-  baseUrl: string = 'http://localhost:8788',
+  baseUrl?: string,
 ): Promise<BaseBar[]> {
   const cappedCount = Math.min(barCount, MAX_BACKTEST_BARS);
-  const bars = await LiveDataStream.fetchHistorical(symbol, timeframe, cappedCount, baseUrl);
+  // Backtests are self-contained by default. A backend is only contacted when
+  // the caller explicitly supplies one; this avoids hidden localhost coupling.
+  const bars = baseUrl
+    ? await LiveDataStream.fetchHistorical(symbol, timeframe, cappedCount, baseUrl)
+    : generateBars(cappedCount, timeframe as Timeframe, symbol);
   if (!bars || bars.length === 0) {
     throw new Error(`No historical data returned for ${symbol} (${timeframe}).`);
   }

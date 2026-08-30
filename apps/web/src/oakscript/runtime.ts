@@ -119,24 +119,37 @@ export interface OakContext {
 
 // ─── Standard Library ──────────────────────────────────────────────
 function smaImpl(source: number[], length: number): number[] {
-  const result: number[] = [];
+  const result: number[] = new Array(source.length);
+  let sum = 0;
   for (let i = 0; i < source.length; i++) {
-    if (i < length - 1) { result.push(NaN); continue; }
-    let sum = 0;
-    for (let j = i - length + 1; j <= i; j++) sum += source[j];
-    result.push(sum / length);
+    sum += source[i];
+    if (i >= length) sum -= source[i - length];
+    result[i] = i < length - 1 ? NaN : sum / length;
   }
   return result;
 }
 
 function emaImpl(source: number[], length: number): number[] {
-  const result: number[] = [];
+  const result: number[] = new Array(source.length);
   const multiplier = 2 / (length + 1);
-  let emaV = source[0];
-  result.push(emaV);
-  for (let i = 1; i < source.length; i++) {
-    emaV = (source[i] - emaV) * multiplier + emaV;
-    result.push(emaV);
+  // Wilder-correct seed: SMA of first length bars, not source[0] (reduces early bias)
+  let emaV: number;
+  if (source.length >= length && length > 1) {
+    let s = 0; for (let k = 0; k < length; k++) s += source[k];
+    emaV = s / length;
+    for (let i = 0; i < length - 1; i++) result[i] = NaN;
+    result[length - 1] = emaV;
+    for (let i = length; i < source.length; i++) {
+      emaV = (source[i] - emaV) * multiplier + emaV;
+      result[i] = emaV;
+    }
+  } else {
+    emaV = source[0];
+    result[0] = emaV;
+    for (let i = 1; i < source.length; i++) {
+      emaV = (source[i] - emaV) * multiplier + emaV;
+      result[i] = emaV;
+    }
   }
   return result;
 }
@@ -146,7 +159,7 @@ export const StdLib = {
   ema: emaImpl,
 
   rsi(source: number[], length: number): number[] {
-    const result: number[] = [50];
+    const result: number[] = new Array(source.length).fill(NaN);
     let avgGain = 0, avgLoss = 0;
     for (let i = 1; i < source.length; i++) {
       const diff = source[i] - source[i - 1];
@@ -157,12 +170,12 @@ export const StdLib = {
           if (d > 0) sumGain += d; else sumLoss -= d;
         }
         avgGain = sumGain / length; avgLoss = sumLoss / length;
+        result[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
       } else if (i > length) {
         avgGain = (avgGain * (length - 1) + Math.max(diff, 0)) / length;
         avgLoss = (avgLoss * (length - 1) + Math.max(-diff, 0)) / length;
+        result[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
       }
-      if (avgLoss === 0) result.push(100);
-      else result.push(100 - 100 / (1 + avgGain / avgLoss));
     }
     return result;
   },
@@ -171,18 +184,27 @@ export const StdLib = {
     const emaFast = emaImpl(source, fast);
     const emaSlow = emaImpl(source, slow);
     const macdLine = emaFast.map((v, i) => v - emaSlow[i]);
-    const signalLine = emaImpl(macdLine, signal);
-    const histogram = macdLine.map((v, i) => v - signalLine[i]);
+    // The slow EMA is NaN during its warmup, which would poison an SMA seed
+    // computed over the head of macdLine (NaN + anything = NaN forever).
+    // Seed the signal EMA from the first bar where BOTH EMAs are valid, then
+    // shift back into full-array position with NaN padding.
+    const firstValid = macdLine.findIndex(v => Number.isFinite(v));
+    const signalLine: number[] = new Array(source.length).fill(NaN);
+    if (firstValid >= 0) {
+      const validRegion = macdLine.slice(firstValid);
+      const sig = emaImpl(validRegion, Math.max(1, Math.floor(signal)));
+      for (let i = 0; i < sig.length; i++) signalLine[firstValid + i] = sig[i];
+    }
+    const histogram = macdLine.map((v, i) =>
+      Number.isFinite(v) && Number.isFinite(signalLine[i]) ? v - signalLine[i] : NaN);
     return { macd: macdLine, signal: signalLine, hist: histogram };
   },
 
-  // regression.channel(source, length, mult) — same per-bar-record shape as
-  // macd() above. The "regression line" reuses this file's existing
-  // linreg()/smaImpl approximation (linreg() above is itself just smaImpl)
-  // as `mid`; `upper`/`lower` are mid +/- mult*stdev(source,length), the
-  // same Bollinger-style channel idiom but centered on the regression line.
+  // regression.channel(source, length, mult) — per-bar-record shape matching
+  // macd(). Mid is a TRUE least-squares linear regression over the trailing
+  // window (via linreg below); upper/lower add mult × stdev around it.
   regressionChannel(source: number[], length: number, mult: number): { mid: number[]; upper: number[]; lower: number[] } {
-    const mid = smaImpl(source, length);
+    const mid = this.linreg(source, length, 0);
     const dev = this.stdev(source, length);
     const m = typeof mult === 'number' ? mult : 2;
     const upper = mid.map((v, i) => v + m * dev[i]);
@@ -274,8 +296,30 @@ export const StdLib = {
     return result;
   },
 
-  linreg(source: number[], length: number, _offset: number): number[] {
-    return smaImpl(source, length);
+  linreg(source: number[], length: number, offset: number): number[] {
+    // TRUE least-squares linear regression over the trailing `length` window,
+    // evaluated (length-1-offset) bars back from the current bar — TradingView
+    // ta.linreg semantics. Previously this was an SMA alias, which silently
+    // gave every linreg-based script a lagged mean instead of a fitted line.
+    const result: number[] = [];
+    const n = Math.max(1, Math.floor(length));
+    const off = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
+    for (let i = 0; i < source.length; i++) {
+      if (i < n - 1) { result.push(NaN); continue; }
+      let sx = 0, sy = 0, sxy = 0, sxx = 0;
+      for (let j = 0; j < n; j++) {
+        const y = source[i - n + 1 + j];
+        sx += j;
+        sy += y;
+        sxy += j * y;
+        sxx += j * j;
+      }
+      const denom = n * sxx - sx * sx;
+      const slope = denom === 0 ? 0 : (n * sxy - sx * sy) / denom;
+      const intercept = (sy - slope * sx) / n;
+      result.push(intercept + slope * (n - 1 - off));
+    }
+    return result;
   },
 
   // ── Corpus-driven additions (Pine parity: ta.wma/hma/rma/vwma/mom/median,
@@ -467,18 +511,22 @@ export const StdLib = {
 
   atr(high: number[], low: number[], close: number[], length: number): number[] {
     const tr = this.trueRange(high, low, close);
-    return emaImpl(tr, length);
+    // Wilder's RMA, not EMA — matches TradingView ta.atr and ATR Threshold spec
+    return this.rma(tr, length);
   },
 
   cci(high: number[], low: number[], close: number[], length: number): number[] {
     const tp: number[] = [];
     for (let i = 0; i < close.length; i++) tp.push((high[i] + low[i] + close[i]) / 3);
     const tpSma = smaImpl(tp, length);
-    const tpStd = this.stdev(tp, length);
     const result: number[] = [];
     for (let i = 0; i < close.length; i++) {
       if (i < length - 1) { result.push(0); continue; }
-      result.push((tp[i] - tpSma[i]) / (0.015 * tpStd[i]));
+      // Lambert's CCI uses mean deviation, not stdev (≈1.25× difference)
+      let sumDev = 0;
+      for (let j = i - length + 1; j <= i; j++) sumDev += Math.abs(tp[j] - tpSma[i]);
+      const meanDev = sumDev / length || 1e-9;
+      result.push((tp[i] - tpSma[i]) / (0.015 * meanDev));
     }
     return result;
   },
@@ -497,18 +545,15 @@ export const StdLib = {
       plusDM.push(up[i] > down[i] && up[i] > 0 ? up[i] : 0);
       minusDM.push(down[i] > up[i] && down[i] > 0 ? down[i] : 0);
     }
-    const trSma = smaImpl(tr, length);
-    // These must be computed ONCE outside the loop — calling smaImpl() per
-    // index recomputed the entire SMA array from scratch on every iteration,
-    // turning adx() into O(n^2) (measured ~6s for a 500-bar Lorentzian
-    // Classification run, almost entirely inside this one function).
-    const plusDMSma = smaImpl(plusDM, length);
-    const minusDMSma = smaImpl(minusDM, length);
+    // Wilder's RMA, not SMA — matches Wilder's ADX spec
+    const trRma = this.rma(tr, length);
+    const plusDMRma = this.rma(plusDM, length);
+    const minusDMRma = this.rma(minusDM, length);
     const plusDI: number[] = [];
     const minusDI: number[] = [];
     for (let i = 0; i < close.length; i++) {
-      const p = trSma[i] !== 0 ? 100 * plusDMSma[i] / trSma[i] : 0;
-      const m = trSma[i] !== 0 ? 100 * minusDMSma[i] / trSma[i] : 0;
+      const p = trRma[i] !== 0 && isFinite(trRma[i]) ? 100 * plusDMRma[i] / trRma[i] : 0;
+      const m = trRma[i] !== 0 && isFinite(trRma[i]) ? 100 * minusDMRma[i] / trRma[i] : 0;
       plusDI.push(p);
       minusDI.push(m);
     }
@@ -517,7 +562,7 @@ export const StdLib = {
       const sum = plusDI[i] + minusDI[i];
       dx.push(sum !== 0 ? Math.abs(plusDI[i] - minusDI[i]) / sum * 100 : 0);
     }
-    return smaImpl(dx, length);
+    return this.rma(dx, length);
   },
 
   log(source: number[], base?: number): number[] {

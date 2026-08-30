@@ -2307,9 +2307,17 @@ function renderBacktest(): void {
       const bars = barsToRuntimeBarData(raw);
       const mlRefs = await resolveMlRefsForScript(source, bars, chartCtx.baseUrl);
       if (controller.signal.aborted) throw new BacktestCancelledError();
+      // Same overrides the Model Inputs panel applies to the live chart for
+      // this script (see age-inputs-panel.ts) — without this, Run Backtest
+      // silently replayed the script's hardcoded input(...) defaults no
+      // matter what the panel's sliders showed, so tuning a parameter never
+      // changed a single backtest result.
+      const activeName = localStorage.getItem('oakscript_active_name') || undefined;
+      const storedOverrides = getStoredOverrides(activeName);
       const result = await runBacktestOnBars(config, source, bars, {
         signal: controller.signal,
         ...mlRefs,
+        inputOverrides: storedOverrides.size > 0 ? storedOverrides : undefined,
         onProgress: (stage) => {
           statusMsg.textContent =
             stage === 'running-script' ? 'Running script (signal collection)...' :

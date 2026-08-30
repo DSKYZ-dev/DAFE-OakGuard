@@ -14,8 +14,11 @@
     }
     #chart-container { position: fixed; inset: 0; display: flex; flex-direction: column; }
     #chart-area { position: relative; flex: 1; min-height: 0; }
-    #chart-splitter { height: 5px; background: rgba(180,140,255,0.12); cursor: row-resize; flex-shrink: 0; }
-    #chart-splitter:hover { background: rgba(180,140,255,0.3); }
+    #chart-splitter { height: 8px; background: rgba(180,140,255,0.12); cursor: row-resize; flex-shrink: 0; display:flex; align-items:center; justify-content:center; position:relative; }
+    #chart-splitter:hover { background: rgba(180,140,255,0.25); }
+    #chart-splitter::after { content:'⋯'; color:rgba(255,255,255,0.35); font-size:10px; letter-spacing:2px; }
+    #chart-splitter.dragging { background: rgba(180,140,255,0.35); }
+    #pane-dominance { padding:4px 6px; border:1px solid rgba(180,140,255,0.15); border-radius:6px; background:rgba(12,12,28,0.9); color:rgba(255,255,255,0.7); font-size:11px; cursor:pointer; }
     #chart-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; z-index: 2; }
     #chart-canvas:active { cursor: grabbing; }
     #canvas-3d { position: absolute; inset: 0; width: 100%; height: 100%; display: none; z-index: 1; pointer-events: none; }
@@ -124,8 +127,7 @@
       transition: all .15s;
     }
     #live-tick-toggle:hover { border-color: rgba(0,255,136,0.4); color: rgba(0,255,136,0.7); }
-    #live-tick-toggle.active { background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.5); color: #00ff88; animation: pulse-live 1.5s infinite; }
-    @keyframes pulse-live { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+    #live-tick-toggle.active { background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.5); color: #00ff88; }
 
     /* ─── Symbol Combo ─────────────────────────────────────── */
     #symbol-input {
@@ -141,7 +143,6 @@
     #symbol-dropdown .sym-item:hover { background: rgba(0,204,255,0.08) !important; }
     #symbol-dropdown::-webkit-scrollbar { width: 3px; }
     #symbol-dropdown::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
-    }
     #load-data-btn:hover { background: rgba(0,204,255,0.2); }
     #data-status {
       font-size: 10px; color: rgba(255,255,255,0.3);
@@ -1129,6 +1130,12 @@
       <option value="4h">4h</option>
       <option value="1d">1d</option>
       <option value="1w">1w</option>
+    </select>
+
+    <select id="pane-dominance" title="Visual dominance when main + lower both present">
+      <option value="both" selected>Both (Main over Lower)</option>
+      <option value="main">Main Only</option>
+      <option value="lower">Lower Only</option>
     </select>
 
     <div class="sep"></div>

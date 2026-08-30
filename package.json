@@ -16,7 +16,8 @@
     "packages/themes",
     "packages/indicators",
     "apps/web",
-    "apps/desktop"
+    "apps/desktop",
+    "apps/mobile"
   ],
   "devDependencies": {
     "@types/node": "^22.0.0",
