@@ -1,4 +1,4 @@
-﻿import type { ExecutionEngine, TradeRecord } from './execution';
+import type { ExecutionEngine, TradeRecord } from './execution';
 import { SLIPPAGE_STORE, currentCostModel, costSourceLabel } from './cost-engine';
 import { state, persistSettings } from './state';
 import { submitReport } from './reports';
@@ -78,6 +78,12 @@ function equitySeries(records: TradeRecord[]): { x: number[]; y: number[] } {
   const x: number[] = [];
   const y: number[] = [];
   let eq = 0;
+  // Always start at the origin (first trade's entry) so even a SINGLE trade
+  // produces a two-point line — the curve evolves as more trades land.
+  if (records.length > 0) {
+    x.push(records[0].entryTime);
+    y.push(0);
+  }
   for (const t of records) {
     eq += t.pnl - (t.fees.commission + t.fees.exchange + t.fees.nfa + t.fees.clearing + t.fees.brokerage + t.fees.routing + t.fees.ip);
     x.push(t.exitTime);
@@ -87,7 +93,15 @@ function equitySeries(records: TradeRecord[]): { x: number[]; y: number[] } {
 }
 
 function svgLine(x: number[], y: number[], w: number, h: number, stroke: string): string {
-  if (x.length < 2) return '';
+  if (x.length === 0) {
+    // Zero trades: draw the baseline so the section isn't blank.
+    return `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg" style="background:#0c0c1e;border-radius:10px">
+<line x1="8" y1="${h / 2}" x2="${w - 8}" y2="${h / 2}" stroke="${stroke}" stroke-width="2" stroke-dasharray="6 4" opacity="0.5"/>
+<text x="${w / 2}" y="${h / 2 - 10}" fill="#9a9ab8" font-size="11" text-anchor="middle" font-family="Segoe UI,sans-serif">No closed trades yet</text>
+</svg>`;
+  }
+  // Single point (or all-identical times): pad to a visible flat line.
+  while (x.length < 2) { x.push(x[0] + 1); y.push(y[0]); }
   const minX = Math.min(...x);
   const maxX = Math.max(...x);
   const minY = Math.min(...y, 0);
@@ -99,7 +113,9 @@ function svgLine(x: number[], y: number[], w: number, h: number, stroke: string)
     const py = h - 8 - ((y[i] - minY) / spanY) * (h - 16);
     return `${px.toFixed(1)},${py.toFixed(1)}`;
   }).join(' ');
+  const area = `8,${h - 8} ${pts} ${w - 8},${h - 8}`;
   return `<svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg" style="background:#0c0c1e;border-radius:10px">
+<polygon points="${area}" fill="${stroke}" opacity="0.08"/>
 <polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2"/>
 <line x1="8" y1="${h - 8}" x2="${w - 8}" y2="${h - 8}" stroke="#1c1c3a"/>
 </svg>`;
@@ -111,13 +127,13 @@ function fmt(n: number, d = 2): string {
 
 function advisorReview(recs: TradeRecord[], s: Summary): { severity: 'info' | 'warn' | 'danger'; text: string }[] {
   const out: { severity: 'info' | 'warn' | 'danger'; text: string }[] = [];
-  if (recs.length === 0) return [{ severity: 'info', text: 'No trades yet â€” open the chart, enable the DOM panel and start paper trading.' }];
-  if (s.winRate < 40) out.push({ severity: 'warn', text: `Win rate ${s.winRate.toFixed(0)}% is below 40% â€” review your entry criteria; consider waiting for higher-conviction setups.` });
-  else if (s.winRate > 60) out.push({ severity: 'info', text: `Strong win rate (${s.winRate.toFixed(0)}%) â€” guard it with a tighter stop policy to avoid giving back profits.` });
-  if (s.avgLoss > s.avgWin) out.push({ severity: 'danger', text: `Average loss ($${fmt(s.avgLoss)}) exceeds average win ($${fmt(s.avgWin)}) â€” you're fighting negative asymmetry. Let winners run or cut losers faster.` });
-  else out.push({ severity: 'info', text: `Risk/reward is positive (avg win $${fmt(s.avgWin)} vs avg loss $${fmt(s.avgLoss)}) â€” protect it.` });
-  if (s.maxDrawdown > 0 && s.maxDrawdown > s.trades * Math.max(s.avgWin, s.avgLoss) * 0.5) out.push({ severity: 'warn', text: `Max drawdown $${fmt(s.maxDrawdown)} is large relative to average trade â€” reduce position size or add a session drawdown cap.` });
-  if (s.feesTotal > 0 && s.netPnl !== 0 && Math.abs(s.feesTotal / s.netPnl) > 0.2) out.push({ severity: 'warn', text: `Fees ($${fmt(s.feesTotal)}) consume over 20% of your net result â€” consider fewer, larger trades or cheaper execution.` });
+  if (recs.length === 0) return [{ severity: 'info', text: 'No trades yet — open the chart, enable the DOM panel and start paper trading.' }];
+  if (s.winRate < 40) out.push({ severity: 'warn', text: `Win rate ${s.winRate.toFixed(0)}% is below 40% — review your entry criteria; consider waiting for higher-conviction setups.` });
+  else if (s.winRate > 60) out.push({ severity: 'info', text: `Strong win rate (${s.winRate.toFixed(0)}%) — guard it with a tighter stop policy to avoid giving back profits.` });
+  if (s.avgLoss > s.avgWin) out.push({ severity: 'danger', text: `Average loss ($${fmt(s.avgLoss)}) exceeds average win ($${fmt(s.avgWin)}) — you're fighting negative asymmetry. Let winners run or cut losers faster.` });
+  else out.push({ severity: 'info', text: `Risk/reward is positive (avg win $${fmt(s.avgWin)} vs avg loss $${fmt(s.avgLoss)}) — protect it.` });
+  if (s.maxDrawdown > 0 && s.maxDrawdown > s.trades * Math.max(s.avgWin, s.avgLoss) * 0.5) out.push({ severity: 'warn', text: `Max drawdown $${fmt(s.maxDrawdown)} is large relative to average trade — reduce position size or add a session drawdown cap.` });
+  if (s.feesTotal > 0 && s.netPnl !== 0 && Math.abs(s.feesTotal / s.netPnl) > 0.2) out.push({ severity: 'warn', text: `Fees ($${fmt(s.feesTotal)}) consume over 20% of your net result — consider fewer, larger trades or cheaper execution.` });
   const bySym = new Map<string, { n: number; pnl: number }>();
   for (const t of recs) {
     const e = bySym.get(t.symbol) ?? { n: 0, pnl: 0 };
@@ -126,7 +142,7 @@ function advisorReview(recs: TradeRecord[], s: Summary): { severity: 'info' | 'w
     bySym.set(t.symbol, e);
   }
   const bestSym = [...bySym.entries()].sort((a, b) => b[1].pnl - a[1].pnl)[0];
-  if (bestSym && bestSym[1].n >= 3) out.push({ severity: 'info', text: `Your best market is ${bestSym[0]} ($${fmt(bestSym[1].pnl)} across ${bestSym[1].n} trades) â€” consider concentrating where you're profitable.` });
+  if (bestSym && bestSym[1].n >= 3) out.push({ severity: 'info', text: `Your best market is ${bestSym[0]} ($${fmt(bestSym[1].pnl)} across ${bestSym[1].n} trades) — consider concentrating where you're profitable.` });
   const session = new Map<string, { n: number; pnl: number }>();
   for (const t of recs) {
     const e = session.get(t.session) ?? { n: 0, pnl: 0 };
@@ -135,7 +151,7 @@ function advisorReview(recs: TradeRecord[], s: Summary): { severity: 'info' | 'w
     session.set(t.session, e);
   }
   const worst = [...session.entries()].sort((a, b) => a[1].pnl - b[1].pnl)[0];
-  if (worst && worst[1].n >= 3 && worst[1].pnl < 0) out.push({ severity: 'warn', text: `${worst[0].toUpperCase()} session is your weakest ($${fmt(worst[1].pnl)} over ${worst[1].n} trades) â€” consider not trading that window.` });
+  if (worst && worst[1].n >= 3 && worst[1].pnl < 0) out.push({ severity: 'warn', text: `${worst[0].toUpperCase()} session is your weakest ($${fmt(worst[1].pnl)} over ${worst[1].n} trades) — consider not trading that window.` });
   return out;
 }
 
@@ -144,48 +160,71 @@ function exportReport(recs: TradeRecord[], s: Summary, engine: ExecutionEngine, 
   const fees = currentCostModel().fees(state.symbol, 1);
   const rows = recs.slice(-40).reverse().map((t) => {
     const f = t.fees;
-    return `<tr><td>${new Date(t.exitTime).toLocaleString()}</td><td>${t.symbol}</td><td>${t.side.toUpperCase()}</td>
-<td>${t.qty}</td><td>${fmt(t.entryPrice)}</td><td>${fmt(t.exitPrice)}</td><td>${t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}</td>
-<td>${fmt(t.rMultiple, 2)}R</td><td>${fmt(t.mae)}</td><td>${fmt(t.mfe)}</td><td>${(t.durationMs / 60000).toFixed(0)}m</td>
-<td>$${fmt(f.commission + f.exchange + f.nfa + f.clearing + f.brokerage + f.routing + f.ip)}</td><td>${t.session}</td></tr>`;
+    const pnlCls = t.pnl >= 0 ? 'pos' : 'neg';
+    return `<tr><td>${new Date(t.exitTime).toLocaleString()}</td><td>${t.symbol}</td><td>${t.side.toUpperCase()}</td><td>${t.qty}</td><td>${fmt(t.entryPrice)}</td><td>${fmt(t.exitPrice)}</td><td class="${pnlCls}">${t.pnl >= 0 ? '+' : ''}${fmt(t.pnl)}</td><td>${fmt(t.rMultiple, 2)}R</td><td>${fmt(t.mae)}</td><td>${fmt(t.mfe)}</td><td>${(t.durationMs / 60000).toFixed(0)}m</td><td>$${fmt(f.commission + f.exchange + f.nfa + f.clearing + f.brokerage + f.routing + f.ip)}</td><td>${t.session}</td></tr>`;
   }).join('');
-  const advice = advisorReview(recs, s).map((a) => `<li style="color:${a.severity === 'danger' ? '#ff4477' : a.severity === 'warn' ? '#ffb800' : '#9fe8ff'}">${a.text}</li>`).join('');
+  const advice = advisorReview(recs, s).map((a) => `<div class="adv ${a.severity}"><span class="adv-badge">${a.severity === 'danger' ? '⚠ RISK' : a.severity === 'warn' ? '▲ WATCH' : '✓ GOOD'}</span>${a.text}</div>`).join('');
   const slipStats = SLIPPAGE_STORE.forSymbol(state.symbol);
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>DAFE Charts Performance Report</title>
-<style>body{font-family:Segoe UI,system-ui,sans-serif;background:#05050f;color:#e8e8ff;padding:24px}
-h1{color:#b48cff}h2{margin-top:28px;color:#00ff88}table{border-collapse:collapse;width:100%;font-size:11px;margin-top:10px}
-th,td{border:1px solid #1c1c3a;padding:6px 8px;text-align:left}th{color:#9a9ab8;text-transform:uppercase;font-size:9px}
-.stat{display:inline-block;background:#0c0c1e;border:1px solid #1c1c3a;border-radius:10px;padding:10px 14px;margin:6px;font-size:12px}
-.stat b{display:block;font-size:18px;color:#00ff88}.muted{color:#9a9ab8;font-size:11px}</style></head><body>
-<h1>DAFE Charts â€” Performance Report</h1>
-<div class="muted">Generated ${new Date().toLocaleString()} Â· Cost model: ${costSourceLabel()} Â· Fee source: ${fees.source}</div>
+  const pfTxt = s.profitFactor === Infinity ? '∞' : fmt(s.profitFactor);
+  const stat = (label: string, val: string, cls = '') => `<div class="stat ${cls}">${label}<b>${val}</b></div>`;
+  const pnlCls = s.netPnl >= 0 ? 'good' : 'bad';
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DAFE Charts — Performance Report</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#e8e8ff;margin:0;padding:0}
+.wrap{max-width:760px;margin:0 auto;padding:28px 20px 40px}
+.hero{background:linear-gradient(135deg,#17123a 0%,#0d0a24 100%);border:1px solid rgba(180,140,255,.35);border-radius:16px;padding:22px;margin-bottom:22px}
+.hero h1{color:#fff;font-size:19px;margin:0 0 6px;letter-spacing:.5px}
+.hero .sub{color:#b48cff;font-size:11px;letter-spacing:1.5px;text-transform:uppercase}
+.hero .meta{color:#9a9ab8;font-size:10px;margin-top:8px}
+h2{color:#00ff88;font-size:13px;margin:26px 0 10px;letter-spacing:1px;text-transform:uppercase}
+.stat{display:inline-block;background:#10101f;border:1px solid #1c1c3a;border-radius:12px;padding:12px 16px;margin:4px;font-size:11px;color:#9a9ab8}
+.stat b{display:block;font-size:19px;color:#fff;margin-top:3px;font-weight:800}
+.stat.good b{color:#00ff88}.stat.bad b{color:#ff4477}
+svg{width:100%;height:auto;display:block}
+.adv{background:#10101f;border:1px solid #1c1c3a;border-radius:10px;padding:10px 12px;margin:6px 0;font-size:11px;color:#c9c9e8;line-height:1.5}
+.adv.danger{border-color:rgba(255,68,119,.4)}
+.adv.warn{border-color:rgba(255,184,0,.4)}
+.adv-badge{display:inline-block;font-size:8px;font-weight:800;letter-spacing:1px;padding:2px 7px;border-radius:7px;margin-right:8px}
+.adv.danger .adv-badge{background:rgba(255,68,119,.15);color:#ff4477}
+.adv.warn .adv-badge{background:rgba(255,184,0,.15);color:#ffb800}
+.adv:not(.danger):not(.warn) .adv-badge{background:rgba(0,255,136,.12);color:#00ff88}
+table{border-collapse:collapse;width:100%;font-size:10px;margin-top:10px}
+th,td{border:1px solid #1c1c3a;padding:5px 7px;text-align:left}
+th{color:#9a9ab8;text-transform:uppercase;font-size:8px;background:#0c0c1e}
+tr:nth-child(even) td{background:#0a0a18}
+td.pos{color:#00ff88;font-weight:700}td.neg{color:#ff4477;font-weight:700}
+.muted{color:#9a9ab8;font-size:10px;line-height:1.6}
+.foot{color:#6a6a8a;font-size:9px;margin-top:28px;border-top:1px solid #1c1c3a;padding-top:12px}
+</style></head><body><div class="wrap">
+<div class="hero"><h1>📈 DAFE Charts — Performance Report</h1><div class="sub">Trading performance analytics · ${state.symbol}</div><div class="meta">Generated ${new Date().toLocaleString()} · Cost model: ${costSourceLabel()} · Fee source: ${fees.source} · ${recs.length} closed trades</div></div>
 <h2>Summary</h2>
-<div class="stat">Trades<b>${s.trades}</b></div>
-<div class="stat">Win rate<b>${s.winRate.toFixed(1)}%</b></div>
-<div class="stat">Net P&L<b>$${fmt(s.netPnl)}</b></div>
-<div class="stat">Profit factor<b>${s.profitFactor === Infinity ? 'âˆž' : fmt(s.profitFactor)}</b></div>
-<div class="stat">Expectancy<b>$${fmt(s.expectancy)}</b></div>
-<div class="stat">Max DD<b>$${fmt(s.maxDrawdown)}</b></div>
-<div class="stat">Avg R<b>${fmt(s.avgR, 2)}</b></div>
-<div class="stat">Avg win<b>$${fmt(s.avgWin)}</b></div>
-<div class="stat">Avg loss<b>$${fmt(s.avgLoss)}</b></div>
-<div class="stat">Fees paid<b>$${fmt(s.feesTotal)}</b></div>
+${stat('Trades', String(s.trades))}
+${stat('Win rate', s.winRate.toFixed(1) + '%', s.winRate >= 50 ? 'good' : 'bad')}
+${stat('Net P&L', '$' + fmt(s.netPnl), pnlCls)}
+${stat('Profit factor', pfTxt, s.profitFactor >= 1 ? 'good' : 'bad')}
+${stat('Expectancy', '$' + fmt(s.expectancy), s.expectancy >= 0 ? 'good' : 'bad')}
+${stat('Max drawdown', '$' + fmt(s.maxDrawdown), 'bad')}
+${stat('Avg R', fmt(s.avgR, 2) + 'R')}
+${stat('Avg win', '$' + fmt(s.avgWin), 'good')}
+${stat('Avg loss', '$' + fmt(s.avgLoss), 'bad')}
+${stat('Fees paid', '$' + fmt(s.feesTotal))}
 <h2>Equity curve</h2>${svgLine(eq.x, eq.y, 900, 240, '#00ff88')}
-<h2>Advisor review</h2><ul>${advice}</ul>
+<h2>Advisor review</h2>${advice || '<div class="muted">No advisor notes — keep trading to build a review history.</div>'}
 <h2>Trade diagnostics (last 40)</h2>
 <table><tr><th>Exit time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Exit</th><th>P&L</th><th>R</th><th>MAE</th><th>MFE</th><th>Duration</th><th>Fees</th><th>Session</th></tr>${rows}</table>
-<h2>Slippage (${state.symbol})</h2>
-<div class="muted">Median ${fmt(slipStats.median, 3)} Â· Mean ${fmt(slipStats.mean, 3)} Â· 90th ${fmt(slipStats.p90, 3)} Â· 95th ${fmt(slipStats.p95, 3)} Â· ${slipStats.count} observations</div>
-<div class="muted">Slippage is measured from your own fills â€” expected signal price vs actual simulated fill.</div>
-<p style="margin-top:30px;font-size:10px;color:#9a9ab8">Trading involves substantial risk. DAFE Charts is not investment advice.</p>
-</body></html>`;
+<h2>Slippage — ${state.symbol}</h2>
+<div class="muted">Median ${fmt(slipStats.median, 3)} · Mean ${fmt(slipStats.mean, 3)} · 90th ${fmt(slipStats.p90, 3)} · 95th ${fmt(slipStats.p95, 3)} · ${slipStats.count} observations</div>
+<div class="muted">Slippage is measured from your own fills — expected signal price vs actual simulated fill.</div>
+<div class="foot">DAFE Charts · self-contained report — no network required · Trading involves substantial risk. DAFE Charts is not investment advice.</div>
+</div></body></html>`;
   const text = [
-    `DAFE Charts â€” Performance Report (${new Date().toLocaleString()})`,
-    `Trades ${s.trades} Â· Win rate ${s.winRate.toFixed(1)}% Â· Net P&L $${fmt(s.netPnl)}`,
-    `PF ${s.profitFactor === Infinity ? 'âˆž' : fmt(s.profitFactor)} Â· Expectancy $${fmt(s.expectancy)} Â· Max DD $${fmt(s.maxDrawdown)} Â· Fees $${fmt(s.feesTotal)}`,
+    `DAFE Charts — Performance Report (${new Date().toLocaleString()})`,
+    `Trades ${s.trades} · Win rate ${s.winRate.toFixed(1)}% · Net P&L $${fmt(s.netPnl)}`,
+    `PF ${s.profitFactor === Infinity ? '∞' : fmt(s.profitFactor)} · Expectancy $${fmt(s.expectancy)} · Max DD $${fmt(s.maxDrawdown)} · Fees $${fmt(s.feesTotal)}`,
     '',
     'Advisor review:',
-    advisorReview(recs, s).map((a) => 'â€¢ ' + a.text).join('\n'),
+    advisorReview(recs, s).map((a) => '• ' + a.text).join('\n'),
   ].join('\n');
   if (share) {
     submitReport({
@@ -217,7 +256,7 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
   title.textContent = 'Performance';
   const sub = document.createElement('div');
   sub.className = 'perf-sub';
-  sub.textContent = `Cost model: ${costSourceLabel()} Â· feed: ${state.dataProvider}`;
+  sub.textContent = `Cost model: ${costSourceLabel()} · feed: ${state.dataProvider}`;
   header.appendChild(title);
   header.appendChild(sub);
   scroll.appendChild(header);
@@ -264,7 +303,7 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
     try {
       const cfg = JSON.parse(localStorage.getItem('dafe_mobile_llm') || '{}');
       const { llmChat } = await import('./native-http');
-      const r = await llmChat(cfg, 'You are the DAFE Trade Advisor â€” concise, specific, actionable.', prompt, { maxTokens: 2048, temperature: 0.7 });
+      const r = await llmChat(cfg, 'You are the DAFE Trade Advisor — concise, specific, actionable.', prompt, { maxTokens: 2048, temperature: 0.7 });
       if (!r.ok) throw new Error(r.error || 'LLM request failed');
       return r.text;
     } catch (e: any) { return `LLM error: ${e?.message || e}`; }
@@ -298,7 +337,7 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
 
   const actions = document.createElement('div');
   actions.className = 'perf-actions';
-  // ONE consolidated report button â€” the old pair (EXPORT REPORT + EMAIL
+  // ONE consolidated report button — the old pair (EXPORT REPORT + EMAIL
   // RESULTS) did overlapping jobs and neither reliably delivered on Android.
   const exportBtn = document.createElement('button');
   exportBtn.className = 'editor-run';
@@ -326,7 +365,7 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
     if (eq.x.length < 2) {
       ctx.fillStyle = '#9a9ab8';
       ctx.font = '12px sans-serif';
-      ctx.fillText('No closed trades yet â€” trade from the chart DOM panel.', 16, h / 2);
+      ctx.fillText('No closed trades yet — trade from the chart DOM panel.', 16, h / 2);
       return;
     }
     const minY = Math.min(...eq.y, 0);
@@ -370,7 +409,7 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
     stat('Trades', String(s.trades));
     stat('Win rate', s.winRate.toFixed(1) + '%', s.winRate >= 50 ? 'var(--green)' : 'var(--red)');
     stat('Net P&L', '$' + fmt(s.netPnl), s.netPnl >= 0 ? 'var(--green)' : 'var(--red)');
-    stat('Profit factor', s.profitFactor === Infinity ? 'âˆž' : fmt(s.profitFactor));
+    stat('Profit factor', s.profitFactor === Infinity ? '∞' : fmt(s.profitFactor));
     stat('Expectancy', '$' + fmt(s.expectancy));
     stat('Max DD', '$' + fmt(s.maxDrawdown), 'var(--red)');
     stat('Avg R', fmt(s.avgR, 2) + 'R');
@@ -393,19 +432,19 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
     slipBox.replaceChildren();
     const slipTitle = document.createElement('div');
     slipTitle.className = 'perf-chart-title';
-    slipTitle.textContent = `Slippage analytics â€” ${state.symbol}`;
+    slipTitle.textContent = `Slippage analytics — ${state.symbol}`;
     slipBox.appendChild(slipTitle);
     const slipStats = SLIPPAGE_STORE.forSymbol(state.symbol);
     const line = document.createElement('div');
     line.className = 'advice-row info';
     line.textContent = slipStats.count
-      ? `Measured from your fills: median ${fmt(slipStats.median, 3)} pts Â· mean ${fmt(slipStats.mean, 3)} Â· 90th ${fmt(slipStats.p90, 3)} Â· 95th ${fmt(slipStats.p95, 3)} (${slipStats.count} observations)`
-      : 'No observations yet â€” slippage is measured live from each of your fills.';
+      ? `Measured from your fills: median ${fmt(slipStats.median, 3)} pts · mean ${fmt(slipStats.mean, 3)} · 90th ${fmt(slipStats.p90, 3)} · 95th ${fmt(slipStats.p95, 3)} (${slipStats.count} observations)`
+      : 'No observations yet — slippage is measured live from each of your fills.';
     slipBox.appendChild(line);
     for (const [k, v] of Object.entries(SLIPPAGE_STORE.byOrderType(state.symbol))) {
       const r = document.createElement('div');
       r.className = 'advice-row info';
-      r.textContent = `${k}: median ${fmt(v.median, 3)} Â· p95 ${fmt(v.p95, 3)} (${v.count})`;
+      r.textContent = `${k}: median ${fmt(v.median, 3)} · p95 ${fmt(v.p95, 3)} (${v.count})`;
       slipBox.appendChild(r);
     }
 

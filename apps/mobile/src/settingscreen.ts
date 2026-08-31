@@ -147,14 +147,53 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     persistSettings();
   });
 
-  scroll.appendChild(card('Massive Feed (accurate live data)', [
-    row('API key', massiveInput),
+  scroll.appendChild(card('Data Feeds', [
+    row('Massive API key', massiveInput),
     massiveStatus,
     massiveTestBtn,
     (() => {
+      // Yahoo (yfinance) feed toggle — always available real data, no key.
+      // When Massive is unset or rejected, this keeps the app on REAL prices
+      // instead of silently degrading to synthetic.
+      const wrap = document.createElement('div');
+      wrap.style.marginTop = '10px';
+      const lbl = document.createElement('div');
+      lbl.textContent = 'Yahoo Finance (yfinance)';
+      lbl.style.cssText = 'font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px;';
+      const sub = document.createElement('div');
+      sub.textContent = 'Free real market data — always on, no API key. Used automatically whenever Massive is not configured.';
+      sub.className = 'set-info';
+      const yBtn = document.createElement('button');
+      yBtn.className = 'editor-run';
+      yBtn.textContent = 'USE YFINANCE DATA NOW';
+      yBtn.addEventListener('click', async () => {
+        yBtn.textContent = 'Testing Yahoo...';
+        try {
+          const { fetchYahooBars } = await import('./yahoo');
+          const bars = await fetchYahooBars('SPY', '5m');
+          if (!bars || bars.length === 0) throw new Error('no data returned');
+          const last = bars[bars.length - 1];
+          const t = document.createElement('div'); t.className = 'toast ok';
+          t.textContent = `Yahoo OK — SPY $${last.close.toFixed(2)} @ ${new Date(last.timestamp).toLocaleString()}`;
+          document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
+          yBtn.textContent = 'YFINANCE ACTIVE — REAL DATA ✓';
+          (yBtn as HTMLButtonElement).disabled = false;
+        } catch (e: any) {
+          const t = document.createElement('div'); t.className = 'toast err';
+          t.textContent = 'Yahoo unreachable: ' + (e?.message || e);
+          document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
+          yBtn.textContent = 'USE YFINANCE DATA NOW';
+        }
+      });
+      wrap.appendChild(lbl);
+      wrap.appendChild(sub);
+      wrap.appendChild(yBtn);
+      return wrap;
+    })(),
+    (() => {
       const i = document.createElement('div');
       i.className = 'set-info';
-      i.textContent = 'Paste your Massive API key and the app fetches real tick-derived bars straight from Massive — including 1s/5s/10s/30s timeframes. Stored only on this device.';
+      i.textContent = 'Massive fetches real tick-derived bars (1s–30s timeframes) with an API key; Yahoo (yfinance) provides free real prices for every standard timeframe with zero setup.';
       return i;
     })(),
   ]));
@@ -389,9 +428,24 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     persistSettings();
   });
 
+  // One-Click Trading — on = OST buttons execute instantly with no confirm
+  // dialog; off = every order passes through the confirmation sheet.
+  const octSel = document.createElement('select');
+  ([['off', 'Off — confirm every order'], ['on', 'On — instant, no confirmation']] as const).forEach(([v, l]) => {
+    const o = document.createElement('option'); o.value = v; o.textContent = l; octSel.appendChild(o);
+  });
+  octSel.value = loadBrokerSettings().oneClick ? 'on' : 'off';
+  octSel.addEventListener('change', () => {
+    const s = loadBrokerSettings();
+    s.oneClick = octSel.value === 'on';
+    saveBrokerSettings(s);
+    try { (window as any).__dafeSyncOneClick?.(s.oneClick); } catch {}
+  });
+
   scroll.appendChild(card('Display', [
     row('Performance', perfSel),
     row('Default bar type', barSel),
+    row('One-Click Trading', octSel),
   ]));
 
   // ── Performance Tricks ───────────────────────────────────────────

@@ -1,4 +1,4 @@
-import type { BaseBar, VolumeProfileMode } from '@dafe/types';
+﻿import type { BaseBar, VolumeProfileMode } from '@dafe/types';
 import type { PerBarVolume } from '../../web/src/data-generator';
 import {
   generateBars, generatePerBarVolumes, transformBars,
@@ -49,6 +49,7 @@ export interface ChartScreen {
   setVpEnabled: (on: boolean) => void;
   setLive: (on: boolean) => void;
   set3D: (on: boolean) => void;
+  resetView: () => void;
   refreshIndicators: () => void;
   dispose: () => void;
 }
@@ -69,7 +70,50 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
 
   let perBarVols: PerBarVolume[] = [];
   let vpCache: { key: string; computed: VPComputed } | null = null;
-  let formingBar: BaseBar | null = null;
+
+  // ── Dashboard strip (fixed, static) ─────────────────────────────────
+  // One DOM element below the x-axis; OakScript table()/label() readouts land
+  // here. Metrics adapt to the strip's fixed space (clamped, rounded), so the
+  // dashboard never runs off-screen or behind the OST rail again.
+  const dashStrip = document.createElement('div');
+  dashStrip.id = 'dashboard-strip';
+  container.appendChild(dashStrip);
+  let dashLastRender = 0;
+  function renderDashboardStrip(plots: any[]): void {
+    const now = performance.now();
+    if (now - dashLastRender < 900) return;
+    dashLastRender = now;
+    const tables = plots.filter(p => p.type === 'table' && Array.isArray(p.cells) && p.cells.length > 0);
+    const labels = plots.filter(p => p.type === 'label' && typeof p.text === 'string' && p.text.length > 0);
+    if (tables.length === 0 && labels.length === 0) {
+      if (dashStrip.childElementCount > 0) dashStrip.replaceChildren();
+      dashStrip.style.display = 'none';
+      return;
+    }
+    dashStrip.style.display = 'flex';
+    let changed = false;
+    const desired: string[] = [];
+    for (const t of tables) {
+      for (const row of t.cells as any[][]) {
+        for (const cell of row) {
+          if (cell?.text) desired.push(`${t.name || ''}: ${String(cell.text).slice(0, 24)}`);
+        }
+      }
+    }
+    for (const l of labels) desired.push(String(l.text).slice(0, 30));
+    const cur = Array.from(dashStrip.children).map(el => (el as HTMLElement).title || el.textContent || '');
+    if (cur.length !== desired.length || desired.some((d, i) => d !== cur[i])) changed = true;
+    if (changed) {
+      dashStrip.replaceChildren();
+      for (const d of desired.slice(0, 12)) {
+        const chip = document.createElement('div');
+        chip.className = 'dash-chip';
+        chip.textContent = d.split(': ')[d.startsWith(' ') ? 0 : 1] || d;
+        chip.title = d;
+        dashStrip.appendChild(chip);
+      }
+    }
+  }
 
   // ── Genuine 3D capability detection + graceful fallback ──────────────
   // The Three.js renderer is the DEFAULT for plot3d indicators. The 2D proxy
@@ -312,76 +356,23 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     mark3DSceneDirty();
   }
 
-  function tickLive(): void {
-    const src = state.bars;
-    if (src.length === 0) return;
-    const last = src[src.length - 1];
-    const now = Date.now();
-    const intervalMs = TIMEFRAME_MS[state.timeframe];
-    const syntheticFeed = state.dataProvider === 'synthetic';
-
-    // Completed-bar boundary: roll a new bar seeded from the last close.
-    if (syntheticFeed && now - last.timestamp >= intervalMs) {
-      const prevClose = last.close;
-      const price = prevClose + (Math.random() - 0.48) * prevClose * 0.008;
-      const nb: BaseBar = {
-        timestamp: Math.floor(now / intervalMs) * intervalMs,
-        open: Math.round(price * 100) / 100,
-        high: Math.round(Math.max(price, prevClose) * 100) / 100,
-        low: Math.round(Math.min(price, prevClose) * 100) / 100,
-        close: Math.round(price * 100) / 100,
-        volume: Math.round(100 + Math.random() * 5000),
-      };
-      src.push(nb);
-    } else if (!syntheticFeed && formingBar && now - formingBar.timestamp >= intervalMs) {
-      const previous = formingBar;
-      formingBar = {
-        ...previous,
-        timestamp: previous.timestamp + intervalMs,
-        open: previous.close,
-        high: previous.close,
-        low: previous.close,
-        close: previous.close,
-        volume: 0,
-      };
-      src.push(formingBar);
-    } else if (syntheticFeed) {
-      // Synthetic feed: the generator's bars are simulated anyway — extend in place.
-      const volatility = last.close * 0.0003;
-      const change = (Math.random() - 0.5) * volatility * 2;
-      last.close = Math.max(0.01, last.close + change);
-      if (last.close > last.high) last.high = last.close;
-      if (last.close < last.low) last.low = last.close;
-      last.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
-    } else {
-      // Real feed (Yahoo/Massive/backend): NEVER rewrite completed OHLC history.
-      // Maintain a separate forming bar appended after the fetched data.
-      if (!formingBar) {
-        formingBar = { ...last, timestamp: Math.floor(now / intervalMs) * intervalMs };
-      }
-      const volatility = formingBar.close * 0.0003;
-      const change = (Math.random() - 0.5) * volatility * 2;
-      formingBar.close = Math.max(0.01, formingBar.close + change);
-      if (formingBar.close > formingBar.high) formingBar.high = formingBar.close;
-      if (formingBar.close < formingBar.low) formingBar.low = formingBar.close;
-      formingBar.volume += Math.round(Math.abs(change * 10000) + Math.random() * 50);
-      if (src[src.length - 1] !== formingBar) src.push(formingBar);
-    }
-    const priceRef = syntheticFeed ? last.close : (formingBar ? formingBar.close : last.close);
-    rebuildTransformed();
-    if (performance.now() - lastIndicatorRun > 800) runIndicators();
-    loadBroker().tick(state.symbol, priceRef, now);
-    cb.onEngineTick(priceRef, now);
-    notifyPrice();
-  }
 
   function setLive(on: boolean): void {
+    // Live tick simulation is REMOVED — synthetic random-walk corrupted real
+    // data. setLive now drives a REAL-feed auto-refresher instead: while the
+    // chart is visible it re-fetches from the live provider on a fixed cadence
+    // (real prices, real weekends — closed markets simply show no new bars).
     state.liveEnabled = on;
+    if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
     if (on) {
-      liveTimer = setInterval(tickLive, 300);
-    } else if (liveTimer) {
-      clearInterval(liveTimer);
-      liveTimer = null;
+      liveTimer = setInterval(() => {
+        if (document.hidden) return;
+        if (state.dataProvider === 'synthetic') return; // nothing real to poll
+  void loadBars();
+  // Real-feed auto-refresh is always on (60s cadence, paused while hidden
+  // or on synthetic data). The user never manages a play/pause again.
+  setLive(true);
+      }, 60_000);
     }
   }
 
@@ -557,6 +548,13 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       drawOHLCTooltip(ctx, bars, view, state.crosshair.x, state.crosshair.y, state.barType);
     }
 
+    // ── Dashboard strip ──
+    // Indicator table()/label() readouts render into a FIXED static strip
+    // below the x-axis instead of free-floating on the canvas (where the OST
+    // rail and buy/sell buttons used to cover them). Panel metrics adapt to
+    // the strip, never the other way around.
+    renderDashboardStrip(enabledPlots);
+
     rafId = requestAnimationFrame(draw);
   }
 
@@ -624,6 +622,12 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     setVpEnabled,
     setLive,
     set3D,
+    resetView: () => {
+      // Pure view reset — pan/zoom/scale back to the default framing.
+      // Never touches indicators, orders, or positions.
+      state.view = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
+      momentum = { vx: 0, vy: 0 };
+    },
     refreshIndicators: () => { runIndicators(); },
     dispose: () => {
       disposed = true;

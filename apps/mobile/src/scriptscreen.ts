@@ -118,12 +118,13 @@ export function createScriptScreen(container: HTMLDivElement, chart: ChartScreen
     overlay.appendChild(dlg); overlay.addEventListener('click',(ev)=>{ if(ev.target===overlay) overlay.remove(); }); document.body.appendChild(overlay);
   });
 
-  // LLM Chat (present on both pages) — floating panel with close + minimize
+  // LLM Chat (present on both pages) — floating DRAGGABLE panel with
+  // close + minimize + top-left actions menu (save / manual edit / export).
   const chatBox = document.createElement('div');
   chatBox.id = 'editor-chat-panel';
   chatBox.className = 'editor-chat-panel';
   const chatHeader = document.createElement('div');
-  chatHeader.className = 'editor-chat-header';
+  chatHeader.className = 'editor-chat-header editor-chat-draghandle';
   const chatHeaderTitle = document.createElement('div');
   chatHeaderTitle.className = 'editor-chat-title';
   chatHeaderTitle.textContent = 'OakScript Editor — Chat';
@@ -141,13 +142,97 @@ export function createScriptScreen(container: HTMLDivElement, chart: ChartScreen
   chatHeaderBtns.appendChild(closeBtn);
   chatHeader.appendChild(chatHeaderTitle);
   chatHeader.appendChild(chatHeaderBtns);
+
+  // ── Drag-to-move: grab the header anywhere (except buttons) ──
+  {
+    let dragging = false, dx = 0, dy = 0;
+    chatHeader.addEventListener('pointerdown', (e: PointerEvent) => {
+      if ((e.target as HTMLElement).closest('button')) return;
+      const r = chatBox.getBoundingClientRect();
+      chatBox.style.left = `${r.left}px`;
+      chatBox.style.top = `${r.top}px`;
+      chatBox.style.right = 'auto';
+      chatBox.style.bottom = 'auto';
+      dx = e.clientX - r.left; dy = e.clientY - r.top;
+      dragging = true;
+      chatHeader.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+    chatHeader.addEventListener('pointermove', (e: PointerEvent) => {
+      if (!dragging) return;
+      const x = Math.max(0, Math.min(window.innerWidth - 80, e.clientX - dx));
+      const y = Math.max(0, Math.min(window.innerHeight - 60, e.clientY - dy));
+      chatBox.style.left = `${x}px`;
+      chatBox.style.top = `${y}px`;
+    });
+    const stopDrag = () => { dragging = false; };
+    chatHeader.addEventListener('pointerup', stopDrag);
+    chatHeader.addEventListener('pointercancel', stopDrag);
+  }
+
+  // ── Top-left actions menu: Save / Manual edit / Export .txt ──
+  const chatMenuBtn = document.createElement('button');
+  chatMenuBtn.className = 'editor-chat-iconbtn editor-chat-menubtn';
+  chatMenuBtn.textContent = '☰';
+  chatMenuBtn.title = 'Script actions';
+  const chatMenu = document.createElement('div');
+  chatMenu.className = 'editor-chat-menu';
+  function chatMenuItem(label: string, fn: () => void): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', (e) => { e.stopPropagation(); chatMenu.style.display = 'none'; fn(); });
+    chatMenu.appendChild(b);
+    return b;
+  }
+  chatMenuItem('Save signal', () => saveBtn.click());
+  chatMenuItem('Manual edit code', () => {
+    // Restore direct code editing: page switches to Code Editing and focuses
+    // the editor with the current draft loaded.
+    pageSel.value = 'code';
+    pageSel.dispatchEvent(new Event('change'));
+    customEditor.style.display = '';
+    editorBar.style.display = '';
+    listEl.style.display = '';
+    btBox.style.display = 'none';
+    customEditor.focus();
+    const t2 = document.createElement('div'); t2.className = 'toast ok'; t2.textContent = 'Manual edit enabled — code editor focused';
+    document.body.appendChild(t2); setTimeout(() => t2.remove(), 2500);
+  });
+  chatMenuItem('Export script (.txt)', async () => {
+    const name = (customEditor.value.match(/\/\/\s*(.{4,40})$/m)?.[1] || 'oakscript')
+      .replace(/[^a-zA-Z0-9 _-]/g, '').trim().replace(/\s+/g, '-') || 'oakscript';
+    try {
+      const { submitReport } = await import('./reports');
+      submitReport({
+        subject: name,
+        filename: `${name}.txt`,
+        html: '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + name + '</title><body><pre style="font-family:monospace;white-space:pre-wrap;background:#0a0a18;color:#e8e8ff;padding:16px">' + customEditor.value.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre></body></html>',
+        text: customEditor.value.slice(0, 500),
+        onDone: (m) => { const t3 = document.createElement('div'); t3.className = 'toast ok'; t3.textContent = m; document.body.appendChild(t3); setTimeout(() => t3.remove(), 3500); },
+      });
+    } catch (e: any) {
+      const t3 = document.createElement('div'); t3.className = 'toast err'; t3.textContent = 'Export failed: ' + (e?.message || e);
+      document.body.appendChild(t3); setTimeout(() => t3.remove(), 3500);
+    }
+  });
+  chatMenuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    chatMenu.style.display = chatMenu.style.display === 'flex' ? 'none' : 'flex';
+  });
+  document.addEventListener('click', (e) => {
+    if (!chatMenu.contains(e.target as Node) && e.target !== chatMenuBtn) chatMenu.style.display = 'none';
+  });
+  chatMenu.style.display = 'none';
+  chatHeader.insertBefore(chatMenuBtn, chatHeaderTitle);
+  chatHeader.appendChild(chatMenu);
+
   const chatBody = document.createElement('div');
   chatBody.className = 'editor-chat-body';
   const chatLog = document.createElement('div'); chatLog.className = 'editor-chat-log';
   const chatInput = document.createElement('textarea'); chatInput.className = 'editor-chat-input'; chatInput.placeholder='Describe the indicator you want... e.g. "RSI divergence with buy/sell triangles"';
   const chatInputRow = document.createElement('div');
   chatInputRow.className = 'editor-chat-inputrow';
-  const chatSend = document.createElement('button'); chatSend.className = 'editor-run'; chatSend.textContent='Ask Editor';
+  const chatSend = document.createElement('button'); chatSend.className='editor-run'; chatSend.textContent='Ask Editor';
   const chatStatus = document.createElement('div'); chatStatus.className = 'set-status editor-chat-status';
   chatInputRow.appendChild(chatInput);
   chatInputRow.appendChild(chatSend);
@@ -317,6 +402,16 @@ RULES — 100% accuracy is PASS:
             + kb.slice(-5).map((k: any) => `- "${k.name}" :: request: ${String(k.request || '').slice(0, 120)} :: ${k.fixesApplied}`).join('\n');
         }
       } catch {}
+      // LESSON BANK — every verification failure this editor has ever hit.
+      // These are mistakes you (or a previous editor session) made and paid
+      // for with fix rounds. NEVER repeat them.
+      try {
+        const bank: string[] = JSON.parse(localStorage.getItem('dafe_editor_lessons') || '[]');
+        if (Array.isArray(bank) && bank.length > 0) {
+          kbBlock += '\n\nNEVER REPEAT THESE VERIFIED FAILURES (real mistakes from prior sessions):\n'
+            + bank.slice(-12).map((b: string) => '- ' + b).join('\n');
+        }
+      } catch {}
       const ownBlock = mem.lastScript
         ? `\n\nYOUR LAST GENERATED SCRIPT (you wrote this in a previous turn — it is NOT user-provided; when the user asks for fixes or says "fix the errors", they mean THIS script. Either fix it or fully rewrite it, but never disown it):\n\`\`\`oakscript\n${mem.lastScript.slice(0, 3000)}\n\`\`\``
         : '';
@@ -335,10 +430,15 @@ RULES — 100% accuracy is PASS:
         let working = code;
         let round = 0;
         const MAX_FIX_ROUNDS = 3;
+        // LEARNING: each failure the loop hits (and the fix that resolved it)
+        // is persisted as a permanent lesson. Every future turn injects these
+        // so the editor AVOIDS repeating the same mistakes.
+        const lessons: { err: string; }[] = [];
         while (round < MAX_FIX_ROUNDS) {
           const check = verifyScript(working);
           if (check.ok) break;
           round++;
+          for (const e of check.errors.slice(0, 4)) lessons.push({ err: e.slice(0, 200) });
           const step = document.createElement('div');
           step.textContent = `Editor: self-check round ${round} failed — ${check.errors.slice(0, 2).join(' | ').slice(0, 300)}`;
           step.style.color = 'var(--warn)';
@@ -357,7 +457,11 @@ ${working.slice(0, 3500)}
             const fixAns = await callLLM(system, fixPrompt);
             const fixMatch = fixAns.match(/```(?:oakscript)?\s*([\s\S]*?)```/i);
             if (!fixMatch || !fixMatch[1].includes('plot')) throw new Error('fix round returned no script');
+            const prev = working;
             working = fixMatch[1].trim();
+            // A round that ENDED the loop verified clean — record what fixed it.
+            if (verifyScript(working).ok) lessons.push({ err: `RESOLVED by round ${round} regeneration` });
+            void prev;
           } catch (fixErr: any) {
             const fe = document.createElement('div');
             fe.textContent = 'Fix round error: ' + (fixErr?.message || fixErr);
@@ -365,6 +469,18 @@ ${working.slice(0, 3500)}
             chatLog.appendChild(fe);
             break;
           }
+        }
+        // Persist lessons to the durable LESSON bank (deduped, capped).
+        if (lessons.length > 0) {
+          try {
+            const LK = 'dafe_editor_lessons';
+            const bank: string[] = JSON.parse(localStorage.getItem(LK) || '[]');
+            for (const l of lessons) {
+              const t = l.err;
+              if (!bank.some(b => b.slice(0, 60) === t.slice(0, 60))) bank.push(t);
+            }
+            localStorage.setItem(LK, JSON.stringify(bank.slice(-25)));
+          } catch {}
         }
         const finalCheck = verifyScript(working);
         customEditor.value = working; localStorage.setItem(CUSTOM_SOURCE_KEY, working);

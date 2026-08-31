@@ -93,12 +93,20 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   }
   // If we already have cached resources, just resize and return
   if (_renderer && _scene && _camera) {
+    // Live height — the mobile host sets __dafeLowerHeight whenever the user
+    // resizes the pane, so the GL scene always fills the actual container
+    // (no fixed-height GL floating in black unused space).
+    const liveH = (window as any).__dafeLowerHeight;
+    const effH = (typeof liveH === 'number' && liveH > 30) ? liveH : h;
+    if (c.style.height !== `${effH}px`) c.style.height = `${effH}px`;
     const pw = c.parentElement?.clientWidth || 1200;
-    _renderer.setSize(pw, h, false);
-    _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    _camera.aspect = pw / h; _camera.updateProjectionMatrix();
-    _composer?.setSize(pw, h);
-    _bloomPass?.setSize(pw, h);
+    if (c.width !== pw || c.height !== effH) {
+      _renderer.setSize(pw, effH, false);
+      _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+      _camera.aspect = pw / effH; _camera.updateProjectionMatrix();
+      _composer?.setSize(pw, effH);
+      _bloomPass?.setSize(pw, effH);
+    }
     return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   }
   try {

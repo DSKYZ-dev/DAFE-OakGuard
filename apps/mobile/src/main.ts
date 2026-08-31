@@ -65,6 +65,7 @@ function boot(): void {
 
   const priceBox = document.createElement('div');
   priceBox.id = 'tb-price';
+  priceBox.style.cursor = 'pointer';
   const priceEl = document.createElement('span');
   priceEl.className = 'price';
   priceEl.textContent = '--';
@@ -79,6 +80,23 @@ function boot(): void {
   priceBox.appendChild(priceEl);
   priceBox.appendChild(changeEl);
   priceBox.appendChild(sourceEl);
+  // Tap the price for full data provenance — symbol, price, date/time of the
+  // newest bar, and which feed actually produced it. Makes any stale/fake
+  // data instantly visible instead of silently misleading.
+  priceBox.addEventListener('click', () => {
+    const b = state.bars[state.bars.length - 1];
+    const when = b ? new Date(b.timestamp) : null;
+    const badge = PROVIDER_BADGE[state.dataProvider];
+    const msg = when
+      ? `${state.symbol} · $${b.close.toFixed(2)}\n\nLast bar: ${when.toLocaleDateString()} ${when.toLocaleTimeString()}\nBar open: $${b.open.toFixed(2)} · high $${b.high.toFixed(2)} · low $${b.low.toFixed(2)}\n\nFeed: ${badge.label} (${state.dataProvider})\nSynthetic bars timestamped to the current wall clock; real feeds carry the exchange's bar time.`
+      : 'No bars loaded yet';
+    const t = document.createElement('div');
+    t.className = 'toast ' + (state.dataProvider === 'synthetic' ? 'warn' : 'ok');
+    t.style.whiteSpace = 'pre-line';
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 6000);
+  });
 
   const PROVIDER_BADGE: Record<DataProvider, { label: string; color: string; title: string }> = {
     backend: { label: '● LIVE', color: 'var(--green)', title: 'Connected feed — live data' },
@@ -95,23 +113,14 @@ function boot(): void {
     priceBox.title = `${state.symbol} · ${b.title}`;
   }
 
-  const liveBtn = document.createElement('button');
-  liveBtn.id = 'tb-live';
-  liveBtn.textContent = '▶';
-  liveBtn.title = 'Live tick simulation';
-  liveBtn.addEventListener('click', () => {
-    const on = !state.liveEnabled;
-    state.liveEnabled = on;
-    liveBtn.classList.toggle('active', on);
-    liveBtn.textContent = on ? '❚❚' : '▶';
-    chart.setLive(on);
-    navigator.vibrate?.(10);
-  });
+  // Live tick simulation button REMOVED by design: the random-walk "live"
+  // feed corrupted real data (weekend price swings on closed markets, price
+  // divergence vs real venues, stale price across symbol switches). Real
+  // feeds refresh themselves; the chart never needs a manual play/pause.
 
   topbar.appendChild(symbolBtn);
   topbar.appendChild(tfBtn);
   topbar.appendChild(priceBox);
-  topbar.appendChild(liveBtn);
 
   // ── Screens ────────────────────────────────────────────────────
   const screens: Record<TabId, HTMLDivElement> = Object.fromEntries(
@@ -134,10 +143,30 @@ function boot(): void {
   const domBar = document.createElement('div'); domBar.style.display='flex'; domBar.style.gap='6px'; domBar.style.padding='4px 8px'; domBar.style.alignItems='center'; domBar.style.background='rgba(10,10,20,0.85)'; domBar.style.borderBottom='1px solid rgba(180,140,255,0.12)'; domBar.style.flexShrink='0';
   const domSel = document.createElement('select'); domSel.style.flex='1'; domSel.style.fontSize='11px'; domSel.style.padding='4px 6px'; domSel.style.border='1px solid rgba(180,140,255,0.15)'; domSel.style.borderRadius='6px'; domSel.style.background='rgba(12,12,28,0.95)'; domSel.style.color='rgba(255,255,255,0.75)'; domSel.style.outline='none';
   for(const [v,l] of [['both','Both (Main over Lower)'],['main','Main Only'],['lower','Lower Only']] as const){ const o=document.createElement('option'); o.value=v; o.textContent=l; o.style.background='rgba(12,12,28,0.95)'; o.style.color='rgba(255,255,255,0.85)'; if(v===paneDominance) o.selected=true; domSel.appendChild(o); }
-  const pctLabel = document.createElement('span'); pctLabel.style.fontSize='10px'; pctLabel.style.opacity='0.7'; pctLabel.style.minWidth='110px'; pctLabel.style.textAlign='right';
-  function updatePctLabel(){ if(paneDominance==='both') pctLabel.textContent=`Lower ${lowerPct}% — Main ${100-lowerPct}%`; else if(paneDominance==='main') pctLabel.textContent='Main Only'; else pctLabel.textContent='Lower Only'; }
-  updatePctLabel();
-  domBar.appendChild(domSel); domBar.appendChild(pctLabel);
+
+  // ── Indicator manager dropdown (replaces the old pct label) ──
+  // Shows EVERY active indicator — library toggles, saved signals AND the
+  // unsaved test script — each with a × remove button. This is the only
+  // way to close out a testing script without saving it.
+  const indSel = document.createElement('select'); indSel.style.flex='1.2'; indSel.style.fontSize='11px'; indSel.style.padding='4px 6px'; indSel.style.border='1px solid rgba(180,140,255,0.15)'; indSel.style.borderRadius='6px'; indSel.style.background='rgba(12,12,28,0.95)'; indSel.style.color='rgba(255,255,255,0.75)'; indSel.style.outline='none';
+  const indRemoveBtn = document.createElement('button'); indRemoveBtn.textContent='×'; indRemoveBtn.title='Remove selected indicator from chart';
+  indRemoveBtn.style.cssText='flex-shrink:0;width:30px;height:28px;border-radius:6px;border:1px solid rgba(255,68,119,.4);background:rgba(255,68,119,.08);color:var(--red);font-size:14px;font-weight:800;cursor:pointer;';
+  function refreshIndSel(){
+    indSel.replaceChildren();
+    const active = state.indicators.filter(i=>i.enabled);
+    if (active.length===0){ const o=document.createElement('option'); o.value=''; o.textContent='No indicators on chart'; indSel.appendChild(o); indRemoveBtn.style.display='none'; return; }
+    indRemoveBtn.style.display='';
+    for (const ind of active){ const o=document.createElement('option'); o.value=ind.id; o.textContent=(ind.id==='custom'?'⚙ Test script: ':'')+ind.name; indSel.appendChild(o); }
+  }
+  indRemoveBtn.addEventListener('click', ()=>{
+    const id=indSel.value; if(!id) return;
+    const idx=state.indicators.findIndex(i=>i.id===id); if(idx>=0) state.indicators.splice(idx,1);
+    persistSettings(); refreshIndSel();
+    try{ (window as any).__dafeChartRefresh?.(); }catch{}
+  });
+  refreshIndSel();
+
+  domBar.appendChild(domSel); domBar.appendChild(indSel); domBar.appendChild(indRemoveBtn);
   chartInner.appendChild(domBar);
 
   const mainWrap = document.createElement('div'); mainWrap.style.flex='1'; mainWrap.style.position='relative'; mainWrap.style.minHeight='80px'; mainWrap.style.overflow='hidden';
@@ -151,12 +180,30 @@ function boot(): void {
   chartInner.appendChild(lowerWrap);
 
   function applyPaneDom(){
-    if(paneDominance==='main'){ mainWrap.style.display='flex'; mainWrap.style.flex='1'; mainWrap.style.flexDirection='column'; splitter.style.display='none'; lowerWrap.style.display='none'; updatePctLabel(); }
-    else if(paneDominance==='lower'){ mainWrap.style.display='none'; splitter.style.display='none'; lowerWrap.style.display='flex'; lowerWrap.style.height='100%'; lowerWrap.style.flex='1'; updatePctLabel(); }
+    // Authoritative on EVERY call — inline height AND flex are both reset so
+    // no stale expanded state survives a mode switch (the old 'lower' mode
+    // left flex='1' overriding the % height on return to 'both').
+    lowerWrap.style.flex='';
+    lowerWrap.style.height='';
+    mainWrap.style.flex='';
+    mainWrap.style.height='';
+    if(paneDominance==='main'){ mainWrap.style.display='flex'; mainWrap.style.flexDirection='column'; mainWrap.style.flex='1'; splitter.style.display='none'; lowerWrap.style.display='none'; }
+    else if(paneDominance==='lower'){ mainWrap.style.display='none'; splitter.style.display='none'; lowerWrap.style.display='flex'; lowerWrap.style.flex='1'; }
     else {
       if(lowerPct>80 || lowerPct<20){ lowerPct=45; try{localStorage.setItem('dafe_mobile_lower_pct', String(lowerPct));}catch{} }
-      mainWrap.style.display='flex'; mainWrap.style.flexDirection='column'; mainWrap.style.flex='1'; splitter.style.display='flex'; lowerWrap.style.display='flex'; lowerWrap.style.height=`${lowerPct}%`; lowerWrap.style.flex=''; updatePctLabel();
+      mainWrap.style.display='flex'; mainWrap.style.flexDirection='column'; mainWrap.style.flex='1'; splitter.style.display='flex'; lowerWrap.style.display='flex'; lowerWrap.style.height=`${lowerPct}%`;
     }
+    // Keep the GL lower pane's camera/renderer matched to the NEW container
+    // height — otherwise expanding shows fixed-height GL content floating in
+    // black unused space.
+    try {
+      const glPane = document.getElementById('three-lower-scene') as HTMLCanvasElement | null;
+      if (glPane && lowerWrap.style.display !== 'none') {
+        const h = Math.max(60, lowerWrap.clientHeight - lowerLabel.clientHeight);
+        (window as any).__dafeLowerHeight = h;
+        glPane.style.height = `${h}px`;
+      }
+    } catch {}
   }
   domSel.addEventListener('change', ()=>{
     paneDominance=domSel.value as any;
@@ -178,10 +225,9 @@ function boot(): void {
     newPct=Math.max(15, Math.min(85, Math.round(newPct)));
     lowerPct=newPct;
     lowerWrap.style.height=`${lowerPct}%`;
-    pctLabel.textContent=`Lower ${lowerPct}% — Main ${100-lowerPct}%`;
     try{localStorage.setItem('dafe_mobile_lower_pct', String(lowerPct));}catch{}
   }
-  function endDrag(){ dragging=false; splitter.style.background='rgba(180,140,255,0.18)'; }
+  function endDrag(){ dragging=false; splitter.style.background='rgba(180,140,255,0.18)'; applyPaneDom(); }
   splitter.addEventListener('touchstart', (e)=>{ startDrag(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
   splitter.addEventListener('touchmove', (e)=>{ moveDrag(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
   splitter.addEventListener('touchend', endDrag);
@@ -249,44 +295,73 @@ function boot(): void {
   });
   const ostFab = document.createElement('button');
   ostFab.className = 'chart-fab';
-  ostFab.textContent = 'OST';
-  ostFab.title = 'On-screen trading menu';
+  ostFab.textContent = '⟲';
+  ostFab.title = 'Chart reset — restore both charts to starting positions (keeps indicators and trades)';
   ostFab.addEventListener('click', () => {
-    // Make sure the DOM/OST rail is mounted, then open the buy-side exec sheet.
-    state.domEnabled = true;
-    syncDom();
-    // dom is assigned by syncDom() — call openExecSheet if available.
-    queueMicrotask(() => {
-      if (dom && typeof (dom as any).openExecSheet === 'function') (dom as any).openExecSheet('buy');
-    });
+    // Reset ONLY viewing state — never indicators, orders, or positions.
+    chart.resetView();
+    paneDominance = 'both';
+    lowerPct = 45;
+    try { localStorage.setItem('dafe_mobile_pane_dom', 'both'); localStorage.setItem('dafe_mobile_lower_pct', '45'); } catch {}
+    applyPaneDom();
+    const t = document.createElement('div'); t.className = 'toast ok'; t.textContent = 'Chart reset — view restored';
+    document.body.appendChild(t); setTimeout(() => t.remove(), 2500);
+    navigator.vibrate?.(10);
   });
   chartFabLayer.appendChild(vpFab);
   chartFabLayer.appendChild(barTypeFab);
   chartFabLayer.appendChild(d3Fab);
   chartFabLayer.appendChild(ostFab);
 
-  function openOstSheet(): void {
-    // The OST sheet is defined and rendered by chartdom's own logic when the
-    // user double-taps / long-presses the buy/sell zones. Expose a global
-    // keyboard hint for desktop and a fallback DOM sheet for one-click use.
-    // (chartdom.openExecSheet is the canonical entry point.)
+  // ── Hot-Action menu (bottom-right, above the settings tab) ──
+  // One collapsed button; tapping expands the action stack upward:
+  // params → chart reset → bar types → volume profile. Tapping again
+  // collapses everything back under the single menu button.
+  const hotMenu = document.createElement('div');
+  hotMenu.id = 'hot-action-menu';
+  const hotBtn = document.createElement('button');
+  hotBtn.id = 'hot-action-btn';
+  hotBtn.textContent = '☰';
+  hotBtn.title = 'Chart actions';
+  const hotStack = document.createElement('div');
+  hotStack.id = 'hot-action-stack';
+  function makeHotAction(label: string, title: string, fn: () => void): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = 'hot-action-item';
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+    return b;
   }
-
-  // ── Indicator Params FAB (appears when any indicator is active) ──
-  const indParamsFab = document.createElement('button');
-  indParamsFab.id = 'indicator-params-fab';
-  indParamsFab.textContent = '⚙ Params';
-  indParamsFab.title = 'Adjust indicator parameters';
+  const hotParams = makeHotAction('⚙ Params', 'Adjust indicator parameters', () => openIndicatorParamsSheet());
+  const hotReset = makeHotAction('⟲ Reset', 'Reset chart view', () => ostFab.click());
+  const hotBarType = makeHotAction('◫ Bars', 'Bar type', () => openBarTypeSheet());
+  const hotVP = makeHotAction('VP', 'Volume profile', () => vpFab.click());
+  hotStack.appendChild(hotParams);
+  hotStack.appendChild(hotReset);
+  hotStack.appendChild(hotBarType);
+  hotStack.appendChild(hotVP);
+  let hotOpen = false;
+  function syncHotMenu(): void {
+    hotMenu.classList.toggle('open', hotOpen);
+    hotStack.style.display = hotOpen ? 'flex' : 'none';
+    hotBtn.textContent = hotOpen ? '✕' : '☰';
+  }
+  hotBtn.addEventListener('click', (e) => { e.stopPropagation(); hotOpen = !hotOpen; syncHotMenu(); });
+  // Tap anywhere outside collapses the stack.
+  document.addEventListener('click', (e) => {
+    if (hotOpen && !hotMenu.contains(e.target as Node)) { hotOpen = false; syncHotMenu(); }
+  });
+  hotMenu.appendChild(hotStack);
+  hotMenu.appendChild(hotBtn);
+  mainWrap.appendChild(hotMenu);
+  // Params visibility follows active indicators, same as the old lone fab.
   function syncIndParamsFab() {
     const hasEnabled = state.indicators.some(i => i.enabled);
-    indParamsFab.style.display = hasEnabled ? '' : 'none';
-    indParamsFab.disabled = !hasEnabled;
+    hotParams.style.display = hasEnabled ? '' : 'none';
+    hotParams.disabled = !hasEnabled;
   }
-  indParamsFab.addEventListener('click', () => openIndicatorParamsSheet());
-  mainWrap.appendChild(indParamsFab);
-  // Watch for indicator changes (poll lightly)
   setInterval(syncIndParamsFab, 1500);
-  // Initial
   setTimeout(syncIndParamsFab, 600);
 
   function parseInputs(source: string): { title: string; def: string; kind: 'bool'|'num'|'str'; min?: number; max?: number; step?: number }[] {
