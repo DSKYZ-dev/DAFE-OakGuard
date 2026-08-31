@@ -1,10 +1,12 @@
 /**
- * Self-contained report export — zero host dependency.
+ * Self-contained report export — native Capacitor path first.
  *
- * Generates a full standalone HTML document and hands it to the user via the
- * native share sheet (Android → Gmail/Drive/etc.) or a browser download. This
- * replaces the old `mailto:` + blob-URL approach, which produced a dead
- * localhost link that showed nothing.
+ * Previous version relied on <a download> + navigator.share, which silently
+ * do nothing in many Android WebViews (the "saved to Downloads" toast lied).
+ * Now: Capacitor Filesystem writes a REAL file to Documents, then the
+ * Capacitor Share plugin opens the native Android share sheet with that
+ * actual file attached — Gmail/Drive/Discord all receive a genuine .html.
+ * Falls back to web share/download only when not running as a native app.
  */
 
 export interface ReportOpts {
@@ -12,12 +14,62 @@ export interface ReportOpts {
   filename: string;
   /** Complete self-contained HTML document (inline CSS, no external refs). */
   html: string;
-  /** Plain-text summary for share previews / fallback mail body. */
+  /** Plain-text summary for share previews. */
   text: string;
   onDone?: (message: string) => void;
 }
 
-function downloadHtml(o: ReportOpts): void {
+async function shareNative(o: ReportOpts): Promise<boolean> {
+  try {
+    const cap = (window as any).Capacitor;
+    if (!cap?.isNativePlatform?.()) return false;
+    const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+    const { Share } = await import('@capacitor/share');
+
+    // Write the report as a real file in the app's Documents directory.
+    const fname = o.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    await Filesystem.writeFile({
+      path: fname,
+      data: o.html,
+      directory: Directory.Documents,
+      encoding: Encoding.UTF8,
+    });
+
+    // Read it back as a URI and hand it to the native share sheet.
+    const meta = await Filesystem.getUri({ path: fname, directory: Directory.Documents });
+    await Share.share({
+      title: o.subject,
+      text: o.text,
+      url: meta.uri,
+      dialogTitle: o.subject,
+    });
+    o.onDone?.(`Report saved & shared (${fname})`);
+    return true;
+  } catch (e: any) {
+    // User cancelling the share sheet is not a failure worth a toast-storm over.
+    if (String(e?.message || e).toLowerCase().includes('cancel')) {
+      o.onDone?.('Share cancelled — report still saved in Documents');
+      return true;
+    }
+    return false;
+  }
+}
+
+function webFallback(o: ReportOpts): void {
+  const nav = navigator as any;
+  // WebView/PWA path — try the share sheet, then a download.
+  try {
+    if (nav.share) {
+      nav.share({ title: o.subject, text: o.text })
+        .then(() => o.onDone?.('Shared'))
+        .catch(() => downloadWeb(o));
+      return;
+    }
+  } catch { /* fall through */ }
+  downloadWeb(o);
+}
+
+function downloadWeb(o: ReportOpts): void {
   try {
     const blob = new Blob([o.html], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
@@ -29,36 +81,13 @@ function downloadHtml(o: ReportOpts): void {
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    o.onDone?.(`Saved ${o.filename} — check your Downloads / Files`);
+    o.onDone?.(`Saved ${o.filename} via download`);
   } catch {
     o.onDone?.('Could not export report');
   }
 }
 
-export function submitReport(o: ReportOpts): void {
-  const nav = navigator as any;
-  const file = typeof File !== 'undefined' ? new File([o.html], o.filename, { type: 'text/html' }) : null;
-
-  // 1) Native share with the HTML file itself — fully self-contained.
-  if (nav.share && nav.canShare && file) {
-    try {
-      if (nav.canShare({ files: [file] })) {
-        nav.share({ title: o.subject, text: o.text, files: [file] })
-          .then(() => o.onDone?.(`Report shared (${o.filename})`))
-          .catch(() => downloadHtml(o));
-        return;
-      }
-    } catch {
-      /* fall through to download */
-    }
-  }
-
-  // 2) Text share (no file support).
-  if (nav.share) {
-    nav.share({ title: o.subject, text: o.text }).catch(() => downloadHtml(o));
-    return;
-  }
-
-  // 3) Download fallback.
-  downloadHtml(o);
+export async function submitReport(o: ReportOpts): Promise<void> {
+  const nativeOk = await shareNative(o);
+  if (!nativeOk) webFallback(o);
 }

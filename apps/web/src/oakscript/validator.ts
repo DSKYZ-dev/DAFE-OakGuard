@@ -773,6 +773,30 @@ export function validate(source: string): ValidationResult {
           });
         }
       }
+
+      // PLOTSHAPE CONDITION-FIRST (Pine signature) — the invisible-signal
+      // trap. Pine's plotshape(condition, ...) puts a boolean first; Oak's
+      // is plotshape(bar_index, price, "label", "style", color). A boolean
+      // arg0 falls back to ctx.barIndex (fine) but the agent's intended
+      // PRICE lands in the title slot and price becomes 0 — every marker
+      // renders at price 0, invisible at the chart's floor. Empirically
+      // prompt wording alone doesn't stop this, so it's caught here.
+      if (fnName === 'plotshape' || fnName === 'plotshape_3d') {
+        const firstArgEnd = nameEndIdx + 1;
+        const firstTok = tokens[firstArgEnd];
+        // Boolean literal first arg is always Pine-signature.
+        if (firstTok && firstTok.value === '(') {
+          const inner = tokens[firstArgEnd + 1];
+          if (inner && /^(true|false)$/i.test(inner.value)) {
+            issues.push({
+              line: t.line, col: t.col,
+              severity: 'error', code: 'PLOTSHAPE_PINE_SIGNATURE',
+              message: `${fnName}(true/false, ...) is the Pine signature — markers get price 0 and render invisible.`,
+              fix: `OakScript: ${fnName}(bar_index, low, "Buy", "triangleup", "#22cc88") — inside an if-block for the condition.`,
+            });
+          }
+        }
+      }
     }
   }
 

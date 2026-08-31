@@ -466,25 +466,92 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     emailBtn.addEventListener('click', () => {
       const t = table.cloneNode(true) as HTMLTableElement;
       const text = extractTableText(t);
+      // Rich rows with computed verdicts — drives both the cards and chart.
+      const rows: { id: string; reqW: number; reqO: number; hitW: number; hitO: number; errW: number; errO: number }[] = [];
+      for (const [id, r] of Object.entries(results)) {
+        rows.push({ id, reqW: r.with.requests, reqO: r.without.requests, hitW: r.with.hitRatio * 100, hitO: r.without.hitRatio * 100, errW: r.with.syntheticErrorPct, errO: r.without.syntheticErrorPct });
+      }
       const bodyHtml = Array.from(table.querySelectorAll('tr')).map((tr) => {
         const cells = Array.from(tr.querySelectorAll('th,td')).map((td) => `<td>${(td.textContent || '').trim()}</td>`).join('');
         return `<tr>${cells}</tr>`;
       }).join('');
+
+      // Per-trick verdict cards with signed-delta chips.
+      const cards = rows.map(r => {
+        const dReq = r.reqW - r.reqO, dHit = r.hitW - r.hitO, dErr = r.errW - r.errO;
+        const saves = dReq < 0 || dHit > 0;
+        const chip = (v: number, unit: string, good: boolean) =>
+          `<span class="chip ${v === 0 ? 'zero' : good ? 'good' : 'bad'}">${v > 0 ? '+' : ''}${v.toFixed(1)}${unit}</span>`;
+        return `<div class="card ${saves ? 'win' : 'loss'}">
+  <div class="card-name">${r.id}</div>
+  <div class="verdict">${saves ? '✓ IMPROVES' : '✗ REGRESSES'}</div>
+  <div class="chips">${chip(dReq, ' req', dReq <= 0)}${chip(dHit, '% hit', dHit >= 0)}${chip(-dErr, '% err', dErr <= 0)}</div>
+  <div class="nums">req ${r.reqW} vs ${r.reqO} · hit ${r.hitW.toFixed(0)}% vs ${r.hitO.toFixed(0)}% · err ${r.errW.toFixed(2)}% vs ${r.errO.toFixed(2)}%</div>
+</div>`;
+      }).join('');
+
+      // Horizontal bar chart of request savings (negative = saves requests).
+      const maxAbs = Math.max(1, ...rows.map(r => Math.abs(r.reqW - r.reqO)));
+      const bars = rows.map(r => {
+        const d = r.reqW - r.reqO;
+        const w = Math.abs(d) / maxAbs * 45;
+        const left = d < 0 ? 50 - w : 50;
+        return `<div class="bar-row"><span class="bar-label">${r.id}</span><div class="bar-track"><div class="bar-fill ${d <= 0 ? 'good' : 'bad'}" style="left:${left}%;width:${w}%"></div></div><span class="bar-val">${d > 0 ? '+' : ''}${d.toFixed(1)}</span></div>`;
+      }).join('');
+
+      const winners = rows.filter(r => (r.reqW - r.reqO) < 0 || (r.hitW - r.hitO) > 0);
+      const losers = rows.filter(r => (r.reqW - r.reqO) > 0 && (r.hitW - r.hitO) <= 0);
+
       const html =
-`<!DOCTYPE html><html><head><meta charset="utf-8"><title>DAFE Charts — Performance Tricks A/B Report</title><style>
-body{font-family:Segoe UI,system-ui,sans-serif;background:#05050f;color:#e8e8ff;padding:24px}
-h1{color:#b48cff;font-size:20px}h2{color:#00ff88;font-size:14px;margin-top:20px}
-p{color:#9a9ab8;font-size:11px}
-table{border-collapse:collapse;width:100%;font-size:11px;margin-top:10px}
-th,td{border:1px solid #1c1c3a;padding:6px 8px;text-align:center}
-th{color:#9a9ab8;text-transform:uppercase;font-size:9px;background:#0c0c1e}
+`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>DAFE Charts — Performance Tricks A/B Report</title><style>
+*{box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0a0a18;color:#e8e8ff;margin:0;padding:0}
+.wrap{max-width:760px;margin:0 auto;padding:28px 20px 40px}
+.hero{background:linear-gradient(135deg,#17123a 0%,#0d0a24 100%);border:1px solid rgba(180,140,255,.35);border-radius:16px;padding:22px;margin-bottom:22px}
+.hero h1{color:#fff;font-size:19px;margin:0 0 6px;letter-spacing:.5px}
+.hero .sub{color:#b48cff;font-size:11px;letter-spacing:1.5px;text-transform:uppercase}
+.hero .meta{color:#9a9ab8;font-size:10px;margin-top:8px}
+h2{color:#00ff88;font-size:13px;margin:26px 0 10px;letter-spacing:1px;text-transform:uppercase}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:10px}
+.card{background:#10101f;border:1px solid #1c1c3a;border-radius:12px;padding:12px}
+.card.win{border-color:rgba(0,255,136,.4)}
+.card.loss{border-color:rgba(255,68,119,.35)}
+.card-name{font-weight:800;font-size:12px;color:#fff}
+.verdict{font-size:9px;font-weight:800;letter-spacing:1px;margin:4px 0}
+.win .verdict{color:#00ff88}.loss .verdict{color:#ff4477}
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin:6px 0}
+.chip{font-size:9px;font-weight:700;padding:2px 7px;border-radius:8px}
+.chip.good{background:rgba(0,255,136,.12);color:#00ff88}
+.chip.bad{background:rgba(255,68,119,.12);color:#ff4477}
+.chip.zero{background:rgba(255,255,255,.06);color:#9a9ab8}
+.nums{color:#9a9ab8;font-size:9px}
+.bar-row{display:flex;align-items:center;gap:8px;margin:5px 0}
+.bar-label{width:130px;text-align:right;font-size:9px;color:#c9c9e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar-track{flex:1;height:10px;background:#0c0c1e;border-radius:5px;position:relative;overflow:hidden}
+.bar-fill{position:absolute;top:0;height:100%;border-radius:5px}
+.bar-fill.good{background:linear-gradient(90deg,#0d5c3f,#00ff88)}
+.bar-fill.bad{background:linear-gradient(90deg,#7a1f3d,#ff4477)}
+.bar-val{width:46px;font-size:9px;color:#9a9ab8;font-weight:700}
+.findings li{color:#c9c9e8;font-size:11px;line-height:1.7;margin-bottom:4px}
+.findings b{color:#00ff88}
+table{border-collapse:collapse;width:100%;font-size:10px;margin-top:10px}
+th,td{border:1px solid #1c1c3a;padding:5px 7px;text-align:center}
+th{color:#9a9ab8;text-transform:uppercase;font-size:8px;background:#0c0c1e}
 tr:nth-child(even) td{background:#0a0a18}
-</style></head><body>
-<h1>DAFE Charts — Performance Tricks A/B Report</h1>
-<p>ES=F 1m · 500-bar window · generated ${new Date().toLocaleString()}</p>
-<h2>With/Without Delta</h2>
-<table><tr><th>Trick</th><th>Req W/O</th><th>Δ Req</th><th>Hit W/O</th><th>Δ Hit</th><th>Err W/O</th><th>Δ Err</th></tr>${bodyHtml}</table>
-<p>Self-contained report — no network required.</p></body></html>`;
+.foot{color:#6a6a8a;font-size:9px;margin-top:28px;border-top:1px solid #1c1c3a;padding-top:12px}
+</style></head><body><div class="wrap">
+<div class="hero"><h1>⚡ DAFE Charts — Performance Tricks A/B Report</h1><div class="sub">14 isolated engine optimizations · independently measured</div><div class="meta">Benchmark: ES=F · 1m · 500-bar window · in-vitro deterministic harness · generated ${new Date().toLocaleString()}</div></div>
+<h2>Verdicts</h2><div class="grid">${cards}</div>
+<h2>Request Budget Impact</h2>${bars}
+<h2>Findings</h2><ul class="findings">
+<li><b>${winners.length} of ${rows.length} tricks measurably improve</b> request budgets or cache hit-ratios with this workload.</li>
+<li>Top request saver: <b>${[...rows].sort((a,b)=>(a.reqW-a.reqO)-(b.reqW-b.reqO))[0].id}</b> (${([...rows].sort((a,b)=>(a.reqW-a.reqO)-(b.reqW-b.reqO))[0].reqW - [...rows].sort((a,b)=>(a.reqW-a.reqO)-(b.reqW-b.reqO))[0].reqO).toFixed(0)} req).</li>
+<li>Top hit-ratio gain: <b>${[...rows].sort((a,b)=>(b.hitW-b.hitO)-(a.hitW-a.hitO))[0].id}</b> (+${([...rows].sort((a,b)=>(b.hitW-b.hitO)-(a.hitW-a.hitO))[0].hitW - [...rows].sort((a,b)=>(b.hitW-b.hitO)-(a.hitW-a.hitO))[0].hitO).toFixed(0)}%).</li>
+${losers.length ? `<li>${losers.length} trick(s) showed no benefit under this workload — ${losers.map(l=>l.id).join(', ')} — safe to leave off for this symbol/timeframe.</li>` : '<li>No regressions detected — every active trick is neutral-or-better.</li>'}
+</ul>
+<h2>Full A/B Matrix</h2><table><tr><th>Trick</th><th>Req W/O</th><th>Δ Req</th><th>Hit W/O</th><th>Δ Hit</th><th>Err W/O</th><th>Δ Err</th></tr>${bodyHtml}</table>
+<div class="foot">DAFE Charts · self-contained report — no network required · deterministic benchmark, reproducible run-for-run.</div>
+</div></body></html>`;
       submitReport({
         subject: 'DAFE Charts Performance Tricks A/B Report',
         filename: `dafe-tricks-${new Date().toISOString().slice(0, 10)}.html`,

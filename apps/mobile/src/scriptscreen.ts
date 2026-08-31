@@ -162,10 +162,46 @@ export function createScriptScreen(container: HTMLDivElement, chart: ChartScreen
     else { chatBox.classList.remove('minimized'); minBtn.textContent = '—'; minBtn.title = 'Minimize'; }
   }
   minBtn.addEventListener('click', () => setChatMinimized(!chatBox.classList.contains('minimized')));
-  closeBtn.addEventListener('click', () => chatBox.remove());
+  // Close HIDES the panel (never remove() — the node must stay reusable).
+  closeBtn.addEventListener('click', () => {
+    chatBox.style.display = 'none';
+    reopenBtn.style.display = '';
+  });
+  // Reopen affordance — a small pill that appears whenever chat is closed.
+  const reopenBtn = document.createElement('button');
+  reopenBtn.className = 'chat-reopen-pill';
+  reopenBtn.textContent = '💬 Editor';
+  reopenBtn.title = 'Reopen editor chat';
+  reopenBtn.style.display = 'none';
+  reopenBtn.addEventListener('click', () => {
+    chatBox.style.display = '';
+    reopenBtn.style.display = 'none';
+    setChatMinimized(false);
+  });
 
-  // Expose a push so chartscreen can auto-feed errors from a live indicator
-  // back to the chat (so the agent can see them on the next prompt).
+  // ── Editor memory bank ─────────────────────────────────────────
+  // Full position awareness across turns AND app restarts: conversation
+  // history, the agent's own last generated script, and the live error log
+  // are persisted and re-injected into EVERY call so the agent never treats
+  // a correction as a fresh conversation or as a user-provided script.
+  const MEM_KEY = 'dafe_editor_memory';
+  interface MemBank { history: { role: 'user' | 'editor'; text: string }[]; lastScript: string; errors: string[]; }
+  function loadMem(): MemBank {
+    try {
+      const m = JSON.parse(localStorage.getItem(MEM_KEY) || '{}');
+      return {
+        history: Array.isArray(m.history) ? m.history.slice(-12) : [],
+        lastScript: typeof m.lastScript === 'string' ? m.lastScript : '',
+        errors: Array.isArray(m.errors) ? m.errors.slice(-10) : [],
+      };
+    } catch { return { history: [], lastScript: '', errors: [] }; }
+  }
+  function saveMem(m: MemBank): void {
+    try { localStorage.setItem(MEM_KEY, JSON.stringify({ history: m.history.slice(-12), lastScript: m.lastScript, errors: m.errors.slice(-10) })); } catch {}
+  }
+  let mem: MemBank = loadMem();
+
+  // Errors pushed from the chart now LAND IN THE MEMORY BANK too.
   (window as any).__dafeEditorChat = (kind: 'info' | 'error' | 'user', text: string) => {
     if (!chatBox.isConnected) return;
     const el = document.createElement('div');
@@ -175,8 +211,26 @@ export function createScriptScreen(container: HTMLDivElement, chart: ChartScreen
     el.style.opacity = kind === 'info' ? '0.7' : '1';
     chatLog.appendChild(el);
     chatLog.scrollTop = chatLog.scrollHeight;
+    if (kind === 'error') { mem.errors.push(text.slice(0, 400)); saveMem(mem); }
     if (chatBox.classList.contains('minimized')) setChatMinimized(false);
   };
+
+  // Replay persisted memory into the visible log so the human also sees it.
+  (function replayMemory(): void {
+    for (const h of mem.history) {
+      const el = document.createElement('div');
+      el.textContent = `${h.role === 'user' ? 'You' : 'Editor'}: ${h.text.slice(0, 400)}`;
+      el.style.color = h.role === 'user' ? 'var(--accent)' : 'var(--cyan)';
+      chatLog.appendChild(el);
+    }
+    for (const e of mem.errors.slice(-3)) {
+      const el = document.createElement('div');
+      el.textContent = `Chart: ${e}`;
+      el.style.color = 'var(--red)';
+      chatLog.appendChild(el);
+    }
+    if (mem.history.length > 0 || mem.errors.length > 0) chatLog.scrollTop = chatLog.scrollHeight;
+  })();
 
   async function sendChat() {
     const prompt = chatInput.value.trim(); if (!prompt) return;
@@ -193,7 +247,19 @@ export function createScriptScreen(container: HTMLDivElement, chart: ChartScreen
       const entry2=document.createElement('div'); entry2.textContent='Editor: I need a bit more to nail it with 100% accuracy — 1) Market/symbol (e.g. ES=F, SPY, BTC)? 2) Timeframe? 3) Goal (scalp/swing/trend) and signal style (triangles vs labels)? 4) Any 3D/lower-panel vibe (storm field, ribbon, manifold)? Answer those and I\'ll generate the exact script.'; entry2.style.color='var(--cyan)'; chatLog.appendChild(entry2); chatSend.textContent='Ask Editor'; (chatSend as HTMLButtonElement).disabled=false; return;
     }
     try {
-      const system = `You are the DAFE OakScript Editor — the best on the planet at turning a trading idea into a working indicator. You write OAKSCRIPT, a bespoke DSL. THIS IS NOT PINESCRIPT, NOT TRADINGVIEW, NOT PINE — never emit ` + "`ta.*`" + `, ` + "`plotchar`" + `, ` + "`strategy.entry`" + `, or any Pine-only idiom. The chart engine is DAFE's own; every function it understands is listed below.
+      const system = `You are the DAFE OakScript Editor — the best on the planet at turning a trading idea into a working indicator. You write OAKSCRIPT, a bespoke DSL.
+
+ABSOLUTE BAN LIST (PineScript/TradingView — using ANY of these is a hard failure):
+✗ ta.* namespace (ta.sma, ta.rsi, ta.atr, ta.crossover — ALL bare in OakScript: sma, rsi, atr, crossover)
+✗ math.* (math.abs → abs), color.* (color.red → "#ff4477"), input.int/input.bool (→ single input())
+✗ indicator()/study()/strategy() declarations (scripts start directly with code)
+✗ named arguments (title="X") — OakScript is positional-only
+✗ nz()/na()/fixnan() (→ nz exists in OakScript? NO — use explicit finite checks or bar_index gates)
+✗ varip, request.security dotted form, barcolor style strings
+If you catch yourself writing ANY of these, STOP THE LINE, rewrite it in OakScript, and continue. A script that mixes Pine idioms into OakScript fails validation and renders NOTHING.
+
+CONTINUITY CONTRACT — you have a MEMORY BANK:
+You are NOT in a fresh conversation. The context below includes YOUR previous generated script, the live error log from running it on the chart, and the recent conversation. When the user says "fix it", "fix the errors", "make it work" — they are referring to YOUR OWN last script. NEVER claim "I finished what you gave me" — the script was yours, you complete it. When errors are listed, fix EVERY one of them in a complete rewritten script.
 
 OAKSCRIPT BUILTINS (the ONLY valid functions for math — anything else silently returns 0):
 sma, ema, wma, hma, rma, vwma, rsi, macd, cci, adx, atr, roc, mom, stoch, mfi, obv, cmf, vwap, stdev, median, linreg, correlation, crossover, crossunder, highest, lowest, pivothigh, pivotlow, barssince, cum, change, trueRange, log, nz, min, max, abs, round, floor, ceil, sqrt, pow, sin, cos, tan.
@@ -233,11 +299,89 @@ RULES — 100% accuracy is PASS:
 - 3D: choose pane/style coherently, not abstract. Main chart pane="3d" ribbon/surface for trend, pane="separate" manifold/ridgeline for lower oscillator, plotshape_3d coneup at low / conedown at high with correct pane="3d" or "separate". Storm field = concentric rings + wind spiral + halo + stop radius ring via 3D manifold datasets, spin via Date.now()*rotationRate+spinOffset, not random. Lower panel = line/area/histogram with fill/bgcolor, never 3D for oscillator unless pane="separate".
 - Signals: if buySig { plotshape(bar_index, low, "Buy", "triangleup", "#22cc88") } at low, sell at high, inside if; add model.entry/model.exit when signalAsStrategy toggle is on (user signals toggle). Provide Test on Chart / Save Signal Generator / Delete inventory.
 - Ask 2-3 clarification Qs when vague; refuse off-topic (dating/weather) politely and redirect to trading. Current bars: ${state.bars.length}, symbol ${state.symbol}, timeframe ${state.timeframe}, draft length ${customEditor.value.length}. Return ONE complete, runnable \`\`\`oakscript block (never truncated, no ellipses, no "continue from here").`;
-      const ans = await callLLM(system, prompt + '\n\nCurrent draft:\n' + (customEditor.value || ''));
+      // ── Memory-bank context injection ──
+      // The agent gets: its OWN last script (explicitly marked as ITS work),
+      // the live error log, the recent conversation, SAVED-SIGNAL knowledge,
+      // and the current draft. This kills the "new conversation" amnesia.
+      const histBlock = mem.history.length
+        ? '\n\nCONVERSATION SO FAR (most recent last, condensed):\n' + mem.history.map(h => `${h.role === 'user' ? 'USER' : 'YOU (EDITOR)'}: ${h.text.slice(0, 300)}`).join('\n')
+        : '';
+      const errBlock = mem.errors.length
+        ? '\n\nLIVE ERROR LOG (from running YOUR script on the chart — these are runtime/validation failures of the script YOU wrote; fix them):\n' + mem.errors.map(e => '- ' + e).join('\n')
+        : '';
+      let kbBlock = '';
+      try {
+        const kb = JSON.parse(localStorage.getItem('dafe_editor_kb') || '[]');
+        if (Array.isArray(kb) && kb.length > 0) {
+          kbBlock = '\n\nSAVED-SIGNAL KNOWLEDGE BASE (past builds the user accepted — match this style/quality):\n'
+            + kb.slice(-5).map((k: any) => `- "${k.name}" :: request: ${String(k.request || '').slice(0, 120)} :: ${k.fixesApplied}`).join('\n');
+        }
+      } catch {}
+      const ownBlock = mem.lastScript
+        ? `\n\nYOUR LAST GENERATED SCRIPT (you wrote this in a previous turn — it is NOT user-provided; when the user asks for fixes or says "fix the errors", they mean THIS script. Either fix it or fully rewrite it, but never disown it):\n\`\`\`oakscript\n${mem.lastScript.slice(0, 3000)}\n\`\`\``
+        : '';
+      const userBlock = `\n\nUSER REQUEST: ${prompt}\n\nCURRENT DRAFT IN EDITOR:\n${(customEditor.value || '').slice(0, 3000)}`;
+      const ans = await callLLM(system, userBlock + ownBlock + errBlock + histBlock + kbBlock);
       const m = ans.match(/```(?:oakscript)?\s*([\s\S]*?)```/i);
       const code = m ? m[1].trim() : ans.trim();
       const entry2=document.createElement('div'); entry2.textContent='Editor: '+ ans.slice(0,600); entry2.style.color='var(--cyan)'; chatLog.appendChild(entry2);
-      if (code && code.includes('plot')) { customEditor.value = code; localStorage.setItem(CUSTOM_SOURCE_KEY, code); chatStatus.textContent='✓ Script generated — Test on chart or Save'; showGeneratedScriptDialog(code); }
+      if (code && code.includes('plot')) {
+        // ── AUTONOMOUS VERIFY-AND-FIX LOOP ──
+        // The editor's JOB is delivering working scripts: run the draft
+        // locally (validate + execute against real bars), and if it fails,
+        // feed the errors back and regenerate — silently, up to N rounds —
+        // BEFORE anything is shown or put on the chart. The user never has
+        // to ask "fix the errors"; the loop already did.
+        let working = code;
+        let round = 0;
+        const MAX_FIX_ROUNDS = 3;
+        while (round < MAX_FIX_ROUNDS) {
+          const check = verifyScript(working);
+          if (check.ok) break;
+          round++;
+          const step = document.createElement('div');
+          step.textContent = `Editor: self-check round ${round} failed — ${check.errors.slice(0, 2).join(' | ').slice(0, 300)}`;
+          step.style.color = 'var(--warn)';
+          chatLog.appendChild(step);
+          chatLog.scrollTop = chatLog.scrollHeight;
+          try {
+            const fixPrompt = `Your previous OakScript draft failed local verification. Fix EVERY issue and return the complete corrected script in one \`\`\`oakscript block (no Pine, no truncation, no ellipses).
+
+FAILURES:
+${check.errors.map(e => '- ' + e).join('\n')}
+
+YOUR PREVIOUS DRAFT (you wrote this — fix it, do not disown it):
+\`\`\`oakscript
+${working.slice(0, 3500)}
+\`\`\``;
+            const fixAns = await callLLM(system, fixPrompt);
+            const fixMatch = fixAns.match(/```(?:oakscript)?\s*([\s\S]*?)```/i);
+            if (!fixMatch || !fixMatch[1].includes('plot')) throw new Error('fix round returned no script');
+            working = fixMatch[1].trim();
+          } catch (fixErr: any) {
+            const fe = document.createElement('div');
+            fe.textContent = 'Fix round error: ' + (fixErr?.message || fixErr);
+            fe.style.color = 'var(--red)';
+            chatLog.appendChild(fe);
+            break;
+          }
+        }
+        const finalCheck = verifyScript(working);
+        customEditor.value = working; localStorage.setItem(CUSTOM_SOURCE_KEY, working);
+        mem.lastScript = working;
+        mem.errors = finalCheck.ok ? [] : finalCheck.errors.slice(0, 10);
+        saveMem(mem);
+        if (finalCheck.ok) {
+          chatStatus.textContent = `✓ Script verified${round > 0 ? ` after ${round} self-fix round${round > 1 ? 's' : ''}` : ''} — Test on chart or Save`;
+        } else {
+          chatStatus.textContent = `⚠ ${mem.errors.length} issue(s) remain after ${MAX_FIX_ROUNDS} self-fix rounds — errors are in memory; ask the editor to fix them`;
+        }
+        showGeneratedScriptDialog(working);
+      }
+      // Record this exchange (condensed) for the next turn.
+      mem.history.push({ role: 'user', text: prompt.slice(0, 300) });
+      mem.history.push({ role: 'editor', text: ans.slice(0, 300) });
+      saveMem(mem);
       chatLog.scrollTop=chatLog.scrollHeight;
     } catch (e:any) { const er=document.createElement('div'); er.textContent='Error: '+(e?.message||e); er.style.color='var(--red)'; chatLog.appendChild(er); }
     chatSend.textContent='Ask Editor'; (chatSend as HTMLButtonElement).disabled=false;
@@ -280,7 +424,7 @@ RULES — 100% accuracy is PASS:
   const btRow2=document.createElement('div'); btRow2.style.display='flex'; btRow2.style.gap='6px'; btRow2.appendChild(focSel); btRow2.appendChild(runBtBtn); btRow2.appendChild(runOptBtn); btBox.appendChild(btRow2);
   btBox.appendChild(btInputs); btBox.appendChild(saveSettingsBtn); btBox.appendChild(btResult);
 
-  container.appendChild(pageSel); container.appendChild(docsBtn); container.appendChild(chatBox);
+  container.appendChild(pageSel); container.appendChild(docsBtn); container.appendChild(chatBox); container.appendChild(reopenBtn);
   container.appendChild(listEl); container.appendChild(customEditor); container.appendChild(editorBar); container.appendChild(status);
   container.appendChild(btBox);
 
@@ -354,6 +498,25 @@ RULES — 100% accuracy is PASS:
     }
   }
 
+  // Local verification for the editor's autonomous fix loop — the SAME
+  // pipeline the chart uses (validate → parse → execute on real bars), so
+  // "verified" here means "will actually run on the chart".
+  function verifyScript(source: string): { ok: boolean; errors: string[] } {
+    const errors: string[] = [];
+    try {
+      const v = validate(source);
+      if (!v.valid) errors.push(...formatValidationIssues(v.issues).split('\n').filter(Boolean));
+      const program = parse(source);
+      const result = executeScript(program, barsToRuntimeBarData(state.bars), new Map());
+      if (result.errors && result.errors.length > 0) errors.push(...result.errors);
+      const hasPlots = result.plots.some((p: any) => p.type === 'line' || p.type === 'shape' || p.type === 'hline' || p.type === 'plot3d' || p.type === 'plot3d_shape');
+      if (!hasPlots) errors.push('No visible plots produced — every script must call plot()/plotshape()/hline()/plot3d()');
+    } catch (e: any) {
+      errors.push(String(e?.message || e));
+    }
+    return { ok: errors.length === 0, errors: errors.slice(0, 12) };
+  }
+
   function runCustom(){
     const source=customEditor.value; localStorage.setItem(CUSTOM_SOURCE_KEY, source);
     let ind=state.indicators.find(i=>i.id==='custom');
@@ -384,6 +547,32 @@ RULES — 100% accuracy is PASS:
     const name=`Signal ${new Date().toLocaleTimeString()}`;
     const ind={ id:`sig-${Date.now()}`, name, source, enabled:true, plots:[], errors:[]} as ActiveIndicator;
     state.indicators.push(ind); runIndicator(ind); persistSettings(); refreshEngineList(); status.textContent=`✓ Saved ${name} to inventory`;
+    // ── SNAPSHOT-ON-SAVE: distill the session into durable memory, then
+    // wipe the volatile conversation. The user can return to this signal
+    // later with full context of WHAT it is and WHY, without the agent
+    // dragging stale back-and-forth from this build session around.
+    try {
+      const KB_KEY = 'dafe_editor_kb';
+      const kb = JSON.parse(localStorage.getItem(KB_KEY) || '[]');
+      const userAsks = mem.history.filter(h => h.role === 'user').map(h => h.text);
+      kb.push({
+        savedAt: Date.now(),
+        name,
+        script: source.slice(0, 4000),
+        request: userAsks[0] || '',
+        iterations: mem.history.filter(h => h.role === 'editor').length,
+        fixesApplied: mem.errors.length === 0 ? 'verified-clean-at-save' : `${mem.errors.length} open issues at save`,
+      });
+      localStorage.setItem(KB_KEY, JSON.stringify(kb.slice(-30)));
+    } catch {}
+    mem.history = [];   // conversation wiped — distilled essence persists
+    mem.errors = [];    // a saved signal is the user's accepted endpoint
+    saveMem(mem);
+    chatLog.replaceChildren();
+    const wiped = document.createElement('div');
+    wiped.textContent = 'Editor: session snapshot saved to memory — conversation cleared.';
+    wiped.style.color = 'var(--cyan)';
+    chatLog.appendChild(wiped);
   });
   delBtn.addEventListener('click', ()=>{
     if(!confirm('Delete this Signal Generator from inventory?')) return;

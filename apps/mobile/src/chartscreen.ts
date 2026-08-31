@@ -19,6 +19,7 @@ import type { OakPlot3D } from '../../web/src/oakscript/runtime';
 import { barsToRuntimeBarData } from '../../web/src/backtest/data';
 import { draw3DScene } from '../../web/src/iso3d';
 import { renderMain3DScene, mark3DSceneDirty, dispose3DScene, getRenderTime } from '../../web/src/three-indicators';
+import { show3D, hide3D, setLowerPaneHost } from '../../web/src/three-lower-pane';
 import { findBackend, fetchBackendBars } from './backend';
 import { fetchMassiveBars } from './massive';
 import { fetchYahooBars } from './yahoo';
@@ -504,37 +505,47 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     try {
       const lowerCanvas = document.getElementById('mobile-lower-canvas') as HTMLCanvasElement | null;
       if (lowerCanvas) {
-        const lctx = lowerCanvas.getContext('2d');
-        if (lctx) {
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          const rect = lowerCanvas.getBoundingClientRect();
-          lowerCanvas.width = Math.round(rect.width * dpr);
-          lowerCanvas.height = Math.round(rect.height * dpr);
-          lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          lctx.clearRect(0, 0, rect.width, rect.height);
-          const separatePlots = enabledPlots.filter((p:any) => p.pane === 'separate');
-          if (separatePlots.length > 0 && bars.length > 0) {
-            try { drawSecondaryChart(lctx as any, separatePlots as any, bars, { ...view, barSpacing: 6 }); } catch {
-              lctx.fillStyle = 'rgba(10,10,20,0.3)';
+        // ── Genuine Three.js lower pane (pane="separate" plot3d) ──
+        // This is the same renderer the web app uses — surface/mesh/nebula/
+        // constellation/torus/etc all render as real geometry here, not lines.
+        const sep3D = enabledPlots.filter((p: any) => p.type === 'plot3d' && p.pane === 'separate') as OakPlot3D[];
+        if (sep3D.length > 0 && !state.is3D) {
+          const shapesForSep = enabledPlots.filter((p: any) => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane !== '3d');
+          show3D(sep3D, shapesForSep, bars.length);
+        } else {
+          hide3D();
+          const lctx = lowerCanvas.getContext('2d');
+          if (lctx) {
+            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const rect = lowerCanvas.getBoundingClientRect();
+            lowerCanvas.width = Math.round(rect.width * dpr);
+            lowerCanvas.height = Math.round(rect.height * dpr);
+            lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            lctx.clearRect(0, 0, rect.width, rect.height);
+            const separatePlots = enabledPlots.filter((p:any) => p.pane === 'separate' && p.type !== 'plot3d');
+            if (separatePlots.length > 0 && bars.length > 0) {
+              try { drawSecondaryChart(lctx as any, separatePlots as any, bars, { ...view, barSpacing: 6 }); } catch {
+                lctx.fillStyle = 'rgba(10,10,20,0.3)';
+                lctx.fillRect(0, 0, rect.width, rect.height);
+                lctx.fillStyle = 'rgba(180,140,255,0.5)';
+                lctx.font = '10px monospace';
+                lctx.textAlign = 'center';
+                lctx.fillText(`${separatePlots.length} lower plots`, rect.width/2, rect.height/2);
+              }
+            } else if (sep3D.length === 0) {
+              lctx.fillStyle = 'rgba(8,8,20,0.5)';
               lctx.fillRect(0, 0, rect.width, rect.height);
-              lctx.fillStyle = 'rgba(180,140,255,0.5)';
-              lctx.font = '10px monospace';
-              lctx.textAlign = 'center';
-              lctx.fillText(`${separatePlots.length} lower plots`, rect.width/2, rect.height/2);
-            }
-          } else {
-            lctx.fillStyle = 'rgba(8,8,20,0.5)';
-            lctx.fillRect(0, 0, rect.width, rect.height);
-            if (enabledPlots.length === 0) {
-              lctx.fillStyle = 'rgba(255,255,255,0.2)';
-              lctx.font = '10px sans-serif';
-              lctx.textAlign = 'center';
-              lctx.fillText('No lower indicators — enable one with pane="separate"', rect.width/2, rect.height/2);
-            } else if (separatePlots.length===0) {
-              lctx.fillStyle = 'rgba(255,255,255,0.25)';
-              lctx.font = '10px sans-serif';
-              lctx.textAlign = 'center';
-              lctx.fillText('Main chart indicators active — lower shows separate pane', rect.width/2, rect.height/2);
+              if (enabledPlots.length === 0) {
+                lctx.fillStyle = 'rgba(255,255,255,0.2)';
+                lctx.font = '10px sans-serif';
+                lctx.textAlign = 'center';
+                lctx.fillText('No lower indicators — enable one with pane="separate"', rect.width/2, rect.height/2);
+              } else {
+                lctx.fillStyle = 'rgba(255,255,255,0.25)';
+                lctx.font = '10px sans-serif';
+                lctx.textAlign = 'center';
+                lctx.fillText('Main chart indicators active — lower shows separate pane', rect.width/2, rect.height/2);
+              }
             }
           }
         }
@@ -597,6 +608,11 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
 
   void loadBars();
   sizeCanvas();
+  // Register the mobile lower-pane wrapper so three-lower-pane's GL canvas
+  // mounts there (web anchors on #chart-container/#secondary-canvas which
+  // don't exist on mobile).
+  const lowerHost = document.getElementById('mobile-lower-canvas')?.parentElement ?? null;
+  setLowerPaneHost(lowerHost);
   rafId = requestAnimationFrame(draw);
 
   return {
@@ -616,6 +632,8 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       touch.detach();
       resizeObserver.disconnect();
       try { dispose3DScene(); } catch { /* not initialized */ }
+      try { hide3D(); } catch { /* not initialized */ }
+      setLowerPaneHost(null);
       canvas.remove();
     },
   };

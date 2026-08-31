@@ -19,6 +19,11 @@ let _scene: THREE.Scene | null = null;
 let _camera: THREE.PerspectiveCamera | null = null;
 let _composer: EffectComposer | null = null;
 let _bloomPass: UnrealBloomPass | null = null;
+// Mobile host fallback — the web app anchors this pane's canvas via the
+// #chart-container/#secondary-canvas IDs; the mobile app has neither, so it
+// registers its own lower-pane wrapper here instead.
+let _hostFallback: HTMLElement | null = null;
+export function setLowerPaneHost(el: HTMLElement | null): void { _hostFallback = el; }
 // Same rationale as three-indicators.ts's twin constants — this pane's
 // geometry is built from the same emissive MeshPhongMaterial palette.
 const BLOOM_STRENGTH = 0.7;
@@ -79,6 +84,12 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     const container = document.getElementById('chart-container');
     const sec = document.getElementById('secondary-canvas');
     if (container && sec) { sec.style.display = 'none'; container.insertBefore(c, sec); }
+    else if (_hostFallback) {
+      // Mobile: hide the 2D lower canvas and mount the GL pane in its place.
+      const lower2d = _hostFallback.querySelector('#mobile-lower-canvas') as HTMLElement | null;
+      if (lower2d) lower2d.style.display = 'none';
+      _hostFallback.appendChild(c);
+    }
   }
   // If we already have cached resources, just resize and return
   if (_renderer && _scene && _camera) {
@@ -94,7 +105,9 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     _renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true });
     _renderer.setSize(c.parentElement?.clientWidth || 1200, h, false);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    _renderer.setClearColor(0x060612);
+    // Standard charting black — same as the app's --bg. The old 0x060612 read
+    // as a purple-blue wash bleeding into the chart area on bright scenes.
+    _renderer.setClearColor(0x0a0a18, 1);
     _scene = new THREE.Scene();
     _scene.add(new THREE.AmbientLight(0x404060, 1.0));
     const d = new THREE.DirectionalLight(0xffffff, 0.7);
@@ -672,6 +685,11 @@ export function hide3D(): void {
   const c = document.getElementById(ID); if (c) { c.onpointerdown = null; c.onpointermove = null; c.onpointerup = null; c.onwheel = null; c.remove(); }
   const sec = document.getElementById('secondary-canvas');
   if (sec) sec.style.display = '';
+  // Mobile: restore the hidden 2D lower canvas.
+  if (_hostFallback) {
+    const lower2d = _hostFallback.querySelector('#mobile-lower-canvas') as HTMLElement | null;
+    if (lower2d) lower2d.style.display = '';
+  }
 }
 
 // ─── Inline camera orbit (plain events, no class) ──────────────────
@@ -684,6 +702,8 @@ let _lastLowerFitSig: string | null = null;
 function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): void {
   let dragging = false, lx = 0, ly = 0, theta = 0, phi = 0.8, dist = 10;
   const target = new THREE.Vector3(0, 1.8, 0);
+  let pinchStart = 0, pinchDist0 = 0;
+  let movedFar = false;
 
   const apply = () => {
     camera.position.set(
@@ -700,18 +720,55 @@ function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): v
     apply();
   };
 
+  // Touch support — phones/tablets never send pointerType 'mouse', which made
+  // every orbit gesture dead on mobile. One finger drags to orbit; two-finger
+  // pinch zooms; a minimal-drag touch falls through (no preventDefault) so
+  // taps keep reaching anything beneath.
+  const pointers = new Map<number, { x: number; y: number }>();
   dom.onpointerdown = (e: PointerEvent) => {
-    if (e.pointerType !== 'mouse') return;
-    dragging = true; lx = e.clientX; ly = e.clientY; e.preventDefault();
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    movedFar = false;
+    if (pointers.size === 1) { dragging = true; lx = e.clientX; ly = e.clientY; }
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      pinchStart = Math.hypot(a.x - b.x, a.y - b.y);
+      pinchDist0 = dist;
+    }
+    e.preventDefault();
   };
   dom.onpointermove = (e: PointerEvent) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.size === 2) {
+      const [a, b] = [...pointers.values()];
+      const pinch = Math.hypot(a.x - b.x, a.y - b.y);
+      if (pinchStart > 0) {
+        dist = Math.max(4, Math.min(60, pinchDist0 * (pinchStart / Math.max(1, pinch))));
+        movedFar = true;
+        apply();
+      }
+      e.preventDefault();
+      return;
+    }
     if (!dragging) return;
-    theta -= (e.clientX - lx) * 0.01;
-    phi = Math.max(0.2, Math.min(1.4, phi - (e.clientY - ly) * 0.01));
+    const dx = e.clientX - lx, dy = e.clientY - ly;
+    if (Math.abs(dx) + Math.abs(dy) > 6) movedFar = true;
+    theta -= dx * 0.01;
+    phi = Math.max(0.2, Math.min(1.4, phi - dy * 0.01));
     lx = e.clientX; ly = e.clientY;
     apply();
+    if (movedFar) e.preventDefault();
   };
-  dom.onpointerup = () => { dragging = false; };
+  const releasePointer = (e: PointerEvent) => {
+    pointers.delete(e.pointerId);
+    if (pointers.size === 0) dragging = false;
+    if (pointers.size < 2) pinchStart = 0;
+  };
+  dom.onpointerup = releasePointer;
+  dom.onpointercancel = releasePointer;
+  dom.onpointerleave = (e: PointerEvent) => releasePointer(e);
+  // Wheel zoom (desktop) — on touch devices wheel events are synthesized with
+  // ctrlKey from pinches; both paths land here and stay clamped.
   dom.onwheel = (e: WheelEvent) => {
     dist = Math.max(4, Math.min(60, dist + e.deltaY * 0.02));
     apply(); e.preventDefault();
