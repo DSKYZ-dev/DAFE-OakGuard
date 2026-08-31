@@ -152,39 +152,55 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     massiveStatus,
     massiveTestBtn,
     (() => {
-      // Yahoo (yfinance) feed toggle — always available real data, no key.
-      // When Massive is unset or rejected, this keeps the app on REAL prices
-      // instead of silently degrading to synthetic.
+      // Yahoo (yfinance) feed SWITCH — actually changes the active provider.
+      // Toggling ON: preferredFeed='yahoo' → loadBars() skips Massive/Backend
+      // and pulls real Yahoo bars immediately; the MASSIVE badge vanishes.
+      // Toggling OFF: back to 'auto' (Massive key → Backend → Yahoo chain).
       const wrap = document.createElement('div');
       wrap.style.marginTop = '10px';
       const lbl = document.createElement('div');
       lbl.textContent = 'Yahoo Finance (yfinance)';
       lbl.style.cssText = 'font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px;';
       const sub = document.createElement('div');
-      sub.textContent = 'Free real market data — always on, no API key. Used automatically whenever Massive is not configured.';
+      sub.textContent = 'Free real market data — no API key. Switch the live feed to Yahoo now; turns off the Massive/Backend chain.';
       sub.className = 'set-info';
       const yBtn = document.createElement('button');
       yBtn.className = 'editor-run';
-      yBtn.textContent = 'USE YFINANCE DATA NOW';
+      function syncYBtn(): void {
+        const on = state.preferredFeed === 'yahoo';
+        yBtn.textContent = on ? 'YFINANCE ACTIVE — REAL DATA ✓ (tap to revert)' : 'USE YFINANCE DATA NOW';
+      }
       yBtn.addEventListener('click', async () => {
-        yBtn.textContent = 'Testing Yahoo...';
+        const turningOn = state.preferredFeed !== 'yahoo';
+        yBtn.textContent = turningOn ? 'Fetching Yahoo...' : 'Reverting...';
+        yBtn.disabled = true;
         try {
-          const { fetchYahooBars } = await import('./yahoo');
-          const bars = await fetchYahooBars('SPY', '5m');
-          if (!bars || bars.length === 0) throw new Error('no data returned');
-          const last = bars[bars.length - 1];
-          const t = document.createElement('div'); t.className = 'toast ok';
-          t.textContent = `Yahoo OK — SPY $${last.close.toFixed(2)} @ ${new Date(last.timestamp).toLocaleString()}`;
-          document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
-          yBtn.textContent = 'YFINANCE ACTIVE — REAL DATA ✓';
-          (yBtn as HTMLButtonElement).disabled = false;
+          state.preferredFeed = turningOn ? 'yahoo' : 'auto';
+          persistSettings();
+          if (turningOn) {
+            // Verify Yahoo actually answers before promising real data.
+            const { fetchYahooBars } = await import('./yahoo');
+            const bars = await fetchYahooBars(state.symbol, state.timeframe);
+            if (!bars || bars.length === 0) throw new Error('no data returned');
+            const last = bars[bars.length - 1];
+            const t = document.createElement('div'); t.className = 'toast ok';
+            t.textContent = `Yahoo live — ${state.symbol} $${last.close.toFixed(2)} @ ${new Date(last.timestamp).toLocaleTimeString()}`;
+            document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
+          }
+          // Force the chart to reload from the NEW preferred feed right now.
+          try { (window as any).__dafeChartRefresh?.(); } catch {}
+          syncYBtn();
         } catch (e: any) {
+          state.preferredFeed = 'auto';
+          persistSettings();
           const t = document.createElement('div'); t.className = 'toast err';
           t.textContent = 'Yahoo unreachable: ' + (e?.message || e);
           document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
-          yBtn.textContent = 'USE YFINANCE DATA NOW';
+          syncYBtn();
         }
+        yBtn.disabled = false;
       });
+      syncYBtn();
       wrap.appendChild(lbl);
       wrap.appendChild(sub);
       wrap.appendChild(yBtn);

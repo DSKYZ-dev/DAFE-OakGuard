@@ -32,12 +32,13 @@ let _renderTime = 0;
 // ─── Bloom post-processing ──────────────────────────────────────────
 // Every scene here is built from MeshPhongMaterial with emissive colors —
 // authored for glow that was never actually rendered. UnrealBloomPass adds
-// it: threshold keeps the bloom off flat unlit surfaces/grid lines (which
-// sit well below it) so only the emissive geometry blooms, not the whole
-// frame.
-const BLOOM_STRENGTH = 0.7;
-const BLOOM_RADIUS = 0.45;
-const BLOOM_THRESHOLD = 0.15;
+// it. THRESHOLD IS HIGH ON PURPOSE: ambient/directional-lit surfaces and
+// grid lines stay BELOW it so only truly emissive geometry blooms. A low
+// threshold (0.15) bloomed the entire frame — the background took on the
+// visualization's own color and everything looked washed in haze.
+const BLOOM_STRENGTH = 0.55;
+const BLOOM_RADIUS = 0.4;
+const BLOOM_THRESHOLD = 0.6;
 
 function setupComposer(w: number, h: number): void {
   if (!_renderer || !_scene || !_camera) return;
@@ -170,7 +171,7 @@ function init(): void {
   _renderer.setSize(w, h, false);
   _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   _renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  _renderer.toneMappingExposure = 1.2;
+  _renderer.toneMappingExposure = 1.0;
 
   _scene = new THREE.Scene();
   _scene.background = null;

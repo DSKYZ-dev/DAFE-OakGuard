@@ -598,11 +598,12 @@ ${working.slice(0, 3500)}
 
   function runIndicator(ind: ActiveIndicator){
     try{
-      const v=validate(ind.source); if(!v.valid){ ind.errors=formatValidationIssues(v.issues).split('\n'); status.textContent=`Validation: ${ind.errors[0]}`; status.className='error'; pushIndicatorErrors(ind); return; }
+      const v=validate(ind.source); if(!v.valid){ ind.errors=formatValidationIssues(v.issues).split('\n'); status.textContent=`Validation: ${ind.errors[0]}`; status.className='error'; pushIndicatorErrors(ind); (window as any).__dafeRefreshIndSel?.(); return; }
       const program=parse(ind.source); const result=executeScript(program, barsToRuntimeBarData(state.bars), new Map()); ind.plots=result.plots; ind.errors=result.errors;
       status.textContent=result.errors.length? `Ran with ${result.errors.length} warning(s)`: `✓ ${ind.name} on chart`; status.className=result.errors.length?'error':'';
       pushIndicatorErrors(ind);
     }catch(err){ ind.errors=[err instanceof Error?err.message:String(err)]; status.textContent=`Failed: ${ind.errors[0]}`; status.className='error'; pushIndicatorErrors(ind); }
+    (window as any).__dafeRefreshIndSel?.(); // chart dropdown live-sync
   }
 
   // Feed an indicator's errors back to the editor chat so the agent sees them.

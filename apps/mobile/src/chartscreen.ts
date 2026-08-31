@@ -49,6 +49,7 @@ export interface ChartScreen {
   setVpEnabled: (on: boolean) => void;
   setLive: (on: boolean) => void;
   set3D: (on: boolean) => void;
+  reload: () => void;
   resetView: () => void;
   refreshIndicators: () => void;
   dispose: () => void;
@@ -65,53 +66,131 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   let time = 0;
   let momentum = { vx: 0, vy: 0 };
   let liveTimer: ReturnType<typeof setInterval> | null = null;
+  let lastSyntheticAt = 0;
   let lastIndicatorRun = 0;
   let disposed = false;
 
   let perBarVols: PerBarVolume[] = [];
   let vpCache: { key: string; computed: VPComputed } | null = null;
 
-  // ── Dashboard strip (fixed, static) ─────────────────────────────────
-  // One DOM element below the x-axis; OakScript table()/label() readouts land
-  // here. Metrics adapt to the strip's fixed space (clamped, rounded), so the
-  // dashboard never runs off-screen or behind the OST rail again.
-  const dashStrip = document.createElement('div');
-  dashStrip.id = 'dashboard-strip';
-  container.appendChild(dashStrip);
+  // ── Dashboard Window (adaptive, its own panel) ──────────────────────
+  // Sits between the main chart and the lower pane in DOM order (appended
+  // to this container which ends above the splitter). Every indicator that
+  // produces table()/label() readouts feeds it — content ADAPTS: sections
+  // stack vertically, wrap horizontally, and scroll only as a last resort.
+  // The ORIGINAL canvas-drawn dashboards are gone: table/label plots no
+  // longer render on the chart canvas at all (see draw loop filter).
+  // Each section has a header (indicator name) + power toggle so any
+  // dashboard can be turned on/off per indicator; state persists.
+  const dashWin = document.createElement('div');
+  dashWin.id = 'dashboard-win';
+  container.appendChild(dashWin);
   let dashLastRender = 0;
-  function renderDashboardStrip(plots: any[]): void {
+  const DASH_KEY = 'dafe_mobile_dash_disabled';
+
+  function loadDashDisabled(): Record<string, boolean> {
+    try { return JSON.parse(localStorage.getItem(DASH_KEY) || '{}'); } catch { return {}; }
+  }
+  function isDashOn(indicatorName: string): boolean {
+    return !loadDashDisabled()[indicatorName];
+  }
+  function toggleDash(indicatorName: string): void {
+    const d = loadDashDisabled();
+    d[indicatorName] = !d[indicatorName];
+    try { localStorage.setItem(DASH_KEY, JSON.stringify(d)); } catch {}
+  }
+  function fmtVal(v: any): string {
+    if (typeof v === 'number') {
+      if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+      if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+      if (Math.abs(v) >= 1e4) return (v / 1e3).toFixed(1) + 'K';
+      return Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2);
+    }
+    return String(v ?? '');
+  }
+  function renderDashboardWindow(plots: any[], indicators: { name: string }[]): void {
     const now = performance.now();
     if (now - dashLastRender < 900) return;
     dashLastRender = now;
-    const tables = plots.filter(p => p.type === 'table' && Array.isArray(p.cells) && p.cells.length > 0);
-    const labels = plots.filter(p => p.type === 'label' && typeof p.text === 'string' && p.text.length > 0);
-    if (tables.length === 0 && labels.length === 0) {
-      if (dashStrip.childElementCount > 0) dashStrip.replaceChildren();
-      dashStrip.style.display = 'none';
-      return;
-    }
-    dashStrip.style.display = 'flex';
-    let changed = false;
-    const desired: string[] = [];
-    for (const t of tables) {
-      for (const row of t.cells as any[][]) {
+    // Group dashboard-bearing plots by their OWNING indicator so each gets
+    // its own section with its own toggle. Plots carry `__ind` (set in
+    // runIndicators) identifying the parent indicator id/name.
+    const byInd = new Map<string, { name: string; rows: { v: string; bg?: string; fg?: string }[] }>();
+    for (const p of plots) {
+      if (p.type !== 'table' || !Array.isArray(p.cells)) continue;
+      const indName = (p as any).__ind || 'Indicator';
+      if (!isDashOn(indName)) continue;
+      let sec = byInd.get(indName);
+      if (!sec) { sec = { name: indName, rows: [] }; byInd.set(indName, sec); }
+      for (const row of p.cells as any[][]) {
         for (const cell of row) {
-          if (cell?.text) desired.push(`${t.name || ''}: ${String(cell.text).slice(0, 24)}`);
+          if (cell == null || typeof cell !== 'object') continue;
+          const txt = String(cell.text ?? '').trim();
+          if (!txt) continue;
+          const entry = { v: txt.slice(0, 40), bg: cell.bgColor || '', fg: cell.textColor || '' };
+          if (!sec.rows.some(r => r.v === entry.v)) sec.rows.push(entry);
         }
       }
     }
-    for (const l of labels) desired.push(String(l.text).slice(0, 30));
-    const cur = Array.from(dashStrip.children).map(el => (el as HTMLElement).title || el.textContent || '');
-    if (cur.length !== desired.length || desired.some((d, i) => d !== cur[i])) changed = true;
-    if (changed) {
-      dashStrip.replaceChildren();
-      for (const d of desired.slice(0, 12)) {
+    for (const p of plots) {
+      if (p.type !== 'label' || typeof p.text !== 'string' || !p.text) continue;
+      const indName = (p as any).__ind || 'Indicator';
+      if (!isDashOn(indName)) continue;
+      let sec = byInd.get(indName);
+      if (!sec) { sec = { name: indName, rows: [] }; byInd.set(indName, sec); }
+      sec.rows.push({ v: p.text.slice(0, 60) });
+    }
+    if (byInd.size === 0) {
+      if (dashWin.childElementCount > 0) dashWin.replaceChildren();
+      dashWin.style.display = 'none';
+      return;
+    }
+    dashWin.style.display = 'block';
+    // Rebuild only when the CONTENT SIGNATURE changes — not every frame.
+    let sig = '';
+    for (const [name, s] of byInd) sig += name + '|' + s.rows.map(r => r.v).join(';');
+    if (sig === (dashWin as any).__sig) return;
+    (dashWin as any).__sig = sig;
+    dashWin.replaceChildren();
+    for (const [name, sec] of byInd) {
+      const card = document.createElement('div');
+      card.className = 'dash-section';
+      const head = document.createElement('div');
+      head.className = 'dash-section-head';
+      const nm = document.createElement('span');
+      nm.className = 'dash-section-name';
+      nm.textContent = name;
+      // Power toggle — per-indicator dashboard on/off, persisted.
+      const pw = document.createElement('button');
+      pw.className = 'dash-power';
+      pw.textContent = '⏻';
+      pw.title = `Toggle ${name} dashboard`;
+      pw.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleDash(name);
+        // Rebuild from the LIVE plot set (other indicators may still have
+        // dashboard content) — not from empty arrays.
+        (dashWin as any).__sig = '';
+        dashLastRender = 0;
+        const livePlots = state.indicators.filter((i) => i.enabled).flatMap((i) => i.plots);
+        renderDashboardWindow(livePlots, state.indicators);
+      });
+      head.appendChild(nm);
+      head.appendChild(pw);
+      card.appendChild(head);
+      const body = document.createElement('div');
+      body.className = 'dash-section-body';
+      for (const r of sec.rows.slice(0, 16)) {
         const chip = document.createElement('div');
         chip.className = 'dash-chip';
-        chip.textContent = d.split(': ')[d.startsWith(' ') ? 0 : 1] || d;
-        chip.title = d;
-        dashStrip.appendChild(chip);
+        chip.textContent = r.v;
+        chip.title = `${name}: ${r.v}`;
+        if (r.bg) chip.style.background = r.bg;
+        if (r.fg) chip.style.color = r.fg;
+        body.appendChild(chip);
       }
+      card.appendChild(body);
+      dashWin.appendChild(card);
     }
   }
 
@@ -217,6 +296,11 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     }
   }
 
+  // True when the CURRENT view came from user pan/zoom (auto-refresh keeps it).
+  // False on symbol/timeframe switches (fresh default view).
+  let viewIsFromUser = false;
+  function markViewUserTouched(): void { viewIsFromUser = true; }
+
   async function loadBars(): Promise<void> {
     try {
       await loadBarsInner();
@@ -232,16 +316,22 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   }
 
   async function loadBarsInner(): Promise<void> {
+    // Auto-refresh calls this too — caller sets viewIsFromUser accordingly.
     const tf = state.timeframe;
     const count = tf.startsWith('1') || tf.startsWith('5') || tf.startsWith('10') || tf.startsWith('30') ? 480 : 320;
     let data: BaseBar[] | null = null;
     let provider: DataProvider = 'synthetic';
     const preferred = getDataSourceForSymbol(state.symbol);
-    // Auto-switch: futures → polygon/massive, crypto → binance (tick via relay), fallback Yahoo
-    // console.log(`[adapter] ${state.symbol} → ${preferred}`);
+    const feed = state.preferredFeed; // 'auto' follows the normal chain
+    // 0) FORCED Yahoo — the Settings switch. Skips Massive/Backend entirely so
+    //    a dead Massive key can never shadow free real Yahoo data.
+    if (feed === 'yahoo') {
+      const yahoo = await fetchYahooBars(state.symbol, tf);
+      if (yahoo && yahoo.length > 0) { data = yahoo; provider = 'yahoo'; }
+    }
     // 1) Massive (paid) — direct from the phone when an API key is configured.
     //    Real tick-derived bars, all timeframes including 1s/5s/10s/30s.
-    if (state.massiveApiKey?.trim()) {
+    if (!data && feed !== 'yahoo' && state.massiveApiKey?.trim()) {
       const massive = await fetchMassiveBars(state.symbol, tf);
       if (massive && massive.length > 0) {
         data = massive;
@@ -249,7 +339,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       }
     }
     // 2) Backend (optional) — same PC server chain when reachable.
-    if (!data && state.backendMode !== 'offline') {
+    if (!data && feed !== 'yahoo' && state.backendMode !== 'offline') {
       const url = await findBackend();
       if (url) {
         if (state.backendUrl !== url) {
@@ -281,11 +371,14 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     if (!data || data.length === 0) data = generateBars(count, tf, state.symbol);
     state.dataSource = provider === 'synthetic' ? 'synthetic' : 'live';
     state.dataProvider = provider;
+    if (provider === 'synthetic') lastSyntheticAt = Date.now();
     if (provider === 'backend' || provider === 'yahoo' || provider === 'massive') cacheBars(state.symbol, tf, data);
     cb.onDataSource(provider);
     state.bars = data;
     rebuildTransformed();
-    state.view = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
+    // Auto-refresh (60s) must NOT wipe the user's pan/zoom — only an explicit
+    // symbol/timeframe switch resets the view.
+    if (!viewIsFromUser) state.view = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
     runIndicators();
     notifyPrice();
     cb.onEngineBars(data);
@@ -295,12 +388,15 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   function loadSymbol(symbol: string, tf?: Timeframe): void {
     state.symbol = symbol;
     if (tf) state.timeframe = tf;
+    viewIsFromUser = false;
+    if (tf) state.timeframe = tf;
     syncMarkersForSymbol(symbol);
     void loadBars();
   }
 
   function setTimeframe(tf: Timeframe): void {
     state.timeframe = tf;
+    viewIsFromUser = false;
     void loadBars();
   }
 
@@ -343,6 +439,9 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
         const result = executeScript(program, barData, new Map());
         ind.plots = result.plots;
         ind.errors = result.errors;
+        // Tag every plot with its OWNING indicator so the dashboard window
+        // can group sections and offer per-indicator on/off toggles.
+        for (const p of ind.plots) (p as any).__ind = ind.name;
         if (result.errors && result.errors.length > 0) {
           (window as any).__dafeEditorChat?.('error', `[${ind.name}] ${result.errors.join(' | ').slice(0, 600)}`);
         }
@@ -367,14 +466,24 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     if (on) {
       liveTimer = setInterval(() => {
         if (document.hidden) return;
-        if (state.dataProvider === 'synthetic') return; // nothing real to poll
-  void loadBars();
-  // Real-feed auto-refresh is always on (60s cadence, paused while hidden
-  // or on synthetic data). The user never manages a play/pause again.
-  setLive(true);
+        if (state.dataProvider === 'synthetic') {
+          // STUCK-SYNTHETIC RESCUE: initial fetch fell through to demo data
+          // (dead key + unreachable feeds). Keep retrying the real chain
+          // every 15s instead of freezing the chart forever on one price.
+          const since = Date.now() - (lastSyntheticAt || 0);
+          if (lastSyntheticAt === 0 || since >= 15_000) {
+            lastSyntheticAt = Date.now();
+            void loadBars();
+          }
+          return;
+        }
+        void loadBars();
       }, 60_000);
     }
   }
+  // Real-feed auto-refresh is always on (60s cadence, paused while hidden
+  // or on synthetic data). The user never manages a play/pause again.
+  setLive(true);
 
   function draw(ts: number): void {
     if (disposed) return;
@@ -456,8 +565,10 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       });
       // Ordinary 2D plots stay visible as an overlay; plot3d series are shown
       // as a 2D proxy so their DATA is still visible even when GL is off.
+      // table/label (dashboard readouts) NEVER draw on canvas — they render
+      // exclusively in the dashboard window below the chart.
       if (enabledPlots.length > 0) {
-        drawOakScriptPlots(ctx, enabledPlots.filter((p: any) => p.type !== 'plot3d_shape' && p.type !== 'plot3d_label'), bars, view);
+        drawOakScriptPlots(ctx, enabledPlots.filter((p: any) => p.type !== 'plot3d_shape' && p.type !== 'plot3d_label' && p.type !== 'table' && p.type !== 'label'), bars, view);
       }
       rafId = requestAnimationFrame(draw);
       return;
@@ -486,7 +597,8 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     drawBars(ctx, bars, view, time, state.barType, perBarVols);
 
     const enabledPlots = state.indicators.filter((i) => i.enabled).flatMap((i) => i.plots);
-    if (enabledPlots.length > 0) drawOakScriptPlots(ctx, enabledPlots, bars, view);
+    // Dashboard readouts (table/label) render ONLY in the dashboard window.
+    if (enabledPlots.length > 0) drawOakScriptPlots(ctx, enabledPlots.filter((p: any) => p.type !== 'table' && p.type !== 'label'), bars, view);
 
     if (state.markers.length > 0) drawTradeMarkers(ctx, bars, view, state.markers);
 
@@ -553,7 +665,9 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     // below the x-axis instead of free-floating on the canvas (where the OST
     // rail and buy/sell buttons used to cover them). Panel metrics adapt to
     // the strip, never the other way around.
-    renderDashboardStrip(enabledPlots);
+    // table/label readouts render ONLY in the dashboard window below — never
+    // free-floating on the canvas (the original dashboards are removed).
+    renderDashboardWindow(enabledPlots.filter((p: any) => p.type === 'table' || p.type === 'label'), state.indicators);
 
     rafId = requestAnimationFrame(draw);
   }
@@ -566,6 +680,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   const touch = new TouchEngine(canvas, {
     onPan: (dx, dy) => {
       state.crosshair = null;
+      markViewUserTouched();
       const s = state.view.barSpacing;
       state.view.scrollX = Math.max(0, state.view.scrollX + dx / s);
       state.view.offsetY += dy;
@@ -575,6 +690,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       momentum.vy = vy;
     },
     onPinch: (scale, _cx, _cy) => {
+      markViewUserTouched();
       const s = Math.min(MAX_BAR_SPACING, Math.max(MIN_BAR_SPACING, state.view.barSpacing * scale));
       state.view.barSpacing = s;
       state.view.scaleY = Math.min(4, Math.max(0.3, state.view.scaleY * (1 + (scale - 1) * 0.4)));
@@ -585,6 +701,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     onMoveEnd: () => { },
     onTap: () => { state.crosshair = null; },
     onDoubleTap: () => {
+      viewIsFromUser = false;
       state.view = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
     },
     onLongPress: (x, y) => {
@@ -622,9 +739,11 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     setVpEnabled,
     setLive,
     set3D,
+    reload: () => { void loadBars(); }, // Settings feed switches call this
     resetView: () => {
       // Pure view reset — pan/zoom/scale back to the default framing.
       // Never touches indicators, orders, or positions.
+      viewIsFromUser = false;
       state.view = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
       momentum = { vx: 0, vy: 0 };
     },

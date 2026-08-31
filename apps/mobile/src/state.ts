@@ -166,6 +166,10 @@ export const SYMBOLS: { symbol: string; name: string; cat: SymbolCat; yahoo?: bo
 ];
 
 export type DataProvider = 'backend' | 'massive' | 'yahoo' | 'cache' | 'synthetic';
+// Preferred feed override — set by Settings switches. When 'yahoo' is forced,
+// loadBars() skips Massive and Backend and goes straight to Yahoo (and the
+// MASSIVE badge disappears from the topbar).
+export type PreferredFeed = 'auto' | 'yahoo' | 'massive' | 'backend' | 'synthetic';
 
 export interface AppState {
   symbol: string;
@@ -179,6 +183,7 @@ export interface AppState {
   is3D: boolean;
   dataSource: 'live' | 'synthetic';
   dataProvider: DataProvider;
+  preferredFeed: PreferredFeed;
   backendMode: 'auto' | 'backend' | 'offline';
   crosshair: { x: number; y: number } | null;
   indicators: ActiveIndicator[];
@@ -200,6 +205,7 @@ const LS_KEYS = {
   backendUrl: 'dafe_mobile_backend',
   massiveApiKey: 'dafe_mobile_massive_key',
   backendMode: 'dafe_mobile_backend_mode',
+  preferredFeed: 'dafe_mobile_preferred_feed',
   perf: 'dafe_mobile_perf',
   indicators: 'dafe_mobile_indicators',
   broker: 'dafe_mobile_broker',
@@ -222,6 +228,7 @@ export const state: AppState = {
   is3D: false,
   dataSource: 'synthetic',
   backendMode: (localStorage.getItem(LS_KEYS.backendMode) as 'auto' | 'backend' | 'offline') || 'auto',
+  preferredFeed: ((localStorage.getItem('dafe_mobile_preferred_feed') as PreferredFeed) || 'auto'),
   crosshair: null,
   indicators: [],
   markers: [],
@@ -307,6 +314,7 @@ export function persistSettings(): void {
   localStorage.setItem(LS_KEYS.backendUrl, state.backendUrl);
   localStorage.setItem(LS_KEYS.massiveApiKey, state.massiveApiKey);
   localStorage.setItem(LS_KEYS.backendMode, state.backendMode);
+  localStorage.setItem(LS_KEYS.preferredFeed, state.preferredFeed);
   localStorage.setItem(LS_KEYS.perf, state.perf);
   localStorage.setItem(LS_KEYS.vpEnabled, state.vpEnabled ? '1' : '0');
   localStorage.setItem(LS_KEYS.onboarded, state.onboarded ? '1' : '0');

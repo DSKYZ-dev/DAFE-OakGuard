@@ -102,18 +102,16 @@ export class ThreeDRenderer {
     this.scene.add(this.barGroup);
     this.scene.add(this.particleGroup);
 
-    // Post-processing — bloom for glow effects
+    // Post-processing — bloom ONLY emissive geometry. threshold 0.1 bloomed
+    // the whole frame (hazy background tinted toward the candles' colors).
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloomPass = new UnrealBloomPass(new THREE.Vector2(800, 600), 0.4, 0.3, 0.1);
-    this.bloomPass.threshold = 0.1;
-    this.bloomPass.strength = 0.5;
-    this.bloomPass.radius = 0.8;
+    this.bloomPass.threshold = 0.6;
+    this.bloomPass.strength = 0.45;
+    this.bloomPass.radius = 0.5;
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
-
-    // Depth fog for atmospheric depth
-    this.scene.fog = new THREE.FogExp2(0x0a0a18, 0.0008);
   }
 
   // ── Grid centered at (cx, 0, 0) in XZ plane ──

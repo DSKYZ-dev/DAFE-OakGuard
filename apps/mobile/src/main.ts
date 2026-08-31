@@ -164,6 +164,11 @@ function boot(): void {
     persistSettings(); refreshIndSel();
     try{ (window as any).__dafeChartRefresh?.(); }catch{}
   });
+  // Live sync: indicators are added from the Scripts tab (runIndicator) and
+  // by library toggles on other screens — this screen had no re-render hook,
+  // so the dropdown stayed stuck at its boot-time contents forever.
+  (window as any).__dafeRefreshIndSel = refreshIndSel;
+  setInterval(refreshIndSel, 1500);
   refreshIndSel();
 
   domBar.appendChild(domSel); domBar.appendChild(indSel); domBar.appendChild(indRemoveBtn);
@@ -265,38 +270,32 @@ function boot(): void {
   TABS.forEach((t) => app.appendChild(screens[t.id]));
   app.appendChild(tabbar);
 
-  // ── Chart fabs ─────────────────────────────────────────────────
+  // ── Chart fabs — ALL live inside the Hot-Action menu now ──────────
+  // The standalone floating circles (VP / ◫ / 3D / ⟲) duplicated menu items
+  // and cluttered the right edge; they are fully replaced by the collapsible
+  // stack under ☰ (below). The toggles keep their own click logic.
   const vpFab = document.createElement('button');
-  vpFab.className = 'chart-fab' + (state.vpEnabled ? ' active' : '');
-  vpFab.textContent = 'VP';
-  vpFab.title = 'Volume profile';
+  vpFab.style.display = 'none';
   vpFab.addEventListener('click', () => {
     const on = !state.vpEnabled;
     state.vpEnabled = on;
-    vpFab.classList.toggle('active', on);
     chart.setVpEnabled(on);
+    syncHotToggles();
     persistSettings();
   });
   const barTypeFab = document.createElement('button');
-  barTypeFab.className = 'chart-fab';
-  barTypeFab.textContent = '◫';
-  barTypeFab.title = 'Bar type';
-  barTypeFab.style.fontSize = '14px';
+  barTypeFab.style.display = 'none';
   barTypeFab.addEventListener('click', () => openBarTypeSheet());
   const d3Fab = document.createElement('button');
-  d3Fab.className = 'chart-fab' + (state.is3D ? ' active' : '');
-  d3Fab.textContent = '3D';
-  d3Fab.title = '3D mode';
+  d3Fab.style.display = 'none';
   d3Fab.addEventListener('click', () => {
     const on = !state.is3D;
     state.is3D = on;
-    d3Fab.classList.toggle('active', on);
     chart.set3D(on);
+    syncHotToggles();
   });
   const ostFab = document.createElement('button');
-  ostFab.className = 'chart-fab';
-  ostFab.textContent = '⟲';
-  ostFab.title = 'Chart reset — restore both charts to starting positions (keeps indicators and trades)';
+  ostFab.style.display = 'none';
   ostFab.addEventListener('click', () => {
     // Reset ONLY viewing state — never indicators, orders, or positions.
     chart.resetView();
@@ -314,9 +313,8 @@ function boot(): void {
   chartFabLayer.appendChild(ostFab);
 
   // ── Hot-Action menu (bottom-right, above the settings tab) ──
-  // One collapsed button; tapping expands the action stack upward:
-  // params → chart reset → bar types → volume profile. Tapping again
-  // collapses everything back under the single menu button.
+  // ONE collapsed ☰ button. Every former floating fab (Params / Reset /
+  // Bars / VP / 3D) lives inside the stack and COLLAPSES with the menu.
   const hotMenu = document.createElement('div');
   hotMenu.id = 'hot-action-menu';
   const hotBtn = document.createElement('button');
@@ -337,15 +335,25 @@ function boot(): void {
   const hotReset = makeHotAction('⟲ Reset', 'Reset chart view', () => ostFab.click());
   const hotBarType = makeHotAction('◫ Bars', 'Bar type', () => openBarTypeSheet());
   const hotVP = makeHotAction('VP', 'Volume profile', () => vpFab.click());
+  const hot3D = makeHotAction('3D', 'Toggle 3D mode', () => d3Fab.click());
   hotStack.appendChild(hotParams);
   hotStack.appendChild(hotReset);
   hotStack.appendChild(hotBarType);
   hotStack.appendChild(hotVP);
+  hotStack.appendChild(hot3D);
   let hotOpen = false;
+  // Active-state sync: VP and 3D items show a live on/off chip.
+  function syncHotToggles(): void {
+    hotVP.classList.toggle('active', state.vpEnabled);
+    hotVP.textContent = state.vpEnabled ? 'VP ✓' : 'VP';
+    hot3D.classList.toggle('active', state.is3D);
+    hot3D.textContent = state.is3D ? '3D ✓' : '3D';
+  }
   function syncHotMenu(): void {
     hotMenu.classList.toggle('open', hotOpen);
     hotStack.style.display = hotOpen ? 'flex' : 'none';
     hotBtn.textContent = hotOpen ? '✕' : '☰';
+    if (hotOpen) syncHotToggles();
   }
   hotBtn.addEventListener('click', (e) => { e.stopPropagation(); hotOpen = !hotOpen; syncHotMenu(); });
   // Tap anywhere outside collapses the stack.
@@ -355,6 +363,7 @@ function boot(): void {
   hotMenu.appendChild(hotStack);
   hotMenu.appendChild(hotBtn);
   mainWrap.appendChild(hotMenu);
+  syncHotToggles();
   // Params visibility follows active indicators, same as the old lone fab.
   function syncIndParamsFab() {
     const hasEnabled = state.indicators.some(i => i.enabled);
@@ -639,6 +648,10 @@ function boot(): void {
       dom?.refresh();
     },
   });
+  // Global chart re-fetch hook — Settings switches (yfinance etc.) call this
+  // to force an immediate reload from the NEW preferred feed. It was
+  // referenced in three places but never assigned (dead global).
+  (window as any).__dafeChartRefresh = () => { try { chart?.reload(); } catch {} };
 
   syncDom();
 

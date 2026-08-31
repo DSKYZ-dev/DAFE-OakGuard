@@ -26,9 +26,11 @@ let _hostFallback: HTMLElement | null = null;
 export function setLowerPaneHost(el: HTMLElement | null): void { _hostFallback = el; }
 // Same rationale as three-indicators.ts's twin constants — this pane's
 // geometry is built from the same emissive MeshPhongMaterial palette.
-const BLOOM_STRENGTH = 0.7;
-const BLOOM_RADIUS = 0.45;
-const BLOOM_THRESHOLD = 0.15;
+const BLOOM_STRENGTH = 0.55;
+const BLOOM_RADIUS = 0.4;
+// High threshold: only emissive geometry blooms. The old 0.15 bloomed the
+// whole frame — the pane took on the viz's own color and looked hazy.
+const BLOOM_THRESHOLD = 0.6;
 
 // ─── Content-fit framing ───────────────────────────────────────────
 // Plot geometry is normalized to a fixed world-space span (roughly x in
