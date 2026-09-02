@@ -1562,3 +1562,250 @@ export function dispose3DScene(): void {
   disableOrbitMain();
   disposeViz();
 }
+
+// ─── ISO-COMPOSITE MODE (Option B) ──────────────────────────────────
+// The isometric canvas (iso3d.ts) stays the BASE scene — the candles the
+// user knows and loves render there in 2D. This module then renders the
+// GENUINE GL geometry for plot3d indicators on a transparent overlay canvas
+// in the SAME screen rect, with a projection aligned to iso's cabinet
+// math (depth axis recedes up-left at ISO_ANGLE, DEPTH_SCALE 0.62).
+//
+// Alignment contract (both sides must agree):
+//   x: barX(i) screen px → world x = (px/halfW - 1) * 5   (same as chart3D)
+//   y: price → world y = (price - minP)/pRange * 6 - 3     (same as chart3D)
+//   z: iso depth offsets px by z*ISO_COS*0.62 horizontally and z*ISO_SIN*0.62
+//      vertically. A camera rotated to iso's own angle reproduces that
+//      shearing EXACTLY in GL, so GL shapes at (x, y, z) land on the same
+//      pixels iso3d would have drawn them.
+let _isoHost: (() => HTMLElement | null) | null = null;
+let _isoActive = false;
+// MUST equal iso3d.ts's ISO_ANGLE (Math.PI / 6.5, ~27.7°) — the composite
+// camera is rotated by exactly this much to reproduce iso's cabinet shear.
+const ISO_ANGLE = Math.PI / 6.5;
+
+/** Mount the GL overlay onto a host element (the mobile iso chart area). */
+export function setIsoCompositeHost(host: (() => HTMLElement | null) | null): void {
+  _isoHost = host;
+  if (!host) { _isoActive = false; disposeViz(); }
+}
+
+function getIsoCanvas(): HTMLCanvasElement {
+  let c = document.getElementById(CANVAS_ID) as HTMLCanvasElement;
+  if (!c) {
+    c = document.createElement('canvas');
+    c.id = CANVAS_ID;
+    Object.assign(c.style, {
+      position: 'absolute', inset: '0', width: '100%', height: '100%',
+      zIndex: '11', pointerEvents: 'none',
+    });
+    const host = _isoHost?.() ?? document.getElementById('chart-canvas')?.parentElement;
+    if (host) host.appendChild(c);
+  }
+  return c;
+}
+
+/**
+ * Render the GL indicator overlay for the ISO-COMPOSITE mode.
+ * bars/view/width/height mirror renderMain3DScene's contract; the candles
+ * themselves are NOT drawn here — iso3d draws them on its own canvas below.
+ */
+export function renderIsoOverlay3D(
+  bars: BaseBar[],
+  plots: OakPlot3D[],
+  view: ViewState,
+  width: number,
+  height: number,
+  shapes?: OakPlot[],
+): void {
+  if (plots.length === 0) { if (_isoActive) { disposeViz(); _isoActive = false; } return; }
+  const canvas = getIsoCanvas();
+  if (!_initialized || !_isoActive || !_renderer) {
+    if (!_initialized) {
+      init();
+    }
+    _isoActive = true;
+    _chart3DMode = false; // NOT the unified bars+viz scene — overlay only
+    _rebuildNeeded = true;
+    _barGroup = null;     // never draw GL candles in composite mode
+    if (_scene) {
+      _scene.background = null;
+      if (_renderer) _renderer.setClearColor(0x000000, 0); // fully transparent
+    }
+    canvas.style.pointerEvents = 'none';
+    disableOrbitMain(); // iso owns the gestures; the overlay never intercepts
+  }
+  if (!_scene || !_camera || !_renderer) return;
+
+  if (canvas.width !== width || canvas.height !== height) {
+    _renderer.setSize(width, height, false);
+    _camera.aspect = width / Math.max(height, 1);
+    _camera.updateProjectionMatrix();
+    resizeComposer(width, height);
+  }
+
+  // Camera: reproduce iso3d's cabinet shearing. Iso depth (z) offsets screen
+  // pixels by (-z*COS*0.62, -z*SIN*0.62); a camera positioned along the
+  // direction that produces that same shear maps world (x,y,z) onto the
+  // iso canvas in register. Phi/theta chosen so the perspective vanishing
+  // matches iso's up-left recede.
+  _orbitTheta = Math.PI - ISO_ANGLE; // depth recedes to the LEFT
+  _orbitPhi = Math.PI / 2 - ISO_ANGLE * 0.55; // up-tilt mirrors iso's y-shear
+  _orbitTarget.set(0, 0, 0);
+  _orbitDist = 18;
+  applyOrbitCam();
+
+  const { start, end } = getVisibleRange(view, width, bars.length);
+  const visibleRangeKey = `${start}|${end}|${bars.length}|ISO`;
+  if (visibleRangeKey !== _lastVisibleRangeKey) {
+    _lastVisibleRangeKey = visibleRangeKey;
+    _rebuildNeeded = true;
+  }
+
+  const didRebuild = _rebuildNeeded;
+  if (_rebuildNeeded) {
+    _rebuildNeeded = false;
+    clearViz();
+    if (_barGroup) { _scene.remove(_barGroup); disposeMesh(_barGroup); _barGroup = null; }
+
+    const visibleCount = end - start + 1;
+    // Same z-plane separation as chart3D so multi-layer scripts keep their
+    // documented depth spacing in the composite too.
+    const p3dLayers = plots.filter(p =>
+      p.pane === '3d' && p.series.filter(v => isFinite(v) && !isNaN(v)).length >= 2);
+    const anyLevel = p3dLayers.some(p => p.z_level !== undefined);
+    const Z_SPACING = 2.0;
+    const zKeys = anyLevel
+      ? [...new Set(p3dLayers.map(p => p.z_level ?? 0))].sort((a, b) => a - b)
+      : p3dLayers.map((_, i) => i);
+    const zPlaneByKey = new Map<number, number>();
+    let zCursor = 0;
+    zKeys.forEach((key, idx) => {
+      if (idx === 0) { zPlaneByKey.set(key, 0); zCursor = 0; return; }
+      zCursor += Math.max(Z_SPACING, (key - zKeys[idx - 1]) * Z_SPACING);
+      zPlaneByKey.set(key, zCursor);
+    });
+    const zCenter = zCursor / 2;
+
+    for (let pi = 0; pi < p3dLayers.length; pi++) {
+      const p = p3dLayers[pi];
+      const series = p.series.filter(v => isFinite(v) && !isNaN(v));
+      const col = typeof p.color === 'string' ? p.color : '#b48cff';
+      const zKey = anyLevel ? (p.z_level ?? 0) : pi;
+      const zPlane = (zPlaneByKey.get(zKey) ?? 0) - zCenter;
+      let obj: THREE.Object3D | null = null;
+      switch (p.style) {
+        case 'surface': case 'wireframe': case 'mesh':
+          obj = buildSurfaceFromSeries(series, view, width, col, visibleCount); break;
+        case 'ribbon': case 'line3d':
+          obj = buildRibbonFromSeries(series, view, width, col, visibleCount, p.style === 'line3d'); break;
+        case 'bars3d':
+          obj = buildBarsFromSeries(series, view, width, col, visibleCount); break;
+        case 'scatter':
+          obj = buildScatterFromSeries(series, view, width, col, visibleCount); break;
+        case 'helix':
+          obj = buildHelixFromSeries(series, view, width, col, visibleCount); break;
+        case 'manifold':
+          obj = buildManifoldFromSeries(series, view, width, col, visibleCount); break;
+        case 'trail':
+          obj = buildTrailFromSeries(series, view, width, col, visibleCount); break;
+        case 'vortex':
+          obj = buildVortexFromSeries(series, view, width, col, visibleCount); break;
+        case 'nebula':
+          obj = buildNebulaFromSeries(series, view, width, col, visibleCount); break;
+        case 'constellation':
+          obj = buildConstellationFromSeries(series, view, width, col, visibleCount); break;
+        case 'torus':
+          obj = buildTorusFromSeries(series, view, width, col, visibleCount); break;
+        case 'ridgeline':
+          obj = buildRidgelineFromSeries(series, view, width, visibleCount); break;
+      }
+      if (obj) { obj.position.z += zPlane; _scene.add(obj); }
+    }
+
+    if (shapes && shapes.length > 0) {
+      const visible = visibleBars(bars, view, width);
+      if (visible.length > 0) {
+        const { min: minP, max: maxP, range: pRange } = normRange(visible);
+        const halfW = width * 0.5;
+        const total = visible.length;
+        const shapeZ = (zLevel: number | undefined): number => {
+          const key = zLevel ?? 0;
+          const known = zPlaneByKey.get(key);
+          return (known ?? key * Z_SPACING) - zCenter;
+        };
+        let labelBudget = 40;
+        const placedLabels: Array<{ text: string; x: number; y: number }> = [];
+        for (const sp of shapes) {
+          if (sp.type !== 'plot3d_label' || sp.pane !== '3d' || !sp.text) continue;
+          const vi = (sp.barIdx ?? 0) - start;
+          if (vi < 0 || vi >= total) continue;
+          const px = barX(vi, total, width, view.barSpacing, view.scrollX);
+          const x = ((px - halfW) / halfW) * 5;
+          const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3 + 0.4;
+          if (placedLabels.some(pl => pl.text === sp.text && Math.abs(pl.x - x) < 1.0 && Math.abs(pl.y - y) < 0.6)) continue;
+          placedLabels.push({ text: sp.text, x, y });
+          labelBudget--;
+          const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
+          sprite.position.set(x, y, shapeZ(sp.z_level));
+          _scene.add(sprite);
+        }
+        for (const sp of shapes) {
+          if (sp.type !== 'plot3d_shape' || sp.pane !== '3d') continue;
+          const barIdx = sp.barIdx ?? 0;
+          const vi = barIdx - start;
+          if (vi < 0 || vi >= total) continue;
+          const px = barX(vi, total, width, view.barSpacing, view.scrollX);
+          const x = ((px - halfW) / halfW) * 5;
+          const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
+          const z = shapeZ(sp.z_level);
+          const s = sp.size ?? 1;
+          if (sp.shape3d === 'image') {
+            const img = resolveImage(sp.imageRef ?? '');
+            if (img) {
+              const tex = new THREE.Texture(img);
+              tex.needsUpdate = true;
+              const aspect = img.width && img.height ? img.width / img.height : 1;
+              const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+              sprite.scale.set(s * 0.6 * aspect, s * 0.6, 1);
+              sprite.position.set(x, y, z);
+              _scene.add(sprite);
+            }
+            continue;
+          }
+          let geometry: THREE.BufferGeometry;
+          switch (sp.shape3d) {
+            case 'cube': geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3); break;
+            case 'sphere': geometry = new THREE.SphereGeometry(s * 0.2, 8, 6); break;
+            case 'pyramid': geometry = new THREE.ConeGeometry(s * 0.25, s * 0.35, 4); break;
+            case 'torus': geometry = new THREE.TorusGeometry(s * 0.2, s * 0.07, 6, 8); break;
+            case 'diamond': geometry = new THREE.OctahedronGeometry(s * 0.25); break;
+            case 'coneup': case 'conedown': geometry = new THREE.ConeGeometry(s * 0.22, s * 0.5, 12); break;
+            default: geometry = new THREE.BoxGeometry(s * 0.25, s * 0.25, s * 0.25);
+          }
+          const col = new THREE.Color(sp.color ?? '#b48cff');
+          const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+            color: col, emissive: col.clone().multiplyScalar(0.2),
+            specular: 0x222244, shininess: 60,
+          }));
+          let yOff = 0;
+          let baseRotZ = 0;
+          if (sp.shape3d === 'coneup') { yOff = -(0.15 + 0.25) * s; }
+          else if (sp.shape3d === 'conedown') { yOff = (0.15 + 0.25) * s; baseRotZ = Math.PI; }
+          const d2r = Math.PI / 180;
+          mesh.rotation.set((sp.rx ?? 0) * d2r, (sp.ry ?? 0) * d2r, baseRotZ + (sp.rz ?? 0) * d2r);
+          mesh.position.set(x, y + yOff, z);
+          _scene.add(mesh);
+        }
+      }
+    }
+  }
+
+  // ISO-COMPOSITE: never content-fit/stretch — the overlay must stay in
+  // exact register with the iso canvas beneath, which does no such fitting.
+  applyOrbitCam();
+  _renderTime = performance.now();
+  renderFrame();
+}
+
+/** True while the ISO-composite overlay owns the GL canvas. */
+export function isIsoCompositeActive(): boolean { return _isoActive; }

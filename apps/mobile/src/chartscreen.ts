@@ -18,12 +18,14 @@ import { parse, executeScript } from '../../web/src/oakscript';
 import type { OakPlot3D } from '../../web/src/oakscript/runtime';
 import { barsToRuntimeBarData } from '../../web/src/backtest/data';
 import { draw3DScene } from '../../web/src/iso3d';
-import { renderMain3DScene, mark3DSceneDirty, dispose3DScene, getRenderTime } from '../../web/src/three-indicators';
+import { renderMain3DScene, mark3DSceneDirty, dispose3DScene, getRenderTime, renderIsoOverlay3D, setIsoCompositeHost, isIsoCompositeActive } from '../../web/src/three-indicators';
 import { show3D, hide3D, setLowerPaneHost } from '../../web/src/three-lower-pane';
 import { findBackend, fetchBackendBars } from './backend';
 import { fetchMassiveBars } from './massive';
 import { fetchYahooBars } from './yahoo';
 import { getDataSourceForSymbol } from './data-adapter';
+import { LiveMarketEngine } from './live-engine';
+import { deriveMetrics } from './metrics-adapter';
 import { state, persistSettings, loadBroker, cacheBars, loadCachedBars, syncMarkersForSymbol, type DataProvider } from './state';
 import { TouchEngine } from './touch';
 
@@ -56,8 +58,17 @@ export interface ChartScreen {
 }
 
 export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCallbacks): ChartScreen {
+  // The container is a flex column (see main.ts mainWrap). Layout, top to
+  // bottom: [chart canvas — flex:1, shrinks] [dashboard band — content-fit,
+  // shrink:0] — so the band takes real space between the main chart and the
+  // lower pane instead of floating OVER the candles.
   const canvas = document.createElement('canvas');
   canvas.id = 'chart-canvas';
+  canvas.style.position = 'relative';
+  canvas.style.flex = '1';
+  canvas.style.minHeight = '0';
+  canvas.style.width = '100%';
+  canvas.style.display = 'block';
   container.appendChild(canvas);
   const ctx = canvas.getContext('2d')!;
 
@@ -70,22 +81,46 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   let lastIndicatorRun = 0;
   let disposed = false;
 
+  // ── Live Market Engine — the unbreakable stream ──────────────────────
+  // Replaces the fetch-once-then-freeze model. Layered: Massive (paid, fast
+  // anchors, 403-aware) → Yahoo (free corrections) → calibration-anchored
+  // synthesis (always-moving micro-ticks between real updates). See
+  // live-engine.ts for the layer contract.
+  const engineLive = new LiveMarketEngine();
+  let liveTickDirty = false;          // live bar mutated since last runIndicators
+  let indicatorsRunTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function scheduleIndicatorRerun(): void {
+    // Throttled re-run of indicator math on live ticks — full executeScript
+    // over 500+ bars every 400ms would starve the render loop, but never
+    // re-running leaves plots frozen at fetch time. 500ms cadence + a dirty
+    // flag keeps plotted values current at a fraction of the cost.
+    if (indicatorsRunTimer) return;
+    indicatorsRunTimer = setTimeout(() => {
+      indicatorsRunTimer = null;
+      if (liveTickDirty && !disposed) {
+        liveTickDirty = false;
+        try { runIndicators(); } catch { /* render loop survives */ }
+      }
+    }, 500);
+  }
+
   let perBarVols: PerBarVolume[] = [];
   let vpCache: { key: string; computed: VPComputed } | null = null;
 
-  // ── Dashboard Window (adaptive, its own panel) ──────────────────────
-  // Sits between the main chart and the lower pane in DOM order (appended
-  // to this container which ends above the splitter). Every indicator that
-  // produces table()/label() readouts feeds it — content ADAPTS: sections
-  // stack vertically, wrap horizontally, and scroll only as a last resort.
-  // The ORIGINAL canvas-drawn dashboards are gone: table/label plots no
-  // longer render on the chart canvas at all (see draw loop filter).
-  // Each section has a header (indicator name) + power toggle so any
-  // dashboard can be turned on/off per indicator; state persists.
+  // ── Dashboard Band (adaptive, adapter-driven) ────────────────────────
+  // Sits between the main chart and the lower pane. The Universal Metrics
+  // Adapter (metrics-adapter.ts) derives the metric set from EVERY active
+  // script's plots — no script declares or draws its own dashboard. The band
+  // adapts its layout to the content: sections wrap horizontally into
+  // columns, chips flow within a section, and only extreme overflow scrolls.
+  // Each section carries a per-indicator power toggle (auto-populated for
+  // any script whose adapter output is non-empty — the "dashboard toggle").
   const dashWin = document.createElement('div');
   dashWin.id = 'dashboard-win';
   container.appendChild(dashWin);
   let dashLastRender = 0;
+  let dashLastSig = '';
   const DASH_KEY = 'dafe_mobile_dash_disabled';
 
   function loadDashDisabled(): Record<string, boolean> {
@@ -99,94 +134,72 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     d[indicatorName] = !d[indicatorName];
     try { localStorage.setItem(DASH_KEY, JSON.stringify(d)); } catch {}
   }
-  function fmtVal(v: any): string {
-    if (typeof v === 'number') {
-      if (Math.abs(v) >= 1e9) return (v / 1e9).toFixed(2) + 'B';
-      if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(2) + 'M';
-      if (Math.abs(v) >= 1e4) return (v / 1e3).toFixed(1) + 'K';
-      return Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2);
-    }
-    return String(v ?? '');
-  }
-  function renderDashboardWindow(plots: any[], indicators: { name: string }[]): void {
+
+  function renderDashboardWindow(): void {
     const now = performance.now();
     if (now - dashLastRender < 900) return;
     dashLastRender = now;
-    // Group dashboard-bearing plots by their OWNING indicator so each gets
-    // its own section with its own toggle. Plots carry `__ind` (set in
-    // runIndicators) identifying the parent indicator id/name.
-    const byInd = new Map<string, { name: string; rows: { v: string; bg?: string; fg?: string }[] }>();
-    for (const p of plots) {
-      if (p.type !== 'table' || !Array.isArray(p.cells)) continue;
-      const indName = (p as any).__ind || 'Indicator';
-      if (!isDashOn(indName)) continue;
-      let sec = byInd.get(indName);
-      if (!sec) { sec = { name: indName, rows: [] }; byInd.set(indName, sec); }
-      for (const row of p.cells as any[][]) {
-        for (const cell of row) {
-          if (cell == null || typeof cell !== 'object') continue;
-          const txt = String(cell.text ?? '').trim();
-          if (!txt) continue;
-          const entry = { v: txt.slice(0, 40), bg: cell.bgColor || '', fg: cell.textColor || '' };
-          if (!sec.rows.some(r => r.v === entry.v)) sec.rows.push(entry);
-        }
-      }
-    }
-    for (const p of plots) {
-      if (p.type !== 'label' || typeof p.text !== 'string' || !p.text) continue;
-      const indName = (p as any).__ind || 'Indicator';
-      if (!isDashOn(indName)) continue;
-      let sec = byInd.get(indName);
-      if (!sec) { sec = { name: indName, rows: [] }; byInd.set(indName, sec); }
-      sec.rows.push({ v: p.text.slice(0, 60) });
-    }
-    if (byInd.size === 0) {
-      if (dashWin.childElementCount > 0) dashWin.replaceChildren();
+    // Adapter pull — metrics from every enabled indicator's live plot set.
+    const metrics = deriveMetrics({ indicators: state.indicators });
+    const visible = metrics.filter(m => m.hasMetrics && isDashOn(m.name));
+    if (visible.length === 0) {
+      if (dashWin.childElementCount > 0) { dashWin.replaceChildren(); dashLastSig = ''; }
       dashWin.style.display = 'none';
       return;
     }
-    dashWin.style.display = 'block';
-    // Rebuild only when the CONTENT SIGNATURE changes — not every frame.
+    // Rebuild only when the CONTENT SIGNATURE changes (not every frame).
     let sig = '';
-    for (const [name, s] of byInd) sig += name + '|' + s.rows.map(r => r.v).join(';');
-    if (sig === (dashWin as any).__sig) return;
-    (dashWin as any).__sig = sig;
+    for (const m of visible) sig += m.name + '|' + m.rows.map(r => r.label + r.value).join(';');
+    if (sig === dashLastSig) return;
+    dashLastSig = sig;
+    dashWin.style.display = 'flex';
     dashWin.replaceChildren();
-    for (const [name, sec] of byInd) {
+    for (const m of visible) {
       const card = document.createElement('div');
       card.className = 'dash-section';
       const head = document.createElement('div');
       head.className = 'dash-section-head';
       const nm = document.createElement('span');
       nm.className = 'dash-section-name';
-      nm.textContent = name;
-      // Power toggle — per-indicator dashboard on/off, persisted.
+      nm.textContent = m.name;
+      // Signal-colored section header — a live LONG/SHORT state tints the
+      // whole section so the eye lands on the active signal first.
+      if (m.signal === 'long') card.classList.add('sig-long');
+      else if (m.signal === 'short') card.classList.add('sig-short');
+      // Power toggle — auto-populated for every metric-bearing indicator
+      // (adapter decides "has a dashboard", the user decides "show it").
       const pw = document.createElement('button');
       pw.className = 'dash-power';
       pw.textContent = '⏻';
-      pw.title = `Toggle ${name} dashboard`;
+      pw.title = `Toggle ${m.name} metrics`;
       pw.addEventListener('click', (e) => {
         e.stopPropagation();
-        toggleDash(name);
-        // Rebuild from the LIVE plot set (other indicators may still have
-        // dashboard content) — not from empty arrays.
-        (dashWin as any).__sig = '';
+        toggleDash(m.name);
+        dashLastSig = '';
         dashLastRender = 0;
-        const livePlots = state.indicators.filter((i) => i.enabled).flatMap((i) => i.plots);
-        renderDashboardWindow(livePlots, state.indicators);
+        renderDashboardWindow();
       });
       head.appendChild(nm);
       head.appendChild(pw);
       card.appendChild(head);
       const body = document.createElement('div');
       body.className = 'dash-section-body';
-      for (const r of sec.rows.slice(0, 16)) {
+      for (const r of m.rows.slice(0, 16)) {
         const chip = document.createElement('div');
-        chip.className = 'dash-chip';
-        chip.textContent = r.v;
-        chip.title = `${name}: ${r.v}`;
+        chip.className = 'dash-chip' + (r.emphasis && r.emphasis !== 'none' ? ` chip-${r.emphasis}` : '');
+        chip.title = r.hint ? `${m.name}: ${r.hint}` : `${m.name}: ${r.label} ${r.value}`;
+        if (r.label) {
+          const lab = document.createElement('span');
+          lab.className = 'dash-chip-label';
+          lab.textContent = r.label;
+          chip.appendChild(lab);
+        }
+        const val = document.createElement('span');
+        val.className = 'dash-chip-value';
+        val.textContent = r.value;
+        if (r.color) val.style.color = r.color;
         if (r.bg) chip.style.background = r.bg;
-        if (r.fg) chip.style.color = r.fg;
+        chip.appendChild(val);
         body.appendChild(chip);
       }
       card.appendChild(body);
@@ -275,12 +288,13 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
 
   function sizeCanvas(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = container.clientWidth;
-    const h = container.clientHeight;
+    // Measure the CANVAS box, not the container — the dashboard band now
+    // takes real flex space below the canvas, so the drawing surface is
+    // exactly the remaining chart area.
+    const w = canvas.clientWidth || container.clientWidth;
+    const h = canvas.clientHeight || container.clientHeight;
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
@@ -316,7 +330,6 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   }
 
   async function loadBarsInner(): Promise<void> {
-    // Auto-refresh calls this too — caller sets viewIsFromUser accordingly.
     const tf = state.timeframe;
     const count = tf.startsWith('1') || tf.startsWith('5') || tf.startsWith('10') || tf.startsWith('30') ? 480 : 320;
     let data: BaseBar[] | null = null;
@@ -383,6 +396,80 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     notifyPrice();
     cb.onEngineBars(data);
     persistSettings();
+
+    // ── Hand the bar set to the live engine so the stream KEEPS MOVING ──
+    // Every symbol/timeframe switch re-anchors the engine; from here on it
+    // owns polling (adaptive per layer) + micro-tick synthesis.
+    startLiveEngine();
+  }
+
+  function startLiveEngine(): void {
+    engineLive.start({
+      symbol: state.symbol,
+      timeframe: state.timeframe,
+      seedBars: state.bars,
+      onEvent: (ev) => {
+        if (disposed) return;
+        if (ev.type === 'bars') {
+          state.bars = ev.bars;
+          state.dataProvider = ev.provider === 'synthetic' ? 'synthetic' : (ev.provider as DataProvider);
+          state.dataSource = ev.provider === 'synthetic' ? 'synthetic' : 'live';
+          rebuildTransformed();
+          runIndicators();
+          notifyPrice();
+          cb.onEngineBars(ev.bars);
+          cb.onDataSource(state.dataProvider);
+        } else if (ev.type === 'tick') {
+          // Synthesized micro-tick — mutate ONLY the live bar of the visible
+          // bar set (cheap), mark dirty for the throttled indicator re-run,
+          // and notify price + engine. The LiveMarketEngine keeps its own
+          // anchor copy; state.bars stays the single source of truth for
+          // rendering, indicators, and the execution engine.
+          const src = state.bars;
+          if (src.length > 0) {
+            const tfMs = TIMEFRAME_MS[state.timeframe] || 60000;
+            const live = src[src.length - 1];
+            const nextTs = Math.floor(Date.now() / tfMs) * tfMs;
+            let rolled = false;
+            if (nextTs > live.timestamp) {
+              src.push({ timestamp: nextTs, open: live.close, high: live.close, low: live.close, close: live.close, volume: 0 });
+              rolled = true;
+            }
+            const cur = src[src.length - 1];
+            const maxMove = cur.close * 0.012;
+            const p = Math.max(0.01, ev.price);
+            cur.close = Math.abs(p - cur.close) > maxMove ? cur.close + Math.sign(p - cur.close) * maxMove : p;
+            if (cur.close > cur.high) cur.high = cur.close;
+            if (cur.close < cur.low) cur.low = cur.close;
+            // Transform-aware but CHEAP: a full transform rebuild runs only
+            // when a new bar rolled (bar-type transforms need the whole set);
+            // intra-bar ticks just refresh the live bar's derived volume.
+            if (rolled) {
+              rebuildTransformed();
+            } else if (state.barType === 'candlestick' || state.barType === 'line' || state.barType === 'area' || state.barType === 'footprint') {
+              // Identity transforms: state.transformed IS state.bars — refresh
+              // only the live bar's per-bar volume voxel in place.
+              state.transformed = src;
+              if (perBarVols.length === src.length) {
+                perBarVols[perBarVols.length - 1] = generatePerBarVolumes([cur], 10)[0];
+              }
+            } else {
+              rebuildTransformed();
+            }
+            liveTickDirty = true;
+            scheduleIndicatorRerun();
+            notifyPrice();
+            cb.onEngineTick(cur.close, ev.ts);
+          }
+        } else if (ev.type === 'layer') {
+          // Reflect the active layer honestly in the provider badge.
+          const map: Record<string, DataProvider> = { massive: 'massive', yahoo: 'yahoo', synthetic: 'synthetic' };
+          state.dataProvider = map[ev.layer] || 'synthetic';
+          state.dataSource = ev.layer === 'synthetic' ? 'synthetic' : 'live';
+          cb.onDataSource(state.dataProvider);
+        }
+      },
+    });
   }
 
   function loadSymbol(symbol: string, tf?: Timeframe): void {
@@ -416,8 +503,10 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   function set3D(on: boolean): void {
     state.is3D = on;
     if (!on) {
-      // Tearing down 3D: drop the GL overlay so the 2D canvas is clean again.
+      // Tearing down 3D: drop the GL overlay (composite OR unified) so the
+      // 2D canvas is clean again.
       gen3DDisabled = false;
+      try { setIsoCompositeHost(null); } catch { /* noop */ }
       try { dispose3DScene(); } catch { /* not initialized */ }
     } else {
       // Re-entering 3D resets the fallback latch so a previously slow device
@@ -427,6 +516,8 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       slowFrames = 0;
       renderSamples = 0;
       renderSampleSum = 0;
+      // Re-register the overlay host (setIsoCompositeHost(null) clears it).
+      setIsoCompositeHost(() => canvas.parentElement);
     }
   }
 
@@ -457,10 +548,10 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
 
 
   function setLive(on: boolean): void {
-    // Live tick simulation is REMOVED — synthetic random-walk corrupted real
-    // data. setLive now drives a REAL-feed auto-refresher instead: while the
-    // chart is visible it re-fetches from the live provider on a fixed cadence
-    // (real prices, real weekends — closed markets simply show no new bars).
+    // The LiveMarketEngine (startLiveEngine) is the real stream: adaptive
+    // polling per layer + micro-tick synthesis. This legacy switch now only
+    // gates the extra stuck-synthetic rescue refresher — the stream itself
+    // always runs so the price never freezes.
     state.liveEnabled = on;
     if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }
     if (on) {
@@ -477,12 +568,11 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
           }
           return;
         }
-        void loadBars();
       }, 60_000);
     }
   }
-  // Real-feed auto-refresh is always on (60s cadence, paused while hidden
-  // or on synthetic data). The user never manages a play/pause again.
+  // Real-feed auto-refresh is always on (rescue cadence above, engine polls
+  // otherwise). The user never manages a play/pause again.
   setLive(true);
 
   function draw(ts: number): void {
@@ -516,30 +606,35 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       const shape3d = enabledPlots.filter((p: any) => p.type === 'plot3d_shape' || p.type === 'plot3d_label');
       const canWebGL = detectWebGL();
 
-      // Genuine Three.js rendering is the DEFAULT when plot3d indicators are
-      // present. We only drop to the iso-2D proxy when the device genuinely
-      // can't sustain it (WebGL absent / context failure / sustained low fps).
-      if (pl3d.length > 0 && canWebGL && !gen3DDisabled) {
+      // ── ISO-COMPOSITE (Option B) ──────────────────────────────────────
+      // The user's isometric candle scene is ALWAYS the base layer — never
+      // replaced. When plot3d indicators are active AND the device can hold
+      // GL, the genuine Three.js geometry renders on a TRANSPARENT overlay
+      // canvas in the same rect, projected to match iso's cabinet math, so
+      // iso candles + GL indicator layers read as ONE coherent 3D scene.
+      if (pl3d.length === 0) {
+        // No 3D layers wanted — make sure no stale overlay lingers.
+        try { if (isIsoCompositeActive()) { setIsoCompositeHost(null); } } catch { /* noop */ }
+      } else if (canWebGL && !gen3DDisabled) {
         try {
-          drawBackground(ctx, time);
-          renderMain3DScene(bars, pl3d, view, w, h, shape3d);
+          renderIsoOverlay3D(bars, pl3d, view, w, h, shape3d);
           if (!recordRendererMs(getRenderTime())) {
             gen3DDisabled = true;
-            dispose3DScene();
+            setIsoCompositeHost(null);
             show3DFallbackWarning('Sustained frame rate below ~18fps while rendering 3D indicators.');
-          } else {
-            drawTimeAxis(ctx, bars, view, state.timeframe);
-            rafId = requestAnimationFrame(draw);
-            return;
           }
         } catch {
           gen3DDisabled = true;
-          try { dispose3DScene(); } catch { /* already disposed */ }
+          try { setIsoCompositeHost(null); } catch { /* already disposed */ }
           show3DFallbackWarning('WebGL context could not be created for 3D indicators.');
         }
+      } else {
+        // GL unavailable/disabled — no overlay; iso3d's OWN 2D plot3d proxy
+        // (draw3DIndicatorPlots inside draw3DScene) still shows the data.
+        try { if (isIsoCompositeActive()) setIsoCompositeHost(null); } catch { /* noop */ }
       }
 
-      // ── Iso-3D candle scene (non-plot3d 3D mode) or fallback path ──
+      // ── Iso-3D candle scene — the BASE, always rendered in 3D mode ──
       drawBackground(ctx, time);
       let vp: ReturnType<typeof computeVolumeProfileBins> | undefined;
       if (state.vpEnabled && bars.length > 0) {
@@ -561,18 +656,25 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
         profileWidth: state.vpWidth,
         vpComputed: vp,
         bgViz: 'stars',
-        plots: enabledPlots,
+        // plot3d series are composited by the GL overlay ABOVE (or iso's own
+        // 2D proxy on fallback) — passing them here too would double-draw.
+        plots: enabledPlots.filter((p: any) => p.type !== 'plot3d'),
       });
       // Ordinary 2D plots stay visible as an overlay; plot3d series are shown
       // as a 2D proxy so their DATA is still visible even when GL is off.
       // table/label (dashboard readouts) NEVER draw on canvas — they render
       // exclusively in the dashboard window below the chart.
       if (enabledPlots.length > 0) {
-        drawOakScriptPlots(ctx, enabledPlots.filter((p: any) => p.type !== 'plot3d_shape' && p.type !== 'plot3d_label' && p.type !== 'table' && p.type !== 'label'), bars, view);
+        drawOakScriptPlots(ctx, enabledPlots.filter((p: any) => p.type !== 'plot3d_shape' && p.type !== 'plot3d_label' && p.type !== 'table' && p.type !== 'label' && p.type !== 'plot3d'), bars, view);
       }
+      drawTimeAxis(ctx, bars, view, state.timeframe);
+      renderDashboardWindow();
       rafId = requestAnimationFrame(draw);
       return;
     }
+
+    // Leaving 3D mode entirely — tear down any composite overlay.
+    try { if (isIsoCompositeActive()) setIsoCompositeHost(null); } catch { /* noop */ }
 
     drawBackground(ctx, time);
     drawGrid(ctx, bars, view, time);
@@ -660,14 +762,12 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       drawOHLCTooltip(ctx, bars, view, state.crosshair.x, state.crosshair.y, state.barType);
     }
 
-    // ── Dashboard strip ──
-    // Indicator table()/label() readouts render into a FIXED static strip
-    // below the x-axis instead of free-floating on the canvas (where the OST
-    // rail and buy/sell buttons used to cover them). Panel metrics adapt to
-    // the strip, never the other way around.
-    // table/label readouts render ONLY in the dashboard window below — never
-    // free-floating on the canvas (the original dashboards are removed).
-    renderDashboardWindow(enabledPlots.filter((p: any) => p.type === 'table' || p.type === 'label'), state.indicators);
+    // ── Dashboard band ──
+    // The Universal Metrics Adapter pulls every active script's metric set
+    // and renders the adaptive band between the chart and lower pane. Readouts
+    // NEVER render free-floating on the canvas — this band is their exclusive
+    // home, adapting its layout to whatever the scripts produce.
+    renderDashboardWindow();
 
     rafId = requestAnimationFrame(draw);
   }
@@ -709,8 +809,12 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     },
   });
 
+  // Observe BOTH the container and the canvas itself — the canvas resizes
+  // whenever the dashboard band appears/disappears (flex reflow), not just
+  // when the container does.
   const resizeObserver = new ResizeObserver(() => sizeCanvas());
   resizeObserver.observe(container);
+  resizeObserver.observe(canvas);
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
@@ -728,6 +832,9 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   // don't exist on mobile).
   const lowerHost = document.getElementById('mobile-lower-canvas')?.parentElement ?? null;
   setLowerPaneHost(lowerHost);
+  // ISO-COMPOSITE overlay host: the GL canvas mounts in the SAME container
+  // as the iso chart canvas, so the overlay rect tracks the chart exactly.
+  setIsoCompositeHost(() => canvas.parentElement);
   rafId = requestAnimationFrame(draw);
 
   return {
@@ -750,10 +857,13 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     refreshIndicators: () => { runIndicators(); },
     dispose: () => {
       disposed = true;
+      engineLive.stop();
+      if (indicatorsRunTimer) { clearTimeout(indicatorsRunTimer); indicatorsRunTimer = null; }
       cancelAnimationFrame(rafId);
       if (liveTimer) clearInterval(liveTimer);
       touch.detach();
       resizeObserver.disconnect();
+      setIsoCompositeHost(null);
       try { dispose3DScene(); } catch { /* not initialized */ }
       try { hide3D(); } catch { /* not initialized */ }
       setLowerPaneHost(null);
