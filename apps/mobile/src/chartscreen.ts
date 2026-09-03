@@ -644,20 +644,21 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       }
       draw3DScene(ctx, bars, view, {
         barType: state.barType,
+        // VPI ON = the signature look from the hero screenshots: per-level
+        // volume voxels extruded behind every candle (green/red/neutral by
+        // buy pressure, POC-tinted via vpComputed colors) — the SAME
+        // 3D-Extrude + 3D-Depth defaults as the web app. The VP toggle in
+        // the chart menu drives it; OFF = clean candles only.
         perBarVols: state.vpEnabled ? perBarVols : undefined,
         volumeBins: vp?.bins,
-        // Mobile 3D uses the isometric candle scene; the 2D profile mode
-        // prevents the VP voxel layer from covering every candle.
-        volumeMode: MOBILE_VP_SETTINGS.mode as VolumeProfileMode,
+        volumeMode: '3D-Extrude',
         visualEngine: DEFAULT_VP_SETTINGS.visualEngine,
-        volumeEnabled: false,
+        volumeEnabled: state.vpEnabled,
         vpiEnabled: state.vpEnabled,
         time,
         profileWidth: state.vpWidth,
         vpComputed: vp,
         bgViz: 'stars',
-        // plot3d series are composited by the GL overlay ABOVE (or iso's own
-        // 2D proxy on fallback) — passing them here too would double-draw.
         plots: enabledPlots.filter((p: any) => p.type !== 'plot3d'),
       });
       // Ordinary 2D plots stay visible as an overlay; plot3d series are shown
