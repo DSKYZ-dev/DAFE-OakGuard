@@ -1,6 +1,6 @@
 {
   "label": "nvidia-nemotron",
-  "at": "2026-10-29T18:23:21.698Z",
+  "at": "2026-10-29T19:11:51.327Z",
   "results": [
     {
       "id": 1,
@@ -13,7 +13,7 @@
         "hasMainSignals": true,
         "layersSane": false,
         "noTable": true,
-        "releaseGated": false,
+        "releaseGated": true,
         "executesClean": true,
         "shapesSparse": false,
         "shapesAligned": true
@@ -22,8 +22,8 @@
         "COVERAGE: signals are level-triggered (a bare comparison like close > x with no crossover and no compound/state gate) — they fire on every bar the level holds and paint the chart. Gate signals with crossover/crossunder, a state machine (var inPos), or a compound condition.",
         "COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane \"3d\" for price-denominated series (EMAs, levels), pane \"separate\" for oscillator series (RSI/CCI/MACD)."
       ],
-      "codeLen": 222,
-      "code": "atrLen = input(14, \"ATR Length\", 1, 100, 1)\nmyATR = atr(high, low, close, atrLen)\nriseSig = myATR - myATR[1] > 0\nif riseSig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nplot(myATR, \"ATR\", \"#22cc88\", 1)"
+      "codeLen": 494,
+      "code": "// 1) Input declarations\natrLen = input(14, \"ATR Length\", 1, 100, 1)\n\n// 2) Model calculations — plain assignments, recomputed every bar\natrVal = atr(high, low, close, atrLen)\n\n// 3) Persistent state ONLY\nvar pivotHigh = 0.0\n\n// 4) Signal conditions as plain booleans\nhasSignal = atrVal > 0\n\n// 5) Signal markers INSIDE conditionals\nif hasSignal {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\n\n// 6) Unconditional rendering LAST at top level\nplot(atrVal, \"ATR\", \"#22cc88\", 1)"
     },
     {
       "id": 2,
@@ -33,27 +33,27 @@
         "hasCode": true,
         "validAndCoverageClean": false,
         "marginAndDisagreement": false,
-        "agreementGate": true,
+        "agreementGate": false,
         "hasMainSignals": true,
         "noTable": true,
         "executesClean": true,
-        "shapesSparse": false,
+        "shapesSparse": true,
         "shapesAligned": true
       },
       "problems": [
         "COVERAGE: the script introduces ATR, which the user never asked for. Remove it and rebuild the logic from what WAS requested: \"Build a KNN-style nearest-neighbour vote on next-bar direction (k=7, last 20 bars of features). Show the vote \". Do not substitute a moving-average/oscillator template for the requested concept.",
         "COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane \"3d\" for price-denominated series (EMAs, levels), pane \"separate\" for oscillator series (RSI/CCI/MACD)."
       ],
-      "codeLen": 854,
-      "code": "// ATR Crossover Signal Model\n// Design was empty; using exact OakScript signatures from the rules\n\n// (1) input() declarations — all positional\nlen = input(14, \"ATR Length\", 1, 100, 1)\n\n// (2) Model calculations — plain assignments, recomputed every bar\n// atr() is a bare function per OakScript rules\natr_val = atr(high, low, close, len)\n\n// (3) Persistent state ONLY — var with literal initializer\nvar state = 0\n\n// (4) Signal conditions as plain booleans\nabove = close > atr_val\ncrossUp = above and not above[1]\n\n// (5) Signal markers INSIDE conditionals — plotshape signature exact\nif crossUp {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n    state := 1\n} else {\n    state := 0\n}\n\n// (6) Unconditional rendering LAST at top level\n// plot() positional only: plot(value, \"Title\", \"#hex\", linewidth)\nplot(atr_val, \"ATR\", \"#22cc88\", 1)"
+      "codeLen": 545,
+      "code": "// Input declarations\nlength = input(14, \"ATR Length\", 1, 100, 1)\n\n// Model calculations — plain assignments, recomputed every bar\n// ATR: Wilder RMA — validated vs TradingView\nmyAtra = atr(high, low, close, length)\n\n// Signal condition as plain boolean\nbuySig = crossover(close, myAtra)\n\n// Signal markers INSIDE conditionals\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\n\n// Unconditional rendering LAST at top level\n// plot() must never be inside if-blocks; it renders every bar\nplot(myAtra, \"ATR\", \"#22cc88\", 1)"
     },
     {
       "id": 3,
       "pass": false,
-      "rounds": 1,
+      "rounds": 2,
       "checks": {
         "hasCode": true,
-        "validAndCoverageClean": false,
+        "validAndCoverageClean": true,
         "modelExecution": false,
         "hardStop": false,
         "confirmedHTF": false,
@@ -63,39 +63,29 @@
         "shapesSparse": true,
         "shapesAligned": true
       },
-      "problems": [
-        "[INPUT_NO_ASSIGN] input() must be assigned to a variable. Example: len = input(14, \"Length\")",
-        "COVERAGE: the script introduces ATR, which the user never asked for. Remove it and rebuild the logic from what WAS requested: \"Create a multi-timeframe siege model: session range extremes on the chart timeframe, only act when the confirm\". Do not substitute a moving-average/oscillator template for the requested concept."
-      ],
-      "codeLen": 1011,
-      "code": "// OakScript model with exact signatures as required\n// DESIGN: (empty response) - script implements only the mandated function signatures\n\n// (1) input() declarations\ninput(14, \"Length\", 1, 100, 1)\n\n// (2) Model calculations - plain assignments, recomputed every bar\n// Using exact signature: atr(high, low, close, length)\n// Undefined names read as 0 per OakScript rules\ncalcATR = atr(high, low, close, 14)\n\n// (3) Persistent state ONLY\nvar persistentLevel = 0.0\npersistentLevel := calcATR\n\n// (4) Signal conditions as plain booleans\n// Empty design keeps condition inert; no unasked indicator family triggered\nhasSignal = false\n\n// (5) Signal markers INSIDE conditionals\nif hasSignal {\n    // Using exact signature: plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\n\n// (6) Unconditional rendering LAST at top level\n// Using exact signature: plot(value, \"Title\", \"#hex\", linewidth) positional only\nplot(0.0, \"Placeholder\", \"#22cc88\", 1)"
+      "problems": [],
+      "codeLen": 988,
+      "code": "// Input declarations\nrangeLen = input(14, \"Session Range Length\")\nconfirmTF = input(\"1H\", \"Confirm Timeframe\")\n\n// Model calculations — plain assignments, recomputed every bar\nsessHigh = highest(high, rangeLen)\nsessLow = lowest(low, rangeLen)\nconfirmClose = security(confirmTF, close)\nconfirmPrevClose = security(confirmTF, close[1])\n\n// Signal conditions as plain booleans\nbuySig = crossover(close, sessHigh) and confirmClose > confirmPrevClose\nsellSig = crossunder(close, sessLow) and confirmClose < confirmPrevClose\n\n// Persistent state ONLY: var with literal initial value\nvar position = 0.0\nif buySig {\n    position := 1.0\n}\nif sellSig {\n    position := -1.0\n}\n\n// Signal markers INSIDE conditionals\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\")\n}\n\n// Unconditional rendering LAST at top level\nplot(sessHigh, \"Session High\", \"#22cc88\", 1)\nplot(sessLow, \"Session Low\", \"#ff4477\", 1)"
     },
     {
       "id": 4,
       "pass": false,
       "rounds": 1,
       "checks": {
-        "hasCode": true,
-        "validAndCoverageClean": false,
-        "pocAndValue": false,
-        "terrain3D": false,
-        "twoDTwin": true,
-        "layersSane": true,
-        "executesClean": true,
-        "shapesSparse": true,
-        "shapesAligned": true
+        "hasCode": false,
+        "validAndCoverageClean": false
       },
       "problems": [
-        "COVERAGE: the script introduces ATR, which the user never asked for. Remove it and rebuild the logic from what WAS requested: \"Make a volume-profile-on-chart model: point of control and value area from the visible session, price leaving \". Do not substitute a moving-average/oscillator template for the requested concept.",
-        "COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane \"3d\" for price-denominated series (EMAs, levels), pane \"separate\" for oscillator series (RSI/CCI/MACD)."
+        "NO_CODE"
       ],
-      "codeLen": 703,
-      "code": "// ATR Model — uses atr(), plot(), plotshape() per OakScript rules\n// Input declaration (bare input(), positional only)\nlen = input(14, \"ATR Length\", 1, 100, 1)\n\n// Model calculations — plain assignments, recomputed every bar, assigned before use\nmyATR = atr(high, low, close, len)\n\n// Persistent state: var with literal initial value, updated with :=\nvar state = 0.0\nif myATR > 70\n    state := state + 1\n\n// Signal condition as plain boolean\nbuySig = myATR > 70\n\n// Unconditional rendering at top level — plot() must NOT be inside if-blocks\nplot(myATR, \"ATR\", \"#22cc88\", 1)\n\n// Signal markers INSIDE conditionals — exact signature\nif buySig\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")"
+      "codeLen": 0,
+      "code": "",
+      "replyHead": "```oakscript\n```"
     },
     {
       "id": 5,
       "pass": false,
-      "rounds": 1,
+      "rounds": 2,
       "checks": {
         "hasCode": true,
         "validAndCoverageClean": false,
@@ -108,10 +98,11 @@
         "shapesAligned": true
       },
       "problems": [
-        "COVERAGE: the script introduces RSI, which the user never asked for. Remove it and rebuild the logic from what WAS requested: \"Fix and upgrade this broken script (I will paste one with a frozen var, a future index, a Pine plotshape signa\". Do not substitute a moving-average/oscillator template for the requested concept."
+        "[INPUT_NO_ASSIGN] input() must be assigned to a variable. Example: len = input(14, \"Length\")",
+        "COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane \"3d\" for price-denominated series (EMAs, levels), pane \"separate\" for oscillator series (RSI/CCI/MACD)."
       ],
-      "codeLen": 957,
-      "code": "// Input declarations — all positional, no namespaces\nrsiLen = input(14, \"RSI Length\")\nsrc = close\n\n// Model calculations — plain assignments, recomputed every bar, no var in init\nrsiVal = rsi(src, rsiLen)\nfastMa = ema(src, 9)\nslowMa = ema(src, 21)\n\n// Persistent state ONLY — var with LITERAL initial value, updated with :=\nvar warmupBars = 0\n\n// Signal conditions as plain booleans\nbuySig = crossover(fastMa, slowMa) and rsiVal < 70\nsellSig = crossunder(fastMa, slowMa) and rsiVal > 30\n\n// Signal markers INSIDE conditionals — OakScript plotshape signature (6 args, pane? optional)\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\")\n}\n\n// Unconditional rendering LAST at top level — 3D geometry with proper pane handling\n// Oscillator in separate 3D pane, paired with plot3d using same pane string\nplot3d(rsiVal, \"RSI Ribbon\", \"ribbon\", \"#6699ff\", \"separate\")"
+      "codeLen": 339,
+      "code": "input(14, \"RSI Length\", 1, 100, 1)\nrsiVal = rsi(close, 14)\nvar lastRsi = 50.0\nlastRsi := rsiVal\noverbought = rsiVal > 70\noversold = rsiVal < 30\nif overbought {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif oversold {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nplot(rsiVal, \"RSI\", \"#22cc88\", 1)"
     }
   ]
 }
