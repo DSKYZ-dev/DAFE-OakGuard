@@ -1,0 +1,41 @@
+{
+  "name": "dafe-charts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline-first AI trading terminal: real-time charts, the OakScript indicator language rendered in 2D and 3D, and a trade advisor that runs on your own GPU.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "npx -w @dafe/web vite",
+    "dev:mobile": "npm run dev -w @dafe/mobile",
+    "backend": "python -m uvicorn main:app --app-dir backend --reload --host 127.0.0.1 --port 8788",
+    "build": "npm run build -w @dafe/web && npm run build -w @dafe/mobile",
+    "build:web": "npm run build -w @dafe/web",
+    "build:mobile": "npm run build -w @dafe/mobile",
+    "lint": "tsc --noEmit",
+    "test": "npx tsx tools/verify/mega-test.ts",
+    "verify": "npx tsx tools/verify/focused-test.ts",
+    "verify:stress": "npx tsx tools/verify/bar-stress.ts",
+    "verify:backtest": "npx tsx tools/verify/backtest-stress.ts",
+    "verify:oakguard": "npx tsx tools/verify/oakguard-test.ts",
+    "verify:tricks": "npx tsx tools/verify/perf-tricks-test.ts 5000"
+  },
+  "workspaces": [
+    "packages/types",
+    "apps/web",
+    "apps/mobile"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/three": "^0.184.1",
+    "@webgpu/types": "^0.1.71",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "three": "^0.185.0"
+  }
+}

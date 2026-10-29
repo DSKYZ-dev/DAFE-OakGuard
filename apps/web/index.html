@@ -1,0 +1,1423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DAFE Charts — Interactive Demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: #0a0a18; color: rgba(255,255,255,0.8);
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      user-select: none;
+    }
+    #chart-container { position: fixed; inset: 0; display: flex; flex-direction: column; }
+    #chart-area { position: relative; flex: 1; min-height: 0; }
+    #chart-splitter { height: 8px; background: rgba(180,140,255,0.12); cursor: row-resize; flex-shrink: 0; display:flex; align-items:center; justify-content:center; position:relative; }
+    #chart-splitter:hover { background: rgba(180,140,255,0.25); }
+    #chart-splitter::after { content:'⋯'; color:rgba(255,255,255,0.35); font-size:10px; letter-spacing:2px; }
+    #chart-splitter.dragging { background: rgba(180,140,255,0.35); }
+    #pane-dominance { padding:4px 6px; border:1px solid rgba(180,140,255,0.15); border-radius:6px; background:rgba(12,12,28,0.9); color:rgba(255,255,255,0.7); font-size:11px; cursor:pointer; }
+    #chart-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; z-index: 2; }
+    #chart-canvas:active { cursor: grabbing; }
+    #canvas-3d { position: absolute; inset: 0; width: 100%; height: 100%; display: none; z-index: 1; pointer-events: none; }
+    #canvas-3d.active { display: block; }
+    #secondary-canvas { width: 100%; height: 120px; flex-shrink: 0; display: block; cursor: grab; border-top: 1px solid rgba(180, 140, 255, 0.12); }
+    #secondary-canvas:active { cursor: grabbing; }
+
+    #draw-rail {
+      position: fixed; left: 12px; top: 50%;
+      transform: translateY(-50%); z-index: 100;
+      display: flex; flex-direction: column; gap: 4px;
+      background: rgba(12, 12, 28, 0.88);
+      border: 1px solid rgba(180, 140, 255, 0.15);
+      border-radius: 10px; padding: 6px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+    }
+    .draw-btn {
+      width: 34px; height: 34px;
+      display: flex; align-items: center; justify-content: center;
+      border: none; border-radius: 7px;
+      background: transparent; color: rgba(255,255,255,0.35);
+      cursor: pointer; font-size: 15px;
+      transition: all 0.15s ease; position: relative;
+    }
+    .draw-btn:hover { background: rgba(180, 140, 255, 0.12); color: rgba(255,255,255,0.8); }
+    .draw-btn.active { background: rgba(180, 140, 255, 0.22); color: #b48cff; box-shadow: 0 0 12px rgba(180, 140, 255, 0.18); }
+    .draw-btn .tooltip {
+      position: absolute; left: calc(100% + 10px); top: 50%;
+      transform: translateY(-50%);
+      background: rgba(12,12,28,0.95); color: rgba(255,255,255,0.7);
+      font-size: 11px; padding: 4px 10px; border-radius: 5px;
+      border: 1px solid rgba(180, 140, 255, 0.12);
+      white-space: nowrap; opacity: 0; pointer-events: none;
+      transition: opacity 0.15s;
+    }
+    .draw-btn:hover .tooltip { opacity: 1; }
+
+    #toolbar {
+      position: fixed; bottom: 32px; left: 50%;
+      transform: translateX(-50%); z-index: 100;
+      display: flex; align-items: center; gap: 6px;
+      background: rgba(12, 12, 28, 0.85);
+      border: 1px solid rgba(180, 140, 255, 0.12);
+      border-radius: 10px; padding: 6px 20px;
+      backdrop-filter: blur(12px);
+      flex-wrap: wrap; justify-content: center;
+      max-width: 92vw;
+    }
+    #toolbar-resize-handle {
+      position: absolute; top: 0; right: 2px; bottom: 0;
+      width: 10px; cursor: ew-resize;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #toolbar-resize-handle::after {
+      content: ''; width: 3px; height: 60%;
+      background: rgba(180, 140, 255, 0.25); border-radius: 2px;
+    }
+    #toolbar-resize-handle:hover::after { background: rgba(180, 140, 255, 0.6); }
+    #toolbar button {
+      padding: 5px 10px; border: 1px solid rgba(180, 140, 255, 0.15);
+      border-radius: 6px; background: transparent;
+      color: rgba(255,255,255,0.5); cursor: pointer;
+      font-size: 11px; font-family: inherit;
+      transition: all 0.15s; white-space: nowrap;
+    }
+    #toolbar button:hover { background: rgba(180, 140, 255, 0.1); color: rgba(255,255,255,0.8); }
+    #toolbar button.active { border-color: #b48cff; color: #b48cff; box-shadow: 0 0 8px rgba(180, 140, 255, 0.1); }
+    #toolbar select {
+      padding: 4px 6px; border: 1px solid rgba(180, 140, 255, 0.15);
+      border-radius: 6px; background: rgba(12,12,28,0.9);
+      color: rgba(255,255,255,0.6); font-size: 11px;
+      font-family: inherit; cursor: pointer; outline: none;
+    }
+    #toolbar select:hover { border-color: rgba(180, 140, 255, 0.3); }
+    #toolbar.collapsed { padding: 2px 6px; gap: 4px; justify-content: flex-start; }
+    #toolbar .sep {
+      width: 1px; height: 20px;
+      background: rgba(180, 140, 255, 0.1);
+    }
+    #toolbar .label {
+      color: rgba(255,255,255,0.25); font-size: 11px;
+    }
+    .key-hint { font-size: 9px; color: rgba(255,255,255,0.2); margin-left: 3px; }
+
+    #settings-toggle {
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
+      background: transparent; border: none;
+      color: rgba(255,255,255,0.3); font-size: 16px;
+      cursor: pointer; border-radius: 6px;
+    }
+    #settings-toggle:hover { background: rgba(180, 140, 255, 0.1); color: rgba(255,255,255,0.7); }
+    #perf-select {
+      padding: 4px 6px; border: 1px solid rgba(0,204,255,0.15);
+      border-radius: 4px; background: rgba(8,8,20,0.9);
+      color: rgba(0,204,255,0.7); font-size: 10px;
+      font-family: inherit; cursor: pointer; outline: none;
+    }
+    #perf-select:hover { border-color: rgba(0,204,255,0.4); }
+    #live-tick-toggle {
+      padding: 4px 10px; border: 1px solid rgba(0,255,136,0.15);
+      border-radius: 4px; background: rgba(8,8,20,0.9);
+      color: rgba(0,255,136,0.4); font-size: 10px;
+      font-family: inherit; cursor: pointer; font-weight: 600;
+      transition: all .15s;
+    }
+    #live-tick-toggle:hover { border-color: rgba(0,255,136,0.4); color: rgba(0,255,136,0.7); }
+    #live-tick-toggle.active { background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.5); color: #00ff88; }
+
+    /* ─── Symbol Combo ─────────────────────────────────────── */
+    #symbol-input {
+      width: 160px; padding: 4px 8px;
+      border: 1px solid rgba(180,140,255,0.2);
+      border-radius: 6px; background: rgba(12,12,28,0.9);
+      color: rgba(255,255,255,0.8); font-size: 12px;
+      font-family: inherit; outline: none;
+      text-transform: uppercase;
+    }
+    #symbol-input:focus { border-color: rgba(180,140,255,0.5); }
+    #symbol-dropdown { bottom: 100%; margin-bottom: 2px; }
+    #symbol-dropdown .sym-item:hover { background: rgba(0,204,255,0.08) !important; }
+    #symbol-dropdown::-webkit-scrollbar { width: 3px; }
+    #symbol-dropdown::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
+    #load-data-btn:hover { background: rgba(0,204,255,0.2); }
+    #data-status {
+      font-size: 10px; color: rgba(255,255,255,0.3);
+      margin-left: 4px; max-width: 120px; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    #data-status.loading { color: rgba(0,204,255,0.6); }
+    #data-status.error { color: rgba(255,68,119,0.6); }
+    #data-status.loaded { color: rgba(0,255,136,0.6); }
+
+    /* ─── Interface glow sync (Settings → Interface Glow) ─────
+       One selectable glow color drives the main menu (toolbar), the
+       OakGuard launcher, the advisor bubble and the advisor chat box so
+       all four read as one aligned system. Bottoms share the toolbar's
+       32px baseline. */
+    :root { --dafe-glow: #2dffb3; --glow-vis: 1; }
+    body.glow-sync #toolbar {
+      border-color: var(--dafe-glow);
+      box-shadow: 0 0 calc(22px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(42% * var(--glow-vis)), transparent), inset 0 0 12px color-mix(in srgb, var(--dafe-glow) 10%, transparent);
+    }
+    body.glow-sync #advisor-fab {
+      border-color: var(--dafe-glow); color: var(--dafe-glow);
+      box-shadow: 0 0 calc(22px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(50% * var(--glow-vis)), transparent);
+    }
+    body.glow-sync #advisor-panel {
+      border-color: var(--dafe-glow);
+      box-shadow: 0 0 calc(28px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(35% * var(--glow-vis)), transparent), 0 20px 60px rgba(0,0,0,0.55);
+    }
+    body.glow-sync #set-open-oakguard {
+      border-color: var(--dafe-glow) !important; color: var(--dafe-glow) !important;
+      box-shadow: 0 0 calc(18px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(45% * var(--glow-vis)), transparent) !important;
+    }
+    /* Every dashboard/panel converts to the theme color at the chosen
+       brightness: trading, news, settings, visual editor, regime ribbon. */
+    body.glow-sync #trading-panel, body.glow-sync #news-box, body.glow-sync #visual-editor-panel,
+    body.glow-sync #settings-panel, body.glow-sync #vp-settings-panel, body.glow-sync #widgets-menu {
+      border-color: color-mix(in srgb, var(--dafe-glow) 55%, transparent) !important;
+      box-shadow: 0 0 calc(20px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(30% * var(--glow-vis)), transparent), 0 12px 40px rgba(0,0,0,0.5) !important;
+    }
+    body.glow-sync .pk-section {
+      border-color: color-mix(in srgb, var(--dafe-glow) 40%, transparent) !important;
+      background:
+        radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--dafe-glow) calc(14% * var(--glow-vis)), transparent), transparent 60%),
+        radial-gradient(120% 140% at 100% 0%, color-mix(in srgb, var(--dafe-glow) calc(10% * var(--glow-vis)), transparent), transparent 55%),
+        rgba(8,10,20,0.6) !important;
+    }
+    body.glow-sync .pk-title { color: var(--dafe-glow) !important; }
+    body.glow-sync .pk-select:focus, body.glow-sync .pk-inputs input:focus { border-color: color-mix(in srgb, var(--dafe-glow) 65%, transparent) !important; }
+    body.glow-sync #regime-ribbon { border-bottom-color: color-mix(in srgb, var(--dafe-glow) 30%, transparent) !important; }
+    /* Settings checkbox rows: box and label sit together at the left,
+       never spread apart by the generic space-between label layout. */
+    .settings-section label.check-row { justify-content: flex-start !important; white-space: normal; }
+    .settings-section label.check-row input[type="checkbox"] {
+      flex: 0 0 auto !important; width: 16px !important; height: 16px !important;
+      max-width: 16px !important; margin: 0; padding: 0; accent-color: #b48cff; cursor: pointer;
+    }
+    .settings-section label.check-row span { flex: 1; }
+
+    /* ─── Trade Advisor Chat ────────────────────────────────── */
+    #advisor-fab {
+      position: fixed; bottom: 32px; right: 24px;
+      z-index: 9999; width: 52px; height: 52px;
+      border-radius: 50%; border: 1px solid rgba(180,140,255,0.5);
+      background: linear-gradient(135deg, rgba(180,140,255,0.2), rgba(100,80,200,0.12));
+      box-shadow: 0 8px 32px rgba(180,140,255,0.18);
+      cursor: pointer; display: flex; align-items: center;
+      justify-content: center; font-size: 20px; color: #fff;
+      transition: transform .15s, box-shadow .2s;
+    }
+    #advisor-fab:hover { transform: scale(1.08); box-shadow: 0 12px 40px rgba(180,140,255,0.28); }
+    #advisor-fab.open { transform: rotate(45deg) scale(1); }
+
+    #advisor-panel {
+      position: fixed; bottom: 96px; right: 24px;
+      z-index: 9998; width: 420px; max-height: 580px;
+      border: 1px solid rgba(180,140,255,0.2);
+      border-radius: 18px;
+      background: linear-gradient(180deg, rgba(10,10,20,0.97), rgba(13,13,26,0.97));
+      backdrop-filter: blur(16px);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+      display: none; flex-direction: column; overflow: hidden;
+      font-size: 13px; cursor: default;
+    }
+    #advisor-panel.visible { display: flex; }
+    #advisor-panel.dragging { opacity: 0.85; transition: none; }
+    @keyframes chatSlideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+    .advisor-header {
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid rgba(180,140,255,0.12);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .advisor-header-title { font-weight: 700; font-size: 14px; display: flex; align-items: center; gap: 8px; color: #e0d8ff; }
+    #advisor-close {
+      background: none; border: none; color: rgba(255,255,255,0.3);
+      cursor: pointer; font-size: 14px; padding: 0 2px;
+    }
+    #advisor-close:hover { color: #fff; }
+
+    .advisor-chart-context {
+      padding: 8px 12px; border-bottom: 1px solid rgba(180,140,255,0.08);
+      font-size: 10px; color: rgba(255,255,255,0.35);
+      display: flex; gap: 12px; flex-wrap: wrap;
+    }
+    .advisor-chart-context span { display: flex; align-items: center; gap: 4px; }
+    .advisor-chart-context .label { color: rgba(255,255,255,0.2); }
+    .advisor-chart-context .val { color: rgba(180,140,255,0.7); font-weight: 600; }
+
+    .advisor-messages {
+      flex: 1; overflow-y: auto; padding: 12px 14px;
+      display: flex; flex-direction: column; gap: 10px;
+      min-height: 180px; max-height: 300px;
+    }
+    .advisor-messages::-webkit-scrollbar { width: 4px; }
+    .advisor-messages::-webkit-scrollbar-thumb { background: rgba(180,140,255,0.2); border-radius: 10px; }
+
+    .advisor-msg {
+      max-width: 88%; padding: 9px 12px;
+      border-radius: 12px; font-size: 12px; line-height: 1.5;
+      word-wrap: break-word; white-space: pre-wrap;
+      position: relative;
+    }
+    .advisor-msg.user {
+      align-self: flex-end;
+      background: rgba(180,140,255,0.12);
+      border: 1px solid rgba(180,140,255,0.2);
+      color: #e0d8ff;
+    }
+    .advisor-msg.assistant {
+      align-self: flex-start;
+      background: rgba(10,10,25,0.8);
+      border: 1px solid rgba(180,140,255,0.1);
+      color: #ccc;
+    }
+    .advisor-msg.assistant .agent-badge {
+      font-size: 9px; font-weight: 700;
+      color: rgba(180,140,255,0.5);
+      margin-bottom: 3px; display: block;
+    }
+    .advisor-msg.error {
+      align-self: center;
+      background: rgba(255,51,102,0.08);
+      border: 1px solid rgba(255,51,102,0.2);
+      color: rgba(255,68,119,0.7); font-size: 11px;
+    }
+    .advisor-msg.system {
+      align-self: center; background: transparent;
+      border: none; color: rgba(255,255,255,0.2);
+      font-size: 11px; text-align: center; padding: 4px;
+    }
+
+    .msg-copy-btn {
+      position: absolute; top: 4px; right: 4px;
+      width: 22px; height: 22px; border-radius: 4px;
+      border: none; background: transparent;
+      color: rgba(255,255,255,0.15); font-size: 11px;
+      cursor: pointer; display: none;
+      align-items: center; justify-content: center;
+      transition: color .15s;
+    }
+    .advisor-msg:hover .msg-copy-btn { display: flex; }
+    .msg-copy-btn:hover { color: rgba(255,255,255,0.6); }
+
+    .thinking-details {
+      margin: 4px 0 6px;
+      background: rgba(10,10,25,0.4);
+      border: 1px solid rgba(180,140,255,0.08);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+    .thinking-details summary {
+      cursor: pointer;
+      font-size: 11px;
+      color: rgba(180,140,255,0.5);
+      user-select: none;
+    }
+    .thinking-details summary:hover {
+      color: rgba(180,140,255,0.8);
+    }
+    .thinking-content {
+      margin-top: 6px;
+      padding: 6px 8px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: rgba(255,255,255,0.5);
+      background: rgba(0,0,0,0.2);
+      border-radius: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+
+    .advisor-input-row {
+      padding: 10px 12px 12px;
+      border-top: 1px solid rgba(180,140,255,0.08);
+      display: flex; gap: 8px; align-items: flex-end;
+    }
+    .advisor-input {
+      flex: 1; padding: 9px 12px;
+      border-radius: 12px; border: 1px solid rgba(180,140,255,0.12);
+      background: rgba(0,0,0,0.18); color: #ccc;
+      font-size: 12px; font-family: inherit; outline: none;
+      resize: none; min-height: 36px; max-height: 90px; line-height: 1.4;
+    }
+    .advisor-input:focus { border-color: rgba(180,140,255,0.3); }
+    .advisor-send {
+      width: 36px; height: 36px;
+      border-radius: 10px; border: 1px solid rgba(180,140,255,0.3);
+      background: rgba(180,140,255,0.1);
+      color: #b48cff; font-size: 15px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0; transition: background .15s;
+    }
+    .advisor-send:hover { background: rgba(180,140,255,0.2); }
+    .advisor-send:disabled { opacity: .4; cursor: not-allowed; }
+
+    .advisor-typing { display: inline-flex; gap: 3px; padding: 3px 0; }
+    .advisor-typing span {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: rgba(180,140,255,0.4);
+      animation: typingBounce .6s infinite alternate;
+    }
+    .advisor-typing span:nth-child(2) { animation-delay: .15s; }
+    .advisor-typing span:nth-child(3) { animation-delay: .3s; }
+    @keyframes typingBounce {
+      from { opacity: .3; transform: translateY(0); }
+      to   { opacity: 1;  transform: translateY(-3px); }
+    }
+
+    .advisor-toolbar {
+      display: flex; gap: 4px; padding: 4px 12px 0;
+      border-bottom: 1px solid rgba(180,140,255,0.08);
+    }
+    .advisor-tool-btn {
+      padding: 3px 8px; border-radius: 6px; border: none;
+      background: transparent; color: rgba(255,255,255,0.25);
+      font-size: 10px; cursor: pointer; transition: all .15s;
+    }
+    .advisor-tool-btn:hover { background: rgba(180,140,255,0.08); color: rgba(255,255,255,0.5); }
+
+    /* ─── Trading Panel ─────────────────────────────────────── */
+    #trading-panel {
+      position: fixed; top: 80px; left: 24px;
+      z-index: 9997; width: 240px; min-width: 220px; min-height: 120px;
+      max-width: 480px; max-height: 85vh;
+      resize: both; overflow: auto;
+      border: 1px solid rgba(0,204,255,0.2);
+      border-radius: 12px;
+      background: linear-gradient(180deg, rgba(10,10,20,0.95), rgba(13,13,26,0.95));
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      font-size: 12px; cursor: default;
+      transition: opacity .2s;
+    }
+    #trading-panel.collapsed .trading-panel-body { display: none; }
+    #trading-panel.dragging { opacity: 0.85; }
+
+    .trading-panel-header {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(0,204,255,0.12);
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: grab;
+    }
+    .trading-panel-header-buttons { display: flex; align-items: center; gap: 4px; }
+    .trading-panel-title {
+      font-weight: 700; font-size: 11px;
+      color: rgba(0,204,255,0.8);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .trading-panel-collapse {
+      width: 20px; height: 20px;
+      border-radius: 4px; border: none;
+      background: transparent; color: rgba(255,255,255,0.4);
+      font-size: 14px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .trading-panel-collapse:hover { background: rgba(0,204,255,0.1); color: rgba(255,255,255,0.7); }
+
+    .trading-panel-body { padding: 12px; }
+
+    .trading-spread {
+      text-align: center; margin-bottom: 10px;
+      padding: 6px; border-radius: 6px;
+      background: rgba(0,0,0,0.2);
+    }
+    .spread-label {
+      font-size: 9px; color: rgba(255,255,255,0.4);
+      display: block; margin-bottom: 2px;
+    }
+    .spread-value {
+      font-size: 14px; font-weight: 700;
+      color: rgba(255,255,255,0.7);
+    }
+
+    .trading-buttons {
+      display: flex; gap: 8px; margin-bottom: 10px;
+    }
+    .trade-btn {
+      flex: 1; padding: 10px 8px;
+      border-radius: 8px; border: 2px solid;
+      cursor: pointer; transition: all .15s;
+      display: flex; flex-direction: column;
+      align-items: center; gap: 4px;
+    }
+    .trade-btn:active { transform: scale(0.96); }
+    .sell-btn {
+      border-color: rgba(255,68,119,0.5);
+      background: rgba(255,68,119,0.1);
+    }
+    .sell-btn:hover { background: rgba(255,68,119,0.2); }
+    .buy-btn {
+      border-color: rgba(0,204,255,0.5);
+      background: rgba(0,204,255,0.1);
+    }
+    .buy-btn:hover { background: rgba(0,204,255,0.2); }
+    .trade-price {
+      font-size: 16px; font-weight: 700;
+    }
+    .sell-btn .trade-price { color: #ff4477; }
+    .buy-btn .trade-price { color: #00ccff; }
+    .trade-label {
+      font-size: 9px; font-weight: 700;
+      letter-spacing: 1px;
+    }
+    .sell-btn .trade-label { color: rgba(255,68,119,0.7); }
+    .buy-btn .trade-label { color: rgba(0,204,255,0.7); }
+
+    .trading-quantity {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px; border-radius: 6px;
+      background: rgba(0,0,0,0.15);
+    }
+    .qty-label {
+      font-size: 10px; color: rgba(255,255,255,0.4);
+      font-weight: 600;
+    }
+    .qty-input {
+      flex: 1; width: 60px;
+      padding: 6px 8px; border-radius: 6px;
+      border: 1px solid rgba(0,204,255,0.2);
+      background: rgba(0,0,0,0.3);
+      color: rgba(255,255,255,0.8);
+      font-size: 13px; font-weight: 600;
+      text-align: center; outline: none;
+    }
+    .qty-input:focus { border-color: rgba(0,204,255,0.5); }
+    .qty-unit {
+      font-size: 9px; color: rgba(255,255,255,0.3);
+      min-width: 50px;
+    }
+
+    .trade-row {
+      display: flex; align-items: center; gap: 6px;
+      margin-bottom: 8px; font-size: 10px; color: rgba(255,255,255,0.45);
+    }
+    .trade-row label { min-width: 54px; font-weight: 600; }
+    .trade-row select, .trade-row input {
+      flex: 1; padding: 5px 6px; border-radius: 6px;
+      border: 1px solid rgba(0,204,255,0.2);
+      background: rgba(0,0,0,0.3); color: rgba(255,255,255,0.8);
+      font-size: 11px; outline: none;
+    }
+    .trade-row.hidden { display: none; }
+    #tradeCurrencyAuto { font-size: 9px; color: rgba(0,204,255,0.6); min-width: 34px; text-align: right; }
+
+    .trade-section-title {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.3); margin: 10px 0 6px;
+      text-transform: uppercase;
+    }
+    .trade-list { max-height: 120px; overflow-y: auto; }
+    .trade-list-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 6px; border-radius: 5px; margin-bottom: 3px;
+      background: rgba(0,0,0,0.2); font-size: 10px; color: rgba(255,255,255,0.6);
+    }
+    .trade-list-row .cancel-order { background: none; border: none; color: rgba(255,68,119,0.7); cursor: pointer; font-size: 11px; }
+    .trade-list-row .close-position { background: none; border: 1px solid rgba(255,68,119,0.3); color: rgba(255,68,119,0.8); border-radius: 4px; cursor: pointer; font-size: 9px; padding: 1px 5px; margin-left: 6px; flex-shrink: 0; }
+    .trade-list-row .pos-info { display: flex; align-items: center; gap: 6px; }
+    .trade-list-empty { font-size: 10px; color: rgba(255,255,255,0.2); text-align: center; padding: 6px; }
+    .trade-account-line { display: flex; justify-content: space-between; font-size: 10px; color: rgba(255,255,255,0.5); padding: 2px 0; }
+    .trade-account-line .val.pos { color: #22cc88; }
+    .trade-account-line .val.neg { color: #ff4477; }
+    .trade-fill-note { font-size: 9px; color: rgba(255,255,255,0.25); margin-top: 6px; line-height: 1.4; }
+
+    .vpi-settings {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 10px; color: rgba(255,255,255,0.35);
+    }
+    .vpi-settings input[type="checkbox"] {
+      accent-color: #b48cff;
+    }
+
+    #vp-settings-panel {
+      position: fixed; right: 12px; bottom: 52px; top: auto;
+      transform: none; z-index: 110;
+      width: 270px;
+      background: rgba(12, 12, 28, 0.94);
+      border: 1px solid rgba(180, 140, 255, 0.22);
+      border-radius: 12px; padding: 0;
+      backdrop-filter: blur(16px);
+      box-shadow: 0 12px 44px rgba(0,0,0,0.65);
+      color: rgba(255,255,255,0.78);
+      font-size: 12px;
+      display: none; flex-direction: column; gap: 0;
+      overflow: hidden;
+    }
+    #vp-settings-panel.active { display: flex; }
+    #vp-settings-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 14px;
+      background: rgba(180, 140, 255, 0.08);
+      border-bottom: 1px solid rgba(180,140,255,0.12);
+      cursor: move; user-select: none;
+    }
+    #vp-settings-header span {
+      color: #b48cff; font-weight: 600; font-size: 13px;
+      letter-spacing: 0.3px;
+    }
+    #vp-settings-header button {
+      background: none; border: none; color: rgba(255,255,255,0.35);
+      cursor: pointer; font-size: 13px; padding: 2px 4px;
+    }
+    #vp-settings-header button:hover { color: rgba(255,255,255,0.8); }
+    #vp-settings-body {
+      padding: 14px;
+      display: flex; flex-direction: column; gap: 11px;
+      max-height: calc(100vh - 140px);
+      overflow-y: auto;
+    }
+    #vp-settings-panel label {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; cursor: pointer;
+      white-space: nowrap;
+    }
+    #vp-settings-panel label.vp-check { justify-content: flex-start; }
+    #vp-settings-panel select,
+    #vp-settings-panel input[type="range"] {
+      flex: 1; accent-color: #b48cff;
+      background: rgba(8,8,20,0.9); color: rgba(255,255,255,0.85);
+      min-width: 0;
+    }
+    #vp-settings-panel select {
+      border: 1px solid rgba(180,140,255,0.25); border-radius: 5px;
+      padding: 5px 6px; font-size: 11px;
+    }
+    #vp-settings-panel select option {
+      background: rgba(8,8,20,0.95); color: rgba(255,255,255,0.85);
+    }
+    #vp-settings-panel span { min-width: 34px; text-align: right; color: rgba(255,255,255,0.5); }
+    #vp-settings-close-btn {
+      margin-top: 4px;
+      padding: 8px; border-radius: 6px;
+      border: 1px solid rgba(180,140,255,0.2);
+      background: rgba(180,140,255,0.1);
+      color: rgba(255,255,255,0.7); cursor: pointer;
+      font-size: 11px;
+    }
+    #vp-settings-close-btn:hover { background: rgba(180,140,255,0.18); }
+
+    /* ─── Settings Panel ────────────────────────────────────── */
+    #settings-panel {
+      position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%);
+      z-index: 9999; width: 520px; max-height: 80vh;
+      border: 1px solid rgba(180,140,255,0.25);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(10,10,20,0.98), rgba(13,13,26,0.98));
+      backdrop-filter: blur(20px);
+      box-shadow: 0 24px 80px rgba(0,0,0,0.7);
+      display: none; flex-direction: column; overflow: hidden;
+      font-size: 12px;
+    }
+    #settings-panel.active { display: flex; }
+    #settings-header {
+      padding: 14px 16px; display: flex; align-items: center;
+      justify-content: space-between;
+      background: rgba(180,140,255,0.06);
+      border-bottom: 1px solid rgba(180,140,255,0.12);
+      cursor: move;
+    }
+    #settings-header span { color: #b48cff; font-weight: 700; font-size: 14px; }
+    #settings-header button { background:none; border:none; color:rgba(255,255,255,0.3); cursor:pointer; font-size:15px; }
+    #settings-header button:hover { color:#fff; }
+    #settings-body {
+      padding: 16px; overflow-y: auto; display: flex;
+      flex-direction: column; gap: 14px;
+    }
+    #settings-body::-webkit-scrollbar { width: 4px; }
+    #settings-body::-webkit-scrollbar-thumb { background: rgba(180,140,255,0.2); border-radius: 10px; }
+    /* Every settings section gets the Provider API Keys treatment:
+       gradient-tinted card, cyan title, themed focus states. Under
+       body.glow-sync these convert to the interface glow color. */
+    .settings-section {
+      border: 1px solid rgba(0,204,255,0.18);
+      border-radius: 10px; padding: 12px;
+      display: flex; flex-direction: column; gap: 8px;
+      background:
+        radial-gradient(120% 140% at 0% 0%, rgba(0,204,255,0.08), transparent 60%),
+        radial-gradient(120% 140% at 100% 0%, rgba(180,140,255,0.08), transparent 55%),
+        rgba(8,10,20,0.6);
+    }
+    .settings-section-title {
+      color: #00ccff; font-size: 11px;
+      font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px;
+      margin-bottom: 2px;
+    }
+    .settings-action-btn {
+      width: 100%; padding: 7px 12px; border-radius: 6px; cursor: pointer;
+      font-size: 11px; font-weight: 700; font-family: inherit;
+      border: 1px solid rgba(0,204,255,0.3); background: rgba(0,204,255,0.07); color: #7fdcff;
+      transition: filter .15s ease;
+    }
+    .settings-action-btn:hover { filter: brightness(1.3); }
+    .settings-action-btn.danger { border-color: rgba(255,68,119,0.3); background: rgba(255,68,119,0.06); color: #ff7d9c; }
+    body.glow-sync .settings-section-title { color: var(--dafe-glow); }
+    body.glow-sync .settings-action-btn {
+      border-color: color-mix(in srgb, var(--dafe-glow) 45%, transparent);
+      color: var(--dafe-glow);
+      background: color-mix(in srgb, var(--dafe-glow) 8%, transparent);
+    }
+    .settings-section label {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; color: rgba(255,255,255,0.6); font-size: 11px;
+      white-space: nowrap;
+    }
+    .settings-section label input,
+    .settings-section label select {
+      flex: 1; max-width: 260px;
+      padding: 5px 8px; border: 1px solid rgba(180,140,255,0.2);
+      border-radius: 6px; background: rgba(8,8,20,0.9);
+      color: rgba(255,255,255,0.8); font-size: 11px; font-family: inherit; outline: none;
+    }
+    .settings-section label input:focus,
+    .settings-section label select:focus { border-color: rgba(180,140,255,0.5); }
+    .settings-section label select option { background: rgba(8,8,20,0.95); color: #ccc; }
+    .hotkey-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px;
+    }
+    .hotkey-grid label { font-size: 10px; }
+    .hotkey-input {
+      width: 90px !important; text-align: center; font-weight: 600;
+      font-family: monospace !important;
+    }
+    #settings-save {
+      padding: 8px 16px; border: 1px solid rgba(0,255,136,0.3);
+      border-radius: 8px; background: rgba(0,255,136,0.08);
+      color: #00ff88; cursor: pointer; font-size: 12px; font-weight: 600;
+      align-self: flex-end;
+    }
+    #settings-save:hover { background: rgba(0,255,136,0.15); }
+
+    /* ─── Provider API keys ─────────────────────────────────── */
+    .pk-section {
+      position: relative; flex-shrink: 0;
+      border: 1px solid rgba(0,204,255,0.18) !important;
+      background:
+        radial-gradient(120% 140% at 0% 0%, rgba(0,204,255,0.10), transparent 60%),
+        radial-gradient(120% 140% at 100% 0%, rgba(180,140,255,0.10), transparent 55%),
+        rgba(8,10,20,0.6);
+    }
+    .pk-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .pk-title { color: #00ccff; font-size: 11px; font-weight: 800; letter-spacing: .6px; text-transform: uppercase; }
+    .pk-sub { color: rgba(255,255,255,0.32); font-size: 9.5px; margin-top: 2px; }
+    .pk-sub b { color: rgba(0,255,136,0.8); font-weight: 700; }
+    .pk-refresh {
+      background: none; border: 1px solid rgba(0,204,255,0.22); color: rgba(0,204,255,0.75);
+      width: 24px; height: 24px; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1;
+    }
+    .pk-refresh:hover { background: rgba(0,204,255,0.1); }
+    .pk-hint { color: rgba(255,255,255,0.34); font-size: 9.5px; line-height: 1.5; }
+    .pk-select {
+      width: 100%; padding: 6px 8px; border: 1px solid rgba(0,204,255,0.22);
+      border-radius: 7px; background: rgba(6,10,18,0.9); color: #dff6ff;
+      font-size: 11px; font-family: inherit; outline: none;
+    }
+    .pk-select:focus { border-color: rgba(0,204,255,0.55); }
+    .pk-card {
+      border: 1px solid rgba(255,255,255,0.07); border-radius: 9px; padding: 9px;
+      background: rgba(4,6,14,0.55); display: flex; flex-direction: column; gap: 7px;
+      transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .pk-card.connected { border-color: rgba(0,255,136,0.28); box-shadow: inset 0 0 0 1px rgba(0,255,136,0.04); }
+    .pk-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .pk-label { color: #eaf6ff; font-size: 10.5px; font-weight: 700; display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .pk-dot { width: 6px; height: 6px; border-radius: 50%; background: rgba(255,255,255,0.2); }
+    .pk-dot.on { background: #00ff88; box-shadow: 0 0 6px rgba(0,255,136,0.8); }
+    .pk-masked { color: rgba(255,255,255,0.28); font-size: 9px; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58%; text-align: right; }
+    .pk-inputs { display: grid; grid-template-columns: 1fr; gap: 5px; }
+    .pk-inputs input {
+      min-width: 0; padding: 6px 8px; border: 1px solid rgba(0,204,255,0.16);
+      border-radius: 6px; background: rgba(6,10,18,0.85); color: rgba(255,255,255,0.82);
+      font-size: 10.5px; font-family: inherit; outline: none;
+    }
+    .pk-inputs input:focus { border-color: rgba(0,204,255,0.5); }
+    .pk-actions { display: flex; gap: 5px; justify-content: flex-end; }
+    .pk-btn {
+      padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 10px; font-weight: 700;
+      border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04);
+      color: rgba(255,255,255,0.7); font-family: inherit;
+    }
+    .pk-btn.save { border-color: rgba(0,255,136,0.35); background: rgba(0,255,136,0.08); color: #00ff88; }
+    .pk-btn.test { border-color: rgba(0,204,255,0.35); background: rgba(0,204,255,0.08); color: #00ccff; }
+    .pk-btn.clear { border-color: rgba(255,68,119,0.3); background: rgba(255,68,119,0.06); color: #ff4477; }
+    .pk-btn:hover { filter: brightness(1.25); }
+    .pk-btn:disabled { opacity: .45; cursor: default; filter: none; }
+    .pk-status { font-size: 9.5px; color: rgba(255,255,255,0.4); min-height: 11px; }
+    .pk-status.ok { color: #00ff88; }
+    .pk-status.err { color: #ff4477; }
+    .pk-status.wait { color: #ffb800; }
+    .pk-note { font-size: 9px; color: rgba(255,255,255,0.25); line-height: 1.45; }
+
+    /* ─── News Box ──────────────────────────────────────────── */
+    #news-box {
+      position: fixed; top: 12px; right: 12px;
+      z-index: 9995; width: 320px; max-height: 300px;
+      border: 1px solid rgba(0,204,255,0.15);
+      border-radius: 12px;
+      background: rgba(10,10,20,0.92);
+      backdrop-filter: blur(14px);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      display: flex; flex-direction: column; overflow: hidden;
+      font-size: 11px;
+    }
+    #news-header {
+      padding: 8px 12px; display: flex; align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(0,204,255,0.1);
+      cursor: pointer;
+    }
+    #news-header span { color: rgba(0,204,255,0.7); font-size: 11px; font-weight: 600; }
+    .news-header-buttons { display: flex; align-items: center; gap: 4px; }
+    #news-header button {
+      background: none; border: none; color: rgba(255,255,255,0.3);
+      cursor: pointer; font-size: 14px; padding: 0 2px;
+    }
+    #news-header button:hover { color: #fff; }
+    #news-body { overflow-y: auto; max-height: 260px; min-height: 40px; }
+    #news-list { font-size: 11px; color: rgba(255,255,255,0.5); }
+    #news-body::-webkit-scrollbar { width: 3px; }
+    #news-body::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
+    .news-item {
+      padding: 7px 10px; border-bottom: 1px solid rgba(0,204,255,0.04);
+      cursor: pointer; transition: background 0.1s;
+    }
+    .news-item:hover { background: rgba(0,204,255,0.04); }
+    .news-item .news-title { color: rgba(255,255,255,0.75); line-height: 1.4; }
+    .news-item .news-meta {
+      display: flex; gap: 8px; margin-top: 2px;
+      font-size: 9px; color: rgba(255,255,255,0.25);
+    }
+    .news-tag {
+      padding: 0 4px; border-radius: 3px; font-size: 8px;
+      background: rgba(0,204,255,0.1); color: rgba(0,204,255,0.5);
+    }
+    .news-tag.earnings { background: rgba(0,255,136,0.1); color: rgba(0,255,136,0.5); }
+    .news-tag.risk { background: rgba(255,68,119,0.1); color: rgba(255,68,119,0.5); }
+    #news-body.collapsed { display: none; }
+  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div id="chart-container">
+    <div id="chart-area">
+      <canvas id="canvas-3d"></canvas>
+      <canvas id="chart-canvas"></canvas>
+    </div>
+    <div id="chart-splitter"></div>
+    <canvas id="secondary-canvas"></canvas>
+  </div>
+
+  <!-- Volume Profile Settings Panel -->
+  <div id="vp-settings-panel">
+    <div id="vp-settings-header">
+      <span>Volume Profile</span>
+      <button id="vp-settings-close" title="Close">✕</button>
+    </div>
+    <div id="vp-settings-body">
+      <label>Bar View
+        <select id="vp-bar-view">
+          <option value="2D">2D</option>
+          <option value="3D">3D (Isometric)</option>
+        </select>
+      </label>
+      <label>Mode
+        <select id="vp-mode">
+          <option value="2D-Side">2D Side</option>
+          <option value="2D-Per-Bar">2D Per-Bar</option>
+          <option value="3D-Extrude">3D Extrude</option>
+          <option value="3D-Heatmap">3D Heatmap</option>
+        </select>
+      </label>
+      <label>Visual Engine
+        <select id="vp-engine">
+          <option value="3D-Depth">3D Depth</option>
+          <option value="Thermal">Thermal</option>
+          <option value="Nebula">Nebula</option>
+          <option value="Quantum">Quantum</option>
+          <option value="DNA">DNA</option>
+          <option value="Constellation">Constellation</option>
+          <option value="Liquid Metal">Liquid Metal</option>
+          <option value="Neon Wireframe">Neon Wireframe</option>
+        </select>
+      </label>
+      <label>Profile Width
+        <input type="range" id="vp-width" min="10" max="150" step="5">
+        <span id="vp-width-val"></span>
+      </label>
+      <label>Bins
+        <input type="range" id="vp-bins" min="8" max="80" step="1">
+        <span id="vp-bins-val"></span>
+      </label>
+      <label>Lookback
+        <input type="range" id="vp-lookback" min="0" max="500" step="10">
+        <span id="vp-lookback-val"></span>
+      </label>
+      <label>Value Area %
+        <input type="range" id="vp-va" min="0" max="100" step="1">
+        <span id="vp-va-val"></span>
+      </label>
+      <label>Color Theme
+        <select id="vp-theme">
+          <option value="DAFE Signature">DAFE Signature</option>
+          <option value="Cyber Neon">Cyber Neon</option>
+          <option value="Ocean Depths">Ocean Depths</option>
+          <option value="Volcanic">Volcanic</option>
+        </select>
+      </label>
+      <label class="vp-check"><input type="checkbox" id="vp-show-va"> Show Value Area</label>
+      <label class="vp-check"><input type="checkbox" id="vp-show-delta"> Show Delta</label>
+      <label class="vp-check"><input type="checkbox" id="vp-show-nodes"> Show Nodes</label>
+      <button id="vp-settings-close-btn">Close</button>
+    </div>
+  </div>
+
+  <!-- Settings Panel -->
+  <div id="settings-panel">
+    <div id="settings-header">
+      <span>Settings</span>
+      <button id="settings-close" title="Close">✕</button>
+    </div>
+    <div id="settings-body">
+      <div class="settings-section pk-section themed-section">
+        <div class="pk-head">
+          <div>
+            <div class="pk-title">API Credentials</div>
+            <div class="pk-sub">keys encrypted on this machine</div>
+          </div>
+        </div>
+        <div class="pk-card">
+          <label>Massive API Key <input type="password" id="set-massive-key" placeholder="Enter API key"></label>
+          <label>SerpAPI Key <input type="password" id="set-serp-key" placeholder="Enter API key"></label>
+        </div>
+      </div>
+      <div class="settings-section pk-section themed-section">
+        <div class="pk-head">
+          <div>
+            <div class="pk-title">Brokerage — Tradovate</div>
+            <div class="pk-sub">paper default · demo unless you switch to live</div>
+          </div>
+        </div>
+        <div class="pk-card">
+          <label>Username <input type="text" id="set-tradovate-user" placeholder="Tradovate username"></label>
+          <label>Password <input type="password" id="set-tradovate-pass" placeholder="Tradovate password"></label>
+          <label>Environment
+            <select id="set-tradovate-env">
+              <option value="demo">Demo</option>
+              <option value="live">Live</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="settings-section pk-section themed-section">
+        <div class="pk-head">
+          <div>
+            <div class="pk-title">Universal Data Providers</div>
+            <div class="pk-sub"><b id="dp-count">0</b> configured · one adapter converts every feed to internal bars</div>
+          </div>
+          <button id="dp-refresh" class="pk-refresh" title="Refresh providers">⟳</button>
+        </div>
+        <div class="pk-hint">Connect ANY market-data provider. Presets know their response shape; Custom REST takes a URL template + field mapping. Save, Test (fetches real SPY bars through the adapter), then pick it under Data → Source.</div>
+        <select id="dp-provider" class="pk-select"></select>
+        <div class="pk-card">
+          <div class="pk-row-top">
+            <span class="pk-label"><span id="dp-dot" class="pk-dot"></span><span id="dp-label">Yahoo Finance (free)</span></span>
+            <span id="dp-masked" class="pk-masked">no key needed</span>
+          </div>
+          <div class="pk-inputs">
+            <input id="dp-key" type="password" placeholder="Paste API key (Alpaca: KEY_ID:SECRET)" autocomplete="off" spellcheck="false">
+            <input id="dp-url" type="text" placeholder="Base URL (optional override)" spellcheck="false">
+            <input id="dp-template" type="text" placeholder="Custom only: https://…/bars?symbol={symbol}&interval={interval}&from={fromISO}&to={toISO}&apikey={apiKey}" spellcheck="false">
+            <input id="dp-bars-path" type="text" placeholder="Custom only: bars path in JSON (e.g. results or data.bars)" spellcheck="false">
+            <input id="dp-fields" type="text" placeholder='Custom only: field map JSON {"ts":"t","ts_unit":"ms","open":"o","high":"h","low":"l","close":"c","volume":"v"}' spellcheck="false">
+            <div class="pk-actions">
+              <button id="dp-save" class="pk-btn save">Save</button>
+              <button id="dp-test" class="pk-btn test">Test</button>
+              <button id="dp-clear" class="pk-btn clear" title="Remove key">✕</button>
+            </div>
+          </div>
+          <div id="dp-status" class="pk-status"></div>
+          <div id="dp-note" class="pk-note"></div>
+        </div>
+      </div>
+      <div class="settings-section pk-section">
+        <div class="pk-head">
+          <div>
+            <div class="pk-title">Provider API Keys</div>
+            <div class="pk-sub"><b id="pk-count">0</b> connected · keys encrypted on this machine</div>
+          </div>
+          <button id="pk-refresh" class="pk-refresh" title="Refresh providers">⟳</button>
+        </div>
+        <div class="pk-hint">Run the advisor and the OakScript coder on a hosted model when local hosting is too heavy. Save a key, test it, then choose the provider below.</div>
+        <select id="pk-provider" class="pk-select"></select>
+        <div id="pk-card" class="pk-card">
+          <div class="pk-row-top">
+            <span class="pk-label"><span id="pk-dot" class="pk-dot"></span><span id="pk-label">OpenCode</span></span>
+            <span id="pk-masked" class="pk-masked">no key</span>
+          </div>
+          <div class="pk-inputs">
+            <input id="pk-key" type="password" placeholder="Paste API key" autocomplete="off" spellcheck="false">
+            <input id="pk-url" type="text" placeholder="https://…/v1" spellcheck="false">
+            <div class="pk-actions">
+              <button id="pk-save" class="pk-btn save">Save</button>
+              <button id="pk-test" class="pk-btn test">Test</button>
+              <button id="pk-clear" class="pk-btn clear" title="Remove key">✕</button>
+            </div>
+          </div>
+          <div id="pk-status" class="pk-status"></div>
+          <div id="pk-note" class="pk-note"></div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">LLM Configuration</div>
+        <label>Trade Advisor Provider
+          <select id="set-llm-provider">
+            <option value="local">Local (this GPU / llama.cpp)</option>
+            <option value="ollama">Ollama Local (daemon on this machine)</option>
+            <option value="ollama-cloud">Ollama Cloud (signed-in cloud models)</option>
+            <optgroup label="Hosted — API key">
+              <option value="meta">Meta Model API (Muse Spark / Wonder)</option>
+              <option value="opencode">OpenCode</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="orcarouter">OrcaRouter</option>
+              <option value="nvidia">NVIDIA NIM</option>
+              <option value="custom">Custom endpoint</option>
+            </optgroup>
+          </select>
+        </label>
+        <label>Ollama URL <input type="text" id="set-ollama-url" placeholder="http://localhost:11434"></label>
+        <label id="advisor-model-local-row">Trade Advisor Model
+          <select id="set-advisor-model"><option value="auto">Auto-detect</option></select>
+        </label>
+        <label id="advisor-model-cloud-row" style="display:none">Ollama Advisor Model
+          <select id="set-advisor-model-cloud"><option value="">(loading Ollama models…)</option></select>
+        </label>
+        <label id="advisor-model-hosted-row" style="display:none">Hosted Advisor Model
+          <select id="set-advisor-model-hosted"><option value="">(loading models…)</option></select>
+        </label>
+        <label>OakScript Coder Provider
+          <select id="set-coder-provider">
+            <option value="local">Local (this GPU)</option>
+            <option value="ollama">Ollama Local (daemon on this machine)</option>
+            <option value="ollama-cloud">Ollama Cloud (signed-in cloud models)</option>
+            <optgroup label="Hosted — API key">
+              <option value="meta">Meta Model API (Muse Spark / Wonder)</option>
+              <option value="opencode">OpenCode</option>
+              <option value="openrouter">OpenRouter</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="orcarouter">OrcaRouter</option>
+              <option value="nvidia">NVIDIA NIM</option>
+              <option value="custom">Custom endpoint</option>
+            </optgroup>
+          </select>
+        </label>
+        <label id="coder-model-local-row">OakScript Coder Model
+          <select id="set-coder-model"><option value="auto">Auto-detect</option></select>
+        </label>
+        <label id="coder-model-cloud-row" style="display:none">Ollama Coder Model
+          <select id="set-coder-model-cloud"><option value="">(loading Ollama models…)</option></select>
+        </label>
+        <label id="coder-model-hosted-row" style="display:none">Hosted Coder Model
+          <select id="set-coder-model-hosted"><option value="">(loading models…)</option></select>
+        </label>
+        <div id="set-coder-info" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:2px;line-height:1.4;">
+          Ollama Local runs models pulled onto this machine via the Ollama daemon; Ollama Cloud runs large off-device models (e.g. qwen3-coder:480b-cloud) — far better at OakScript than what fits in 8GB. Install Ollama, run <b>ollama signin</b> for cloud, then pick a model above. The agent is auto-fed the OakScript documentation.
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:6px;">
+          <input type="checkbox" id="set-model-auto" style="width:auto;">
+          <span>Auto-select best model (off = use my choice above)</span>
+        </label>
+        <button id="set-switch-model" class="settings-action-btn" style="margin-top:6px;">🔄 Switch Model Now (hot reload)</button>
+        <button id="set-open-oakguard" class="settings-action-btn" style="margin-top:6px;">⬢ OAKGUARD — Self-Improving Verification Playbook</button>
+        <div style="color:rgba(255,255,255,0.3);font-size:9px;line-height:1.4;">OakGuard: the fixed model proposes validation rules; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus). Promoted rules then enforce live in the editor validator.</div>
+        <div id="set-switch-status" style="color:rgba(255,184,0,0.7);font-size:9px;margin-top:2px;display:none;"></div>
+        <label>Advisor Voice
+          <select id="set-voice">
+            <option value="auto">Auto (best available)</option>
+            <option value="natural">Natural / Neural</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+            <option value="soft">Soft</option>
+          </select>
+        </label>
+        <div id="set-hardware-info" style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;"></div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Data</div>
+        <label>Source
+          <select id="set-data-source">
+            <option value="hybrid">⚡ Hybrid (Massive + Yahoo + Synthetic)</option>
+            <option value="yahoo">Yahoo Finance (free)</option>
+            <option value="massive">Massive / Polygon</option>
+            <option value="polygon">Polygon.io (adapter)</option>
+            <option value="alpaca">Alpaca (adapter)</option>
+            <option value="twelvedata">Twelve Data (adapter)</option>
+            <option value="custom">Custom REST (adapter)</option>
+          </select>
+        </label>
+        <div id="set-hybrid-info" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:3px;line-height:1.4;">
+          Hybrid blends paid Massive anchors (sparse) with free Yahoo corrections
+          and a correction-anchored synthetic engine for near-live accuracy at low cost.
+        </div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Paper Trading</div>
+        <label>Starting Cash
+          <input type="number" id="set-trade-cash" value="100000" min="0" step="1000">
+        </label>
+        <label>Commission Mode
+          <select id="set-trade-comm-mode">
+            <option value="per-trade">Flat $ per trade</option>
+            <option value="per-share">$ per share</option>
+            <option value="per-contract">$ per contract</option>
+          </select>
+        </label>
+        <label>Commission Value ($)
+          <input type="number" id="set-trade-comm-value" value="1.00" min="0" step="0.01">
+        </label>
+        <label>Slippage Mode
+          <select id="set-trade-slip-mode">
+            <option value="fixed-ticks">Fixed ticks</option>
+            <option value="percent">% of price</option>
+          </select>
+        </label>
+        <label>Slippage Value
+          <input type="number" id="set-trade-slip-value" value="1" min="0" step="0.1">
+        </label>
+        <label>Tick Size ($, for fixed-ticks)
+          <input type="number" id="set-trade-tick-size" value="0.01" min="0.0001" step="0.0001">
+        </label>
+        <div id="set-trade-formula-preview" style="color:rgba(180,140,255,0.4);font-size:9px;margin-top:3px;line-height:1.4;"></div>
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+          <input type="checkbox" id="set-trade-hide-markers" style="width:auto;">
+          <span>Hide execution markers on chart</span>
+        </label>
+        <button id="set-trade-clear" class="settings-action-btn danger" style="margin-top:8px;">Clear Trade History (start fresh)</button>
+        <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">Resets cash, positions, and open orders back to a fresh account. Chart execution markers are kept.</div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Signal Analysis Models</div>
+        <button id="set-open-editor" class="settings-action-btn">Open OakScript Editor</button>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Audit Trail</div>
+        <button id="set-open-ledger" class="settings-action-btn">🔗 View Glass Ledger</button>
+        <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">A tamper-evident, hash-chained record of trade fills and signal model saves/deletes.</div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Storyboard</div>
+        <button id="set-open-storyboard" class="settings-action-btn">📖 View Storyboard</button>
+        <div style="color:rgba(255,255,255,0.25);font-size:9px;margin-top:4px;">A chronological log of noteworthy moments — pin your own notes, or let fired alerts pin themselves.</div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Accessibility</div>
+        <label class="check-row">
+          <input type="checkbox" id="set-accessible-palette">
+          <span>Colorblind-safe signal palette (blue/orange instead of green/red for buy/sell and alerts)</span>
+        </label>
+        <label class="check-row" style="margin-top:6px;">
+          <input type="checkbox" id="set-sonification">
+          <span>🔊 Sound cues for alerts and trade fills</span>
+        </label>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Interface Glow</div>
+        <label class="check-row">
+          <input type="checkbox" id="set-glow-enabled" checked>
+          <span>Sync one glow color across the main menu, advisor bubble/chat, trading/news panels, settings sections and dashboards</span>
+        </label>
+        <label style="margin-top:6px;">Glow color
+          <input type="color" id="set-glow-color" value="#2dffb3" style="flex:0 0 auto;width:52px;height:26px;padding:0;cursor:pointer;">
+        </label>
+        <label style="margin-top:6px;">Glow brightness <span id="glow-brightness-val" style="color:#9be8ff;">100%</span>
+          <input type="range" id="set-glow-brightness" min="20" max="160" step="5" value="100" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <div style="color:rgba(255,255,255,0.3);font-size:9px;line-height:1.4;">Theme applies to: main menu, OakGuard, advisor, trading panel, news, settings sections, visual editor and dashboards. Brightness controls how visible the glow is everywhere.</div>
+      </div>
+      <div class="settings-section">
+        <div class="settings-section-title">Display</div>
+        <label>Background
+          <select id="set-bg-viz">
+            <option value="stars">Stars</option>
+            <option value="particles">Particles</option>
+            <option value="graph">Graph Grid</option>
+            <option value="plain">Plain</option>
+          </select>
+        </label>
+      <div class="settings-section">
+        <div class="settings-section-title">Hotkeys (Numpad)</div>
+        <div class="hotkey-grid">
+          <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input"></label>
+          <label>Volume Profile <input type="text" id="hk-vp" value="Numpad1" class="hotkey-input"></label>
+          <label>Model Editor <input type="text" id="hk-oak" value="Numpad2" class="hotkey-input"></label>
+          <label>Frame All <input type="text" id="hk-frame" value="Numpad3" class="hotkey-input"></label>
+          <label>Trend Line <input type="text" id="hk-trend" value="Numpad4" class="hotkey-input"></label>
+          <label>Horizontal <input type="text" id="hk-hline" value="Numpad5" class="hotkey-input"></label>
+          <label>Ray <input type="text" id="hk-ray" value="Numpad6" class="hotkey-input"></label>
+          <label>Rectangle <input type="text" id="hk-rect" value="Numpad7" class="hotkey-input"></label>
+          <label>Fib Retrace <input type="text" id="hk-fib" value="Numpad8" class="hotkey-input"></label>
+          <label>Channel <input type="text" id="hk-channel" value="Numpad9" class="hotkey-input"></label>
+          <label>Text Label <input type="text" id="hk-text" value="NumpadAdd" class="hotkey-input"></label>
+          <label>Undo Drawing <input type="text" id="hk-undo" value="NumpadSubtract" class="hotkey-input"></label>
+          <label>Clear All <input type="text" id="hk-clear" value="NumpadMultiply" class="hotkey-input"></label>
+          <label>Deselect <input type="text" id="hk-deselect" value="NumpadDecimal" class="hotkey-input"></label>
+    </div>
+    </div>
+  </div>
+      <button id="settings-save">Save Settings</button>
+      <span id="settings-status" style="font-size:11px;color:rgba(0,255,136,0.6);display:none"></span>
+    </div>
+  </div>
+
+  <!-- News Box -->
+  <div id="news-box">
+    <div id="news-header">
+      <span>📰 News &amp; Events</span>
+      <div class="news-header-buttons">
+        <button id="news-toggle" title="Collapse">−</button>
+        <button id="news-close" title="Close">✕</button>
+      </div>
+    </div>
+    <div id="news-body">
+      <div id="news-list" style="font-size:11px;color:rgba(255,255,255,0.5);padding:8px;text-align:center">Loading news...</div>
+    </div>
+  </div>
+
+  <!-- Drawing Tools Rail -->
+  <div id="draw-rail">
+    <button class="draw-btn" data-tool="none" title="Cursor (Esc)">⌖<span class="tooltip">Cursor · Esc</span></button>
+    <button class="draw-btn" data-tool="trend" title="Trend Line (T)">╱<span class="tooltip">Trend Line · T</span></button>
+    <button class="draw-btn" data-tool="ray" title="Ray (R)">➚<span class="tooltip">Ray · R</span></button>
+    <button class="draw-btn" data-tool="hline" title="Horizontal Line (H)">―<span class="tooltip">Horizontal · H</span></button>
+    <button class="draw-btn" data-tool="rect" title="Rectangle (B)">▭<span class="tooltip">Rectangle · B</span></button>
+    <button class="draw-btn" data-tool="fib" title="Fib Retracement (G)">𝆑<span class="tooltip">Fib · G</span></button>
+    <button class="draw-btn" data-tool="channel" title="Channel (C)">∥<span class="tooltip">Channel · C</span></button>
+    <button class="draw-btn" data-tool="text" title="Text Label (X)">T<span class="tooltip">Text · X</span></button>
+    <button class="draw-btn" id="draw-clear" title="Clear All (Shift+X)">🗑<span class="tooltip">Clear · Shift+X</span></button>
+  </div>
+
+  <!-- Trade Advisor FAB -->
+  <button id="advisor-fab" title="Trade Advisor">◆</button>
+
+  <!-- Trade Advisor Panel -->
+  <div id="advisor-panel">
+    <div class="advisor-header">
+      <div class="advisor-header-title">
+        <span id="advisorAgentIcon" style="color:#b48cff">◆</span>
+        <span id="advisorAgentLabel">Trade Advisor</span>
+      </div>
+      <button id="advisor-close" title="Close">✕</button>
+    </div>
+    <div class="advisor-chart-context" id="advisorChartContext">
+      <span><span class="label">Symbol:</span><span class="val" id="advisorSymbol">-</span></span>
+      <span><span class="label">TF:</span><span class="val" id="advisorTf">-</span></span>
+      <span><span class="label">Close:</span><span class="val" id="advisorClose">-</span></span>
+      <span><span class="label">Bars:</span><span class="val" id="advisorBars">-</span></span>
+    </div>
+    <div class="advisor-toolbar" id="advisorToolbar">
+      <button class="advisor-tool-btn" id="advisorAnalyze"> Analyze</button>
+      <button class="advisor-tool-btn" id="advisorVoice">🎤 Voice</button>
+      <button class="advisor-tool-btn" id="advisorVoiceFree" title="Toggle free speech (wake word: 'Advisor?')">♾️</button>
+      <button class="advisor-tool-btn" id="advisorClear"> Clear</button>
+    </div>
+    <div class="advisor-messages" id="advisorMessages">
+      <div class="advisor-msg system">Hi, I'm your Trade Advisor and assistant, how can I help you today?</div>
+    </div>
+    <div class="advisor-input-row">
+      <textarea class="advisor-input" id="advisorInput" placeholder="Ask about the chart..." rows="1"></textarea>
+      <button class="advisor-send" id="advisorSend" title="Send">↑</button>
+    </div>
+  </div>
+
+  <!-- Trading Panel -->
+  <div id="trading-panel">
+    <div class="trading-panel-header" id="tradingPanelHeader">
+      <span class="trading-panel-title">Trading</span>
+      <div class="trading-panel-header-buttons">
+        <button class="trading-panel-collapse" id="tradingPanelCollapse">−</button>
+        <button class="trading-panel-collapse" id="tradingPanelClose" title="Close">✕</button>
+      </div>
+    </div>
+    <div class="trading-panel-body" id="tradingPanelBody">
+      <div class="trading-spread">
+        <span class="spread-label">Spread</span>
+        <span class="spread-value" id="tradingSpread">0.00</span>
+      </div>
+      <div class="trading-buttons">
+        <button class="trade-btn sell-btn" id="tradeSell">
+          <span class="trade-price" id="sellPrice">--</span>
+          <span class="trade-label">SELL</span>
+        </button>
+        <button class="trade-btn buy-btn" id="tradeBuy">
+          <span class="trade-price" id="buyPrice">--</span>
+          <span class="trade-label">BUY</span>
+        </button>
+      </div>
+      <div class="trading-quantity">
+        <label class="qty-label">Qty</label>
+        <input type="number" id="tradeQuantity" class="qty-input" value="1" min="1" step="1">
+        <span class="qty-unit" id="tradeQtyUnit">shares</span>
+      </div>
+
+      <div class="trade-section-title">Order</div>
+      <div class="trade-row">
+        <label for="tradeOrderType">Type</label>
+        <select id="tradeOrderType">
+          <option value="market">Market</option>
+          <option value="limit">Limit</option>
+          <option value="stop">Stop</option>
+          <option value="stop-limit">Stop-Limit</option>
+          <option value="trailing-stop">Trailing Stop</option>
+        </select>
+      </div>
+      <div class="trade-row hidden" id="tradeLimitRow">
+        <label for="tradeLimitPrice">Limit</label>
+        <input type="number" id="tradeLimitPrice" step="0.01" placeholder="Limit price">
+      </div>
+      <div class="trade-row hidden" id="tradeStopRow">
+        <label for="tradeStopPrice">Stop</label>
+        <input type="number" id="tradeStopPrice" step="0.01" placeholder="Stop price">
+      </div>
+      <div class="trade-row hidden" id="tradeTrailRow">
+        <label for="tradeTrailAmount">Trail</label>
+        <input type="number" id="tradeTrailAmount" step="0.01" placeholder="Amount" style="flex:2">
+        <select id="tradeTrailUnit" style="flex:1">
+          <option value="abs">$</option>
+          <option value="pct">%</option>
+        </select>
+      </div>
+      <div class="trade-row">
+        <label for="tradeCurrency">Currency</label>
+        <select id="tradeCurrency">
+          <option value="USD">USD</option>
+          <option value="EUR">EUR</option>
+          <option value="GBP">GBP</option>
+          <option value="JPY">JPY</option>
+          <option value="CHF">CHF</option>
+          <option value="CAD">CAD</option>
+          <option value="AUD">AUD</option>
+          <option value="NZD">NZD</option>
+        </select>
+        <span id="tradeCurrencyAuto" title="Auto-detected from symbol">auto</span>
+      </div>
+
+      <div class="trade-section-title">Account</div>
+      <div class="trade-account-line"><span>Cash</span><span class="val" id="tradeCash">--</span></div>
+      <div class="trade-account-line"><span>Equity</span><span class="val" id="tradeEquity">--</span></div>
+      <div class="trade-account-line"><span>Realized P&amp;L</span><span class="val" id="tradeRealizedPnL">--</span></div>
+      <div class="trade-account-line"><span>Unrealized P&amp;L</span><span class="val" id="tradeUnrealizedPnL">--</span></div>
+
+      <div class="trade-section-title" style="display:flex;justify-content:space-between;align-items:center;">
+        <span>Positions</span>
+        <button id="tradeCloseAll" title="Close all open positions" style="background:none;border:1px solid rgba(255,68,119,0.3);color:rgba(255,68,119,0.8);border-radius:4px;font-size:9px;padding:2px 6px;cursor:pointer;text-transform:none;letter-spacing:normal;">Close All</button>
+      </div>
+      <div class="trade-list" id="tradePositionsList"><div class="trade-list-empty">No open positions</div></div>
+
+      <div class="trade-section-title">Open Orders</div>
+      <div class="trade-list" id="tradeOrdersList"><div class="trade-list-empty">No open orders</div></div>
+
+      <div class="trade-fill-note" id="tradeFillNote"></div>
+    </div>
+  </div>
+
+  <!-- Bottom Toolbar -->
+  <div id="toolbar">
+    <div id="toolbar-resize-handle" title="Drag to resize toolbar width"></div>
+    <span class="label" style="color:#00ff88;font-weight:700;letter-spacing:0.5px">DAFE</span>
+    <div class="sep"></div>
+    <div class="sep"></div>
+
+    <!-- Symbol Selector -->
+    <div id="symbol-combo" style="position:relative;display:inline-block">
+      <input type="text" id="symbol-input" placeholder="Symbol (search or pick)" maxlength="10" title="Type to search or pick a symbol" style="width:160px" autocomplete="off">
+      <div id="symbol-dropdown" style="display:none;position:absolute;left:0;right:0;bottom:100%;margin-bottom:2px;max-height:300px;overflow-y:auto;background:rgba(10,10,25,0.96);border:1px solid rgba(0,204,255,0.2);border-radius:6px;z-index:9999;font-size:10px"></div>
+    </div>
+    <select id="symbol-select" style="display:none"></select>
+    <span id="data-status"></span>
+
+    <div class="sep"></div>
+
+    <!-- Bar Type Selector -->
+    <select id="bar-type-select">
+      <option value="candlestick">Candlestick</option>
+      <option value="heikin-ashi">Heikin-Ashi</option>
+      <option value="renko">Renko</option>
+      <option value="range-bar">Range Bar</option>
+      <option value="volume-bar">Volume Bar</option>
+      <option value="tick-bar">Tick Bar</option>
+      <option value="kagi">Kagi</option>
+      <option value="footprint">Footprint</option>
+      <option value="line">Line</option>
+      <option value="area">Area</option>
+      <option value="dollar-bar">Dollar Bar</option>
+      <option value="imbalance-bar">Imbalance Bar</option>
+    </select>
+
+    <div class="sep"></div>
+
+    <!-- Timeframe Select -->
+    <select id="tf-select">
+      <option value="1s" data-sub-minute="true">1s</option>
+      <option value="5s" data-sub-minute="true">5s</option>
+      <option value="10s" data-sub-minute="true">10s</option>
+      <option value="30s" data-sub-minute="true">30s</option>
+      <option value="1m">1m</option>
+      <option value="5m">5m</option>
+      <option value="15m">15m</option>
+      <option value="30m">30m</option>
+      <option value="1h">1h</option>
+      <option value="4h">4h</option>
+      <option value="1d">1d</option>
+      <option value="1w">1w</option>
+    </select>
+
+    <select id="pane-dominance" title="Visual dominance when main + lower both present">
+      <option value="both" selected>Both (Main over Lower)</option>
+      <option value="main">Main Only</option>
+      <option value="lower">Lower Only</option>
+    </select>
+
+    <div class="sep"></div>
+
+    <button id="mode-toggle" style="display:none">2D <span class="key-hint">Np0</span></button>
+    <select id="indicator-select" title="Load Signal Analysis Model" style="width:110px;padding:2px 4px;font-size:10px;background:rgba(12,12,28,0.9);color:rgba(255,255,255,0.7);border:1px solid rgba(180,140,255,0.15);border-radius:4px;cursor:pointer;">
+      <option value="" disabled selected>📊 Signal Models</option>
+    </select>
+    <button id="vp-toggle">VP <span class="key-hint">Np1</span></button>
+    <button id="regime-toggle" title="Toggle the Regime Ribbon (advisory market-state strip at the top of the chart)">◉ Regime</button>
+    <div id="widgets-combo" style="position:relative;display:inline-block">
+      <button id="widgets-toggle" title="Show or hide widgets">▤ Widgets</button>
+      <div id="widgets-menu" style="display:none;position:absolute;right:0;bottom:100%;margin-bottom:2px;background:rgba(10,10,25,0.96);border:1px solid rgba(180,140,255,0.2);border-radius:6px;z-index:9999;font-size:11px;min-width:170px;padding:4px 0;"></div>
+    </div>
+    <button id="live-tick-toggle" title="Live tick simulation">◆ Live</button>
+    <button id="chart-reset" title="Reset chart view (zoom, pan, scale)">⟳ Reset</button>
+    <button id="settings-toggle" title="Settings">⚙</button>
+    <button id="toolbar-collapse" title="Collapse toolbar">▲</button>
+    <select id="perf-select" title="Performance mode">
+      <option value="auto" selected>Auto</option>
+      <option value="ultra">Ultra</option>
+      <option value="high">High</option>
+      <option value="medium">Medium</option>
+      <option value="low">Low</option>
+    </select>
+
+    <div class="sep"></div>
+
+    <div class="vpi-settings">
+      <input type="checkbox" id="vpi-enabled" checked>
+      <label for="vpi-enabled">VPI</label>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

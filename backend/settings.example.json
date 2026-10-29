@@ -1,0 +1,13 @@
+{
+  "massive_api_key": "",
+  "serpapi_api_key": "",
+  "llm_provider": "local",
+  "ollama_base_url": "http://localhost:11434",
+  "local_llm_base_url": "http://localhost:8081",
+  "llm_trade_advisor_model": "auto",
+  "llm_coder_provider": "local",
+  "llm_coder_base_url": "http://localhost:8081",
+  "llm_coder_model": "auto",
+  "llm_provider_keys": {},
+  "market_data_source": "yahoo"
+}

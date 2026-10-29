@@ -1,0 +1,6 @@
+- [ ] Step 1: Add preview/test indicator execution support in apps/web/src/indicator-manager.ts (isolated preview plots)
+- [ ] Step 2: Extend bridge config + implement onTestScript in apps/web/src/main.ts (run preview only, don’t touch accepted instances)
+- [ ] Step 3: Modify "▶ Test Run" button to call onTestScript in apps/web/src/trade-advisor/oakscript-bridge.ts
+- [ ] Step 4: Update DEFAULT_SCRIPT placeholder to exact //DAFE Trading Systems - DskyzInvestment in apps/web/src/oakscript/editor.ts
+- [ ] Step 5: Verify placeholder/hasRealEditorScript logic in apps/web/src/main.ts matches new DEFAULT_SCRIPT
+- [ ] Step 6: Build/test via npm scripts (if present) and visually verify Accept vs Test behavior

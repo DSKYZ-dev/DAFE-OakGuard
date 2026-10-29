@@ -1,0 +1,246 @@
+@echo off
+setlocal enabledelayedexpansion
+cd /d "%~dp0"
+
+title DAFE System
+
+:: ─── Configuration (paths are relative to this script — portable) ──
+set "REPO_DIR=%~dp0"
+set "MODEL_DIR=%~dp0models"
+set "MODEL_NAME="
+set "LLAMA_PORT=8081"
+set "BACKEND_PORT=8788"
+set "FRONTEND_PORT=5173"
+set "USE_VISION=0"
+
+:: Discover llama-server location (env LLAMA_DIR, bundled, or on PATH).
+:: Falls back to C:\llama.cpp only if discovery fails.
+set "LLAMA_EXE="
+for /f "usebackq delims=" %%p in (`python "%~dp0backend\model_manager.py" llama-path 2^>nul`) do set "LLAMA_EXE=%%p"
+if defined LLAMA_EXE (
+    for %%d in ("%LLAMA_EXE%") do set "LLAMA_DIR=%%~dpd"
+) else (
+    set "LLAMA_DIR=C:\llama.cpp"
+)
+
+:: ─── Parse args ───────────────────────────────────────────────
+if /I "%1"=="-reset" goto reset
+if /I "%1"=="reset" goto reset
+if /I "%1"=="-vision" set "USE_VISION=1"
+if /I "%1"=="vision" set "USE_VISION=1"
+if /I "%1"=="-no-llm" set "SKIP_LLAMA=1"
+if /I "%1"=="no-llm" set "SKIP_LLAMA=1"
+
+:: If the user has both the Trade Advisor and OakScript Coder set to Ollama
+:: in Settings, there's nothing local to serve — starting a local llama-server
+:: anyway just burns VRAM and is what made it look like "it's always loading
+:: local even when saved to Ollama" (the model swap was fine, but this script
+:: kept launching an unrelated local model in the background on every restart
+:: regardless of that choice). Skip it automatically in that case.
+if not defined SKIP_LLAMA (
+    for /f "usebackq delims=" %%s in (`python -c "import json,os; p=os.path.join(r'%~dp0backend','settings.json'); d=json.load(open(p)) if os.path.exists(p) else {}; ap=d.get('llm_provider','local'); cp=d.get('llm_coder_provider', ap); print('1' if ap.startswith('ollama') and cp.startswith('ollama') else '0')" 2^>nul`) do set "BOTH_OLLAMA=%%s"
+    if "!BOTH_OLLAMA!"=="1" (
+        set "SKIP_LLAMA=1"
+        echo  [INFO] Both LLM roles are set to Ollama in Settings — skipping local model launch.
+        echo         ^(switch either role back to Local in Settings to bring it back^)
+    )
+)
+
+:: ─── Banner ────────────────────────────────────────────────────
+echo.
+echo  DAFE Trading System
+echo  -------------------
+echo.
+echo  Services that will start:
+echo    1. LLM         http://127.0.0.1:%LLAMA_PORT%
+echo    2. Backend     http://127.0.0.1:%BACKEND_PORT%
+echo    3. Frontend    http://127.0.0.1:%FRONTEND_PORT%
+echo.
+echo  Flags:  start.bat -no-llm   (skip LLM)
+echo          start.bat -vision   (image mode, needs mmproj)
+echo          start.bat -reset    (kill all + clear cache)
+echo.
+
+if "%USE_VISION%"=="1" (
+    echo  [INFO] Vision mode ^(slow^)
+) else (
+    echo  [INFO] Text-only mode ^(fast^)
+)
+
+:: ─── Kill old services (non-blocking PowerShell) ──────────────
+echo.
+echo  [1/4] Stopping previous instances...
+powershell -NoProfile -Command "$w='llama-server','dafe-backend','dafe-frontend';Get-Process|Where-Object{$w -contains $_.MainWindowTitle}|Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8788,5173,8081 -ErrorAction SilentlyContinue|ForEach-Object{Stop-Process -Id `$_.OwningProcess -Force -ErrorAction SilentlyContinue}" 2>nul
+timeout /t 1 /nobreak >nul
+echo         Done.
+
+:: ─── Adaptive model + hardware selection (single source of truth) ──
+:: model_manager.py inspects the GPU/VRAM/RAM and each model's real GGUF
+:: architecture, then picks the best model and optimal launch params.
+:: Runs AFTER the kill so free-VRAM is measured accurately on a restart.
+if defined SKIP_LLAMA goto skip_llama_check
+set "SKIP_LLAMA=1"
+for /f "usebackq tokens=1-5 delims=|" %%a in (`python "%~dp0backend\model_manager.py" select 2^>nul`) do (
+    set "MODEL_NAME=%%a"
+    set "CTX=%%b"
+    set "NGPULAYERS=%%c"
+    set "BSIZE=%%d"
+    set "NTHREADS=%%e"
+)
+if /I "%MODEL_NAME%"=="NONE" set "MODEL_NAME="
+if defined MODEL_NAME if not "%MODEL_NAME%"=="" set "SKIP_LLAMA=0"
+if "%SKIP_LLAMA%"=="1" (
+    echo  [INFO] No usable model found in %MODEL_DIR%
+    echo         Continuing without LLM ^(use -no-llm to hide^)
+) else (
+    echo  [HW]  Selected model: %MODEL_NAME%
+    echo  [HW]  Params:  -c %CTX%  -ngl %NGPULAYERS%  -b %BSIZE%  -t %NTHREADS%
+)
+:skip_llama_check
+
+:: ═══════════════════════════════════════════════════════════════
+::  2/4 — LLM (optional)
+:: ═══════════════════════════════════════════════════════════════
+echo.
+if "%SKIP_LLAMA%"=="0" (
+    echo  [2/4] Starting local LLM on port %LLAMA_PORT%...
+
+    :: Pre-flight checks
+    if not exist "%LLAMA_DIR%llama-server.exe" if not exist "%LLAMA_DIR%\llama-server.exe" (
+        echo  [SKIP] llama-server.exe not found ^(looked in %LLAMA_DIR%^)
+        echo         Set LLAMA_DIR env var, bundle it at .\llama.cpp, or use start.bat -no-llm
+        goto skip_llama
+    )
+    if not exist "%MODEL_DIR%\%MODEL_NAME%" (
+        echo  [SKIP] Model not found at %MODEL_DIR%\%MODEL_NAME%
+        goto skip_llama
+    )
+
+    :: Launch with auto-detected params — text-only mode
+    start "llama-server" cmd /k "cd /d %LLAMA_DIR% && llama-server.exe -m %MODEL_DIR%\%MODEL_NAME% --port %LLAMA_PORT% --host 127.0.0.1 -c !CTX! -ngl !NGPULAYERS! -b !BSIZE! -t !NTHREADS!"
+
+    :: Fast crash detection
+    timeout /t 6 /nobreak >nul
+    tasklist /FI "WINDOWTITLE eq llama-server" /NH 2>nul | findstr "cmd.exe" >nul
+    if errorlevel 1 (
+        echo  [SKIP] LLM crashed on startup — see the llama-server window for errors
+        goto skip_llama
+    )
+
+    echo         Loading model — this may take 15-60s. Please wait...
+    set WAIT=0
+    :wait_llama
+    timeout /t 3 /nobreak >nul
+    set /a WAIT+=1
+    if !WAIT! gtr 30 (
+        echo  [SKIP] LLM still not responding after 90s — continuing without LLM
+        goto skip_llama
+    )
+    powershell -NoProfile -Command "try{$r=Invoke-WebRequest -Uri 'http://127.0.0.1:%LLAMA_PORT%/health' -TimeoutSec 3 -UseBasicParsing;if($r.Content -match 'ok'){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+    if errorlevel 1 goto wait_llama
+    echo  [OK]  LLM ready
+) else (
+    echo  [2/4] LLM skipped
+)
+:skip_llama
+
+:: ═══════════════════════════════════════════════════════════════
+::  3/4 — Backend
+:: ═══════════════════════════════════════════════════════════════
+echo.
+echo  [3/4] Starting backend on port %BACKEND_PORT%...
+start "dafe-backend" cmd /k "cd /d "%~dp0backend" && python -m uvicorn main:app --host 127.0.0.1 --port %BACKEND_PORT%"
+
+echo         Waiting for backend ^(up to 60s^)...
+set WAIT=0
+:wait_backend
+timeout /t 3 /nobreak >nul
+set /a WAIT+=1
+if !WAIT! gtr 20 (
+    echo  [WARN] Backend not responding — app will use synthetic data
+    goto skip_backend
+)
+powershell -NoProfile -Command "try{Invoke-WebRequest -Uri 'http://127.0.0.1:%BACKEND_PORT%/api/ping' -TimeoutSec 3 -UseBasicParsing;exit 0}catch{exit 1}" >nul 2>&1
+if errorlevel 1 goto wait_backend
+echo  [OK]  Backend ready
+:skip_backend
+
+:: ═══════════════════════════════════════════════════════════════
+::  4/4 — Frontend
+:: ═══════════════════════════════════════════════════════════════
+echo.
+echo  [4/4] Starting frontend on port %FRONTEND_PORT%...
+start "dafe-frontend" cmd /k "cd /d "%~dp0apps\web" && npx vite --port %FRONTEND_PORT%"
+
+echo         Waiting for frontend ^(up to 60s^)...
+set WAIT=0
+:wait_frontend
+timeout /t 3 /nobreak >nul
+set /a WAIT+=1
+if !WAIT! gtr 20 (
+    echo  [WARN] Frontend not responding
+    goto skip_frontend
+)
+powershell -NoProfile -Command "try{Invoke-WebRequest -Uri 'http://127.0.0.1:%FRONTEND_PORT%/' -TimeoutSec 3 -UseBasicParsing;exit 0}catch{exit 1}" >nul 2>&1
+if errorlevel 1 goto wait_frontend
+echo  [OK]  Frontend ready
+:skip_frontend
+
+:: ─── Open browser ─────────────────────────────────────────────
+echo.
+echo  Opening browser...
+timeout /t 1 /nobreak >nul
+start "" "http://127.0.0.1:%FRONTEND_PORT%"
+
+echo.
+echo  +--------------------------------------+
+echo  |  DAFE Charts is running              |
+echo  |  http://127.0.0.1:%FRONTEND_PORT%              |
+echo  |                                      |
+echo  |  Type a symbol and press Enter       |
+echo  |  Click the diamond for Trade Advisor |
+echo  +--------------------------------------+
+echo.
+echo  Press ENTER to stop all services...
+pause >nul
+
+:: ─── Shutdown ──────────────────────────────────────────────────
+echo.
+echo  Shutting down...
+powershell -NoProfile -Command "$w='llama-server','dafe-backend','dafe-frontend';Get-Process|Where-Object{$w -contains $_.MainWindowTitle}|Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
+echo  All services stopped.
+exit /b
+
+:: ═══════════════════════════════════════════════════════════════
+::  RESET  (start.bat -reset)
+:: ═══════════════════════════════════════════════════════════════
+:reset
+echo.
+echo  ----------------------------------------
+echo   DAFE Charts - Hard Reset
+echo  ----------------------------------------
+echo.
+
+echo  [1/4] Stopping all services...
+powershell -NoProfile -Command "$w='llama-server','dafe-backend','dafe-frontend';Get-Process|Where-Object{$w -contains $_.MainWindowTitle}|Stop-Process -Force -ErrorAction SilentlyContinue" 2>nul
+timeout /t 1 /nobreak >nul
+echo         Done.
+
+echo  [2/4] Cleaning caches...
+if exist "%~dp0backend\__pycache__" rmdir /s /q "%~dp0backend\__pycache__" 2>nul
+if exist "%~dp0apps\web\node_modules\.vite" rmdir /s /q "%~dp0apps\web\node_modules\.vite" 2>nul
+del /s /q "%~dp0backend\*.pyc" 2>nul
+echo         Done.
+
+echo  [3/4] Flushing DNS...
+ipconfig /flushdns >nul 2>&1
+echo         Done.
+
+echo.
+echo  [4/4] Reset complete.
+echo.
+echo    Run  start.bat  to launch fresh.
+echo.
+pause
+exit /b

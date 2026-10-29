@@ -1,0 +1,20 @@
+fastapi>=0.115.0
+uvicorn>=0.30.0
+httpx>=0.27.0
+yfinance>=0.2.40
+gTTS>=2.5.0
+psutil>=5.9.0
+cryptography>=41.0.0
+numpy>=1.26.0
+scikit-learn>=1.4.0
+joblib>=1.3.0
+
+# Powers ML Lab's optional deep model types (LSTM for ml.predict(), DQN for
+# rl.action()) — see backend/ml_engine.py. Picks up a CUDA GPU automatically
+# when one is present (torch.cuda.is_available()); works correctly, just
+# slower, on CPU-only machines too. The classical model types above (Gradient
+# Boosting / MLP / Logistic / Tabular Q-Learning) never need this at all —
+# if you'd rather skip the download, remove this line and the classical
+# options keep working; only LSTM/DQN become unavailable, with a clear
+# in-app message instead of a crash.
+torch>=2.2.0

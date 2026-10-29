@@ -1,0 +1,49 @@
+# ─── Dependencies ─────────────────────────────────────────────────────────────
+node_modules/
+
+# ─── Build output ─────────────────────────────────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+
+# ─── Secrets and local state — never commit ───────────────────────────────────
+.env
+backend/settings.json
+backend/.vault_key
+backend/ml_models/
+backend/rl_policies/
+
+# ─── Model weights (multi-GB; models/README.md is tracked, the files are not) ─
+models/*.gguf
+models/*.bin
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ─── Android / Capacitor ──────────────────────────────────────────────────────
+apps/mobile/android/.gradle/
+apps/mobile/android/build/
+apps/mobile/android/app/build/
+apps/mobile/android/local.properties
+apps/mobile/android/capacitor-cordova-android-plugins/build/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# ─── Release archives ─────────────────────────────────────────────────────────
+releases/
+
+# ─── Editors / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.log
+
+# ─── Vite ─────────────────────────────────────────────────────────────────────
+.vite/
+.vite-temp/

@@ -1,0 +1,100 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a18" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DAFE Charts" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon-192.png" type="image/png" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon-512.png" />
+  <title>DAFE Charts Mobile</title>
+  <style>
+    #boot-splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: linear-gradient(160deg, #2a1f5e 0%, #17123a 55%, #0d0a24 100%); color: rgba(255,255,255,0.85); font-family: sans-serif; z-index: 99998; }
+    #boot-splash .logo { font-size: 30px; font-weight: 800; letter-spacing: 4px; color: #ffffff; margin-bottom: 12px; text-shadow: 0 0 24px rgba(180,140,255,0.9); }
+    #boot-splash .sub { font-size: 13px; letter-spacing: 2px; color: #b48cff; }
+    #boot-splash .dot { width: 14px; height: 14px; border-radius: 50%; background: #00ff88; margin-top: 26px; animation: bootpulse 1s infinite alternate; }
+    @keyframes bootpulse { from { opacity: 0.25; transform: scale(0.8); } to { opacity: 1; transform: scale(1.15); } }
+    #crash-overlay { position: fixed; inset: 0; background: #0a0a18; color: #ff4477; font-family: monospace; font-size: 11px; padding: 20px; white-space: pre-wrap; word-break: break-word; overflow-y: auto; z-index: 99999; display: none; }
+    #crash-overlay h3 { color: #ffb800; margin-bottom: 10px; }
+  </style>
+  <script>
+    // Service-worker purge — a stale SW from an early build cache-first-serves
+    // its old index.html forever (black screen across APK updates). Unregister
+    // every SW and delete every cache. This runs BEFORE the bundle and is
+    // fire-and-forget; the body-end script below handles the one-time reload
+    // after the DOM is actually available to inspect.
+    (function () {
+      try {
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function (rs) {
+            for (var i = 0; i < rs.length; i++) rs[i].unregister();
+          }).catch(function () {});
+        }
+        if (window.caches && caches.keys) {
+          caches.keys().then(function (keys) {
+            for (var i = 0; i < keys.length; i++) caches.delete(keys[i]);
+          }).catch(function () {});
+        }
+      } catch (e) { /* never block boot on cleanup */ }
+    })();
+
+    // Crash overlay — installed BEFORE any module loads so a boot failure
+    // paints its stack on screen instead of an undebuggable black void.
+    (function () {
+      var shown = false;
+      function paint(title, msg) {
+        if (shown) return;
+        shown = true;
+        try {
+          var splash = document.getElementById('boot-splash');
+          if (splash) splash.remove();
+          var ov = document.getElementById('crash-overlay');
+          ov.style.display = 'block';
+          ov.innerHTML = '<h3>' + title + '</h3><div id="crash-msg"></div>';
+          document.getElementById('crash-msg').textContent = String(msg).slice(0, 4000);
+        } catch (e) { /* last resort: nothing else to do */ }
+      }
+      window.addEventListener('error', function (ev) {
+        paint('Startup error', (ev.message || 'Unknown error') + '\n' + (ev.filename || '') + ':' + (ev.lineno || '') + '\n\n' + (ev.error && ev.error.stack ? ev.error.stack : ''));
+      }, true);
+      window.addEventListener('unhandledrejection', function (ev) {
+        var r = ev.reason;
+        paint('Unhandled promise rejection', (r && r.stack) ? r.stack : String(r));
+      });
+    })();
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="boot-splash"><div class="logo">DAFE CHARTS</div><div class="sub">MOBILE — STARTING ENGINE</div><div class="dot"></div></div>
+  <div id="crash-overlay"></div>
+  <script>
+    // If this document was served by a stale controlling SW, it just got
+    // unregistered above — reload exactly once into the clean document. Runs
+    // here (body is parsed) so getElementById is meaningful, unlike the head.
+    (function () {
+      try {
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller && !sessionStorage.getItem('dafe_sw_purge_v4')) {
+          sessionStorage.setItem('dafe_sw_purge_v4', '1');
+          setTimeout(function () { location.reload(); }, 250);
+        }
+      } catch (e) {}
+      // Watchdog: if JS never removes the splash, turn its label red so you
+      // can tell me "splash stuck" vs pure black.
+      setTimeout(function () {
+        var splash = document.getElementById('boot-splash');
+        if (splash && splash.parentNode) {
+          var sub = splash.querySelector('.sub');
+          if (sub) { sub.textContent = 'ENGINE DID NOT START — screenshot this'; sub.style.color = '#ff4477'; }
+        }
+      }, 6000);
+    })();
+  </script>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
