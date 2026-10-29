@@ -896,7 +896,14 @@ canvas.addEventListener('mousemove', (e) => {
     const dx = e.clientX - lastMX;
     const dy = e.clientY - lastMY;
     if (e.shiftKey) {
-      view.offsetY += dy;
+      // Shift-drag = free 2D pan: grab any part of the chart and drag it
+      // anywhere (time + price together, slightly amplified). Plain drag
+      // stays time-only so normal browsing can't lose the price axis.
+      view.scrollX += (dx / view.barSpacing) * 1.4;
+      view.offsetY += dy * 1.4;
+      const maxScrollPast = -Math.floor(getBarsThatFit() * 0.8);
+      view.scrollX = Math.max(maxScrollPast, Math.min(bars.length - 1, view.scrollX));
+      view.offsetY = Math.max(-canvas.clientHeight, Math.min(canvas.clientHeight, view.offsetY));
     } else {
       view.scrollX += dx / view.barSpacing;
       const maxScrollPast = -Math.floor(getBarsThatFit() * 0.8);
@@ -2289,6 +2296,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const appendChat = (role: string, text: string) => {
       (window as any).__osAppendChat?.(role, text);
     };
+    // Fresh-create intent ("create a NEW indicator…") must not be routed
+    // through the edit path — preservation instructions there made the
+    // model keep the previous script's machinery (EMA ribbon) inside an
+    // unrelated RSI request. Explicit create → phased generation.
+    const wantsFreshCreate = /\b(create|generate|build|make)\b[^.\n]{0,70}\b(new|indicator|script|model)\b/i.test(msg)
+      && !/\b(edit|modify|change|add|remove|keep|preserve|delete)\b/i.test(msg);
+    if (wantsFreshCreate && hasRealEditorScript()) {
+      appendChat('agent', 'Creating a new indicator from scratch (not editing the current script)…');
+      await agentGenerateIndicatorPhased(msg, undefined, (t) => appendChat('agent', t.slice(0, 300)));
+      return;
+    }
     try {
       const source = osTextarea?.value || '';
       const prefer3D = (window as any).__osGetPrefer3D?.() ?? true;
@@ -2383,7 +2401,7 @@ CRITICAL RULES:
               appendChat('agent', coverageProblems.length > 0
                 ? `⏳ Draft failed request-coverage (${coverageProblems.length} problem(s)) — auto-fixing…`
                 : '⏳ Draft failed validation — auto-fixing…');
-              const iter = await advisor.validateAndIterate(code, 2, snapshot, undefined, msg, coverageFn);
+              const iter = await advisor.validateAndIterate(code, 3, snapshot, undefined, msg, coverageFn);
               code = iter.finalCode;
               appendChat('agent', iter.valid
                 ? '✓ Auto-fix passed validation and request-coverage.'
@@ -4059,7 +4077,11 @@ function frameBody(now: number) {
   // of calling it again, which was doubling that cost on every single frame.
   const activeIndicators = hasActiveIndicators();
   const combined3d = activeIndicators ? getCombinedPlots() : null;
-  const hasPane3d = combined3d ? combined3d.plot3d.some(p => p.pane === '3d') : false;
+  // The 2D/3D mode toggle is authoritative: in 2D mode a pane="3d" script
+  // degrades to the lower 3D pane + 2D main plots instead of forcing the
+  // unified takeover (the "chose 2D but it stayed 3D" bug).
+  const hasPane3d = is3DMode && combined3d ? combined3d.plot3d.some(p => p.pane === '3d') : false;
+  if (!hasPane3d && isChart3DMode()) dispose3DScene();
 
   // barcolor() plots recolor candles directly (not drawn via
   // drawOakScriptPlots) — scan the combined main-pane plots for 'barcolor'
@@ -4089,7 +4111,7 @@ function frameBody(now: number) {
     const shape3DForMain = combined3d
       ? [...combined3d.main, ...combined3d.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane === '3d')
       : [];
-    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.clientWidth, canvas.clientHeight, shape3DForMain);
+    renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.clientWidth, canvas.clientHeight, shape3DForMain, bgViz);
     // Draw time axis on the 2D canvas (always needed)
     drawTimeAxis(ctx, transformed, view);
   } else if (is3DMode) {
@@ -4161,7 +4183,7 @@ function frameBody(now: number) {
         if (isViz3DActive()) disposeViz();
       } else {
         // Regular mode: handle separate pane 3D + overlay 3D
-        const sep3D = combined.plot3d.filter(p => p.pane === 'separate') as OakPlot3D[];
+        const sep3D = combined.plot3d.filter(p => p.pane === 'separate' || (!is3DMode && p.pane === '3d')) as OakPlot3D[];
         const shape3DforSep = [...combined.main, ...combined.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane !== '3d');
         show3D(sep3D, shape3DforSep, transformed.length);
         const main3D = combined.plot3d.filter(p => p.pane !== 'separate') as OakPlot3D[];

@@ -951,7 +951,7 @@ function enableOrbitMain(): void {
   c.onpointerup = () => { _orbitDragging = false; if (c) c.style.cursor = 'grab'; };
   c.onwheel = (e: WheelEvent) => {
     if (!_camera) return;
-    _orbitDist = Math.max(4, Math.min(50, _orbitDist + e.deltaY * 0.02));
+    _orbitDist = Math.max(2.5, Math.min(50, _orbitDist + e.deltaY * 0.02));
     applyOrbitCam();
     renderFrame();
     e.preventDefault();
@@ -1075,7 +1075,17 @@ function seriesX(i: number, count: number, view: ViewState, width: number, visib
   return ((px - halfW) / halfW) * 5;
 }
 
+/**
+ * Price-scale mapping for the unified scene: a series whose values live
+ * in the visible PRICE range (e.g. EMAs of close) must be positioned with
+ * the same scale as the bars, or it floats detached above/below them
+ * (the "ribbons hovering in space" bug). Oscillator series keep their
+ * own normalization. Set per-layer by renderMain3DScene.
+ */
+let _yPriceMap: { min: number; range: number } | null = null;
+
 function seriesY(val: number, sMin: number, sRange: number): number {
+  if (_yPriceMap) return ((val - _yPriceMap.min) / _yPriceMap.range) * 6 - 3;
   return ((val - sMin) / sRange) * 6 - 3;
 }
 
@@ -1410,7 +1420,8 @@ export function renderMain3DScene(
   view: ViewState,
   width: number,
   height: number,
-  shapes?: OakPlot[]
+  shapes?: OakPlot[],
+  bgMode?: string
 ): void {
   if (!_initialized || !_chart3DMode) {
     _chart3DMode = true;
@@ -1418,6 +1429,15 @@ export function renderMain3DScene(
     _rebuildNeeded = true;
   }
   if (!_scene || !_camera || !_renderer) return;
+  // Display background is obeyed in 3D too (Settings → Display): stars /
+  // particles show the atmosphere, plain / graph use the solid scene.
+  if (bgMode) {
+    const atmospheric = bgMode === 'stars' || bgMode === 'particles';
+    _scene.background = atmospheric ? null : new THREE.Color(0x0a0a18);
+    _renderer.setClearColor(0x0a0a18, atmospheric ? 0 : 1);
+    if (_starfield) _starfield.visible = _vis.showStars && atmospheric;
+    if (_gridHelper) _gridHelper.visible = _vis.showGrid;
+  }
 
   const canvas = getCanvas();
   if (canvas.width !== width || canvas.height !== height) {
@@ -1493,6 +1513,15 @@ export function renderMain3DScene(
       // of the time axis.
       const series = p.series.slice(start, end + 1);
       const col = typeof p.color === 'string' ? p.color : '#b48cff';
+      // Price-denominated? If most values sit inside the visible price
+      // range, map on the bars' price scale so the geometry hugs price.
+      {
+        const vis = visibleBars(bars, view, width);
+        const { min: pMin, range: pRg } = normRange(vis.length ? vis : bars);
+        const finite = series.filter(v => isFinite(v));
+        const inside = finite.filter(v => v >= pMin - pRg * 0.15 && v <= pMin + pRg * 1.15).length;
+        _yPriceMap = finite.length > 0 && inside / finite.length >= 0.7 ? { min: pMin, range: pRg } : null;
+      }
       const zKey = anyLevel ? (p.z_level ?? 0) : pi;
       const occurrence = zKeyOccurrence.get(zKey) ?? 0;
       zKeyOccurrence.set(zKey, occurrence + 1);

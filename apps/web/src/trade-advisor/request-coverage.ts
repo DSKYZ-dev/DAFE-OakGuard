@@ -90,6 +90,18 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
     }
   }
 
+  // 3b. Input bounds that lock the slider one way (observed live: a
+  // length input whose min == default can't go lower, max == default
+  // can't go higher — the Model Inputs panel faithfully reflects the
+  // script, so the script's bounds are the bug).
+  for (const m of src.matchAll(/\binput\(\s*(-?\d+(?:\.\d+)?)\s*,\s*"([^"]+)"\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/g)) {
+    const def = parseFloat(m[1]), title = m[2], min = parseFloat(m[3]), max = parseFloat(m[4]);
+    const lengthLike = /len|period|lookback|window/i.test(title);
+    if (min >= max) problems.push(`COVERAGE: input "${title}" has min ${min} >= max ${max} — its slider is locked. Give it a usable range around the default ${def}.`);
+    else if (lengthLike && min >= def) problems.push(`COVERAGE: input "${title}" min (${min}) >= default (${def}) — the slider cannot go lower. Set min well below the default (e.g. 2).`);
+    else if (lengthLike && max <= def) problems.push(`COVERAGE: input "${title}" max (${max}) <= default (${def}) — the slider cannot go higher. Set max well above the default.`);
+  }
+
   // 4. Dimension enforcement: Prefer-3D must actually render in 3D.
   const wants2DOnly = /\b(main chart only|2d only|no 3d|without 3d|remove( the)? 3d|flat chart)\b/i.test(req);
   if (opts.prefer3D && !wants2DOnly) {
