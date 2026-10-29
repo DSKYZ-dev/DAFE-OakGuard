@@ -82,7 +82,11 @@ async function runOne(id: number, prompt: string, asserts: (code: string) => Rec
   while (problems.length && rounds < 3) {
     rounds++;
     reply = await chat(`ORIGINAL REQUEST: "${prompt}"\n\nThe following OakScript code has issues. Fix ALL of them AND satisfy the original request. Output ONLY the complete corrected code inside \`\`\`oakscript fences.\n\nCODE:\n\`\`\`oakscript\n${code}\n\`\`\`\n\nISSUES:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}`);
-    const next = extractCode(reply);
+    let next = extractCode(reply);
+    if (!next) {
+      reply = await chat(`Output ONLY the complete corrected OakScript code inside \`\`\`oakscript fences. No prose.\n\nISSUES TO FIX:\n${problems.map((p, i) => `${i + 1}. ${p}`).join('\n')}\n\nCODE:\n\`\`\`oakscript\n${code}\n\`\`\``);
+      next = extractCode(reply);
+    }
     if (!next) break;
     code = next;
     problems = problemsOf(code);

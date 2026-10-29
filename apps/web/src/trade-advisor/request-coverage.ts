@@ -56,8 +56,17 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
   const prev = opts.previousSource ? stripComments(opts.previousSource) : '';
 
   // 1. Unrequested / explicitly-rejected concept families.
+  // Repair intent ("fix/upgrade this script") inherits the script's own
+  // families — flagging the RSI inside a pasted RSI script as
+  // "unrequested" is a false positive that poisons the fix loop.
+  const repairIntent = /\b(fix|repair|upgrade|correct|debug)\b[^.\n]{0,40}\bscript\b/i.test(req);
   for (const fam of FAMILIES) {
     if (!fam.codeRe.test(src)) continue;
+    if (repairIntent && !/\b(remove|drop|delete)\b[^.\n]{0,30}/i.test(req)) {
+      // Still enforce explicit negations below, but not introduction.
+      const negOnly = new RegExp(`\\b(?:do not|don't|dont|never|without|no)\\s+(?:use\\s+|using\\s+)?(?:any\\s+)?(?:${fam.requestRe.source})`, 'i').test(req);
+      if (!negOnly) continue;
+    }
     // "Band" requests (Bollinger-style) intrinsically need an SMA basis.
     const requested = fam.requestRe.test(req)
       || ((fam.id === 'sma' || fam.id === 'ema') && /\bbollinger|\bbands?\b/i.test(req));
