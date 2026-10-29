@@ -3,14 +3,45 @@
 Everything a judge (or a teammate) needs: the pitch, what is actually novel, a
 demo script that cannot fail, and what comes next.
 
-> Fill in the placeholders at the bottom (team, track, video, submission URL)
-> before submitting.
+> **Track: Indie Developer · Theme: Push the Frontier (software — verifiable agents)**
+> **Event: Meta Global AI Developer Hackathon (Oct 27 – Nov 4, 2026) · Submission due Nov 4, 9 PM ET**
+> Team name / representative / repo URL / video URL: _fill on the submission page._
+
+## What we built during the hackathon (original contributions)
+
+DAFE Charts (the terminal below) pre-exists. Everything in this list was
+built during the event window (Oct 27 – Nov 4, 2026):
+
+1. **DAFE OakGuard** (`apps/web/src/oakguard/`, `tools/verify/oakguard-test.ts`) —
+   a constrained self-improving verification engine: a fixed LLM proposes
+   *declarative* validation rules; an independent evaluator (frozen corpus,
+   visible + held-out mutants) promotes only what passes every gate;
+   rejections are preserved in an Emeritus archive with counterexamples.
+   Promoted rules enforce live in the real OakScript validator.
+2. **OakGuard Observatory ("The Crucible")** — a Three.js scene where the
+   improvement loop is visible: Playbook Core (one ring per promoted rule),
+   mutant swarm, pipeline stages, Emeritus shards. Every visual encodes a
+   real evaluator number.
+3. **Request-Coverage gate** (`trade-advisor/request-coverage.ts`) — the
+   semantic check the syntax validator cannot be: unrequested indicator
+   families, explicit user negations, tautological signals, and
+   Prefer-3D enforcement now iterate in the coder auto-fix loop.
+4. **Universal market-data adapter** (`backend/main.py` DATA_PROVIDERS,
+   Settings → Universal Data Providers) — any provider (Polygon, Alpaca,
+   Twelve Data, custom REST) converted to one internal bar feed.
+5. **Visual system** — gradient-terrain 3D builders, lower-pane manifold
+   surfaces, pane-scaled markers, main-chart signals for all 3D studies,
+   a Visual Editor module, unified interface-glow theming + brightness.
+6. **Meta Model API provider preset** — Trade Advisor and OakScript Coder
+   can run Muse Spark / Muse Wonder natively alongside local models.
 
 ## One-liner
 
 **DAFE Charts is an offline-first trading terminal with its own indicator
 language and an AI advisor that runs on your GPU — write an indicator in plain
-English, and it comes back validated, backtested, and rendered as a 3D scene.**
+English, and it comes back validated, backtested, and rendered as a 3D scene.
+OakGuard (new) makes the system improve its own verification playbook —
+visibly, and only on evidence.**
 
 ## The 60-second pitch
 
@@ -69,38 +100,31 @@ so no credential ever reaches the browser.
   asserts 2,171,421 checks with zero failures.
 - Ships as a web app and as a Capacitor Android build from the same core.
 
-## Demo script (5 minutes)
+## Demo video script (3 minutes — event requirement)
 
-1. **Launch** — `start.bat -no-llm` if the demo machine has no GPU headroom
-   (say why: the app is fully usable without the local model). The browser opens
-   on the chart.
-2. **Chart surface** — load `SPY`, point out the bar-type menu (12 types), the
-   volume profile iso-bars, the regime ribbon, and the live tick engine animating
-   the forming bar. Mention the hybrid data path and that synthetic data is
-   always labelled.
-3. **Ask the advisor** — open the diamond panel and ask something chart-specific
-   ("where is the risk if I go long here?"). No setup step: the advisor already
-   has the visible bars, indicators and volume profile in context.
-4. **Write an indicator by asking** — in the OakScript editor, request:
-   *"EMA 9 crossing EMA 21, Fibonacci retracement from the last swing, and mark
-   the cross."* Watch the validation pass, hit **Test Run** on the loaded bars,
-   then **Accept**.
-5. **Go 3D** — flip the 3D toggle with a `pane="3d"` indicator loaded: the chart
-   becomes a Three.js scene with the indicator geometry beside the bars; orbit
-   with the mouse. Point out the 2D twin when 3D is off.
-6. **Backtest** — open the Backtest panel, run it, and show the in/out-of-sample
-   split and optimizer grid (log-spaced sweeps, bracket fills validated against
-   gaps).
-7. **No GPU? Any model** — Settings → Provider API Keys: paste a hosted key, hit
-   Test (it runs a real completion), assign the advisor and coder to it. Keys are
-   encrypted server-side; the page never sees them.
-8. **Close on evidence** — `docs/reports/` and `tools/verify/`: the harness and
-   the audits, including the bugs they found and the fixes that shipped.
+1. **The failure (0:00–0:35)** — `?oakguard=1` opens the Crucible. Replay the
+   seed failure: the baseline validator calls `sma(close, 0)` *valid*; the
+   execution proof shows 0% finite values. The escaped mutant pulses the
+   Playbook Core red.
+2. **The improvement loop (0:35–1:50)** — Propose candidates → Probation runs
+   the mutant swarm → the length rule passes every gate and the Core **gains
+   a labelled ring** (`PLAYBOOK v2`); the naive dotted rule false-positives
+   on shipped OakRing code and is archived in **Emeritus** with its
+   counterexample.
+3. **It matters after the demo (1:50–2:30)** — Step 6 scans the live library
+   with the promoted playbook; then ask the editor agent for *"session
+   highs/lows with divergence signals"* — the request-coverage gate keeps it
+   honest, the indicator lands on the chart (CCI Manifold dashboard +
+   main-chart signals), and `npm run verify:oakguard` shows the headless
+   receipt.
+4. **Close (2:30–3:00)** — "A fixed model that improves its own verification
+   playbook — and proves every promotion." Settings → Universal Data
+   Providers + Meta Model API preset as the final frame.
 
 ## 60-second version
 
-Launch → ask the advisor one chart question → ask for one indicator → Test Run
-→ Accept → toggle 3D → open Backtest → show Settings → Provider API Keys.
+Crucible seed failure → propose → probation swarm → ring ignites, one rule
+to Emeritus → live scan → one editor-agent indicator → headless receipt.
 
 ## How it was built
 
@@ -125,9 +149,10 @@ numbers and the uncomfortable ones.
 
 ## Submission checklist
 
-- [ ] Team name and track filled in above / on the submission page
-- [ ] Demo video recorded from the script above (≤ 5 min)
-- [ ] Repository URL and `README` screenshots refreshed on the demo machine
+- [ ] Track (Indie Developer) + theme (Push the Frontier) on the submission page
+- [ ] Demo video recorded from the 3-minute script above
+- [ ] Repository PUBLIC on GitHub; in-event contributions listed (see top)
+- [ ] Meta Model API key tested (Settings → Provider API Keys → Meta), credits claimed
 - [ ] Third-party licences checked (GGUF model, Three.js, Capacitor, fonts)
 - [ ] API keys tested on the demo machine, then rotated afterwards
-- [ ] `npm run lint && npm test && npm run build` green on a clean clone
+- [ ] `npm run lint && npm test && npm run verify:oakguard && npm run build` green

@@ -8,7 +8,9 @@ import { evaluateCandidate, proveSeedFailure, corpusManifest, SEED_SCRIPT } from
 import {
   loadPlaybook, resetPlaybook, promoteRule, archiveRejection,
   validateWithPlaybook, activeRules, findEmeritusBySignature, getRuleById,
+  invalidateDependents, setAssistantStatus,
 } from './store';
+import { ASSISTANT_RULES, gradeAssistantRule, buildScenarios } from './assistant';
 import { validate } from '../oakscript/validator';
 import { parse } from '../oakscript/parser';
 import { executeScript } from '../oakscript/interpreter';
@@ -254,6 +256,55 @@ export function openOakGuard(): void {
     }).catch(() => log('SCAN: indicator library unavailable.'));
   };
 
+  const assistantBox = el('div', { display: 'flex', flexDirection: 'column', gap: '6px', margin: '10px 0' });
+  const renderAssistant = () => {
+    assistantBox.replaceChildren();
+    assistantBox.appendChild(el('div', { fontSize: '11px', fontWeight: '800', letterSpacing: '0.1em', color: '#ffd9a0' }, 'TRADE ASSISTANT PACK (selective — graded on compliance + abstention)'));
+    for (const rule of ASSISTANT_RULES) {
+      const status = state.assistantStatus?.[rule.id] || 'active';
+      const card = el('div', {
+        border: `1px solid ${status === 'active' ? 'rgba(255,217,160,0.4)' : 'rgba(255,68,119,0.55)'}`,
+        borderRadius: '8px', padding: '8px 10px', background: status === 'active' ? 'rgba(60,45,15,0.3)' : 'rgba(70,20,35,0.35)',
+      });
+      card.appendChild(el('div', { fontSize: '11px', fontWeight: '700', color: status === 'active' ? '#ffd9a0' : '#ff9db1' },
+        `${rule.name} · ${status === 'active' ? 'CERTIFIED' : 'NEEDS RE-CERT'}`));
+      card.appendChild(el('div', { fontSize: '10px', color: '#c8b490', marginTop: '2px' }, rule.description));
+      card.appendChild(el('div', { fontSize: '10px', color: '#8a97ad', marginTop: '2px' }, `dependsOn: ${rule.dependsOn.join(', ')}`));
+      assistantBox.appendChild(card);
+    }
+  };
+
+  const b7 = button('7 · SIMULATE TOOL UPGRADE (CCI Manifold v2)');
+  b7.onclick = () => {
+    const res = invalidateDependents(state, 'CCI Manifold Sheet', ASSISTANT_RULES);
+    state = res.state;
+    if (res.invalidated.length) {
+      log(`DEPENDENCY INVALIDATION: "CCI Manifold Sheet" changed → ${res.invalidated.length} Assistant rule(s) lost certification and returned to probation: ${res.invalidated.join(', ')}. Their advice is suspended until re-graded.`);
+      observatory?.pulseEscape();
+    } else {
+      log('DEPENDENCY INVALIDATION: no certified dependents affected (already in probation, or run Step 8 first after a reset).');
+    }
+    renderAssistant();
+    updateHud();
+  };
+
+  const b8 = button('8 · RE-GRADE ASSISTANT RULES');
+  b8.onclick = () => {
+    const scenarios = buildScenarios();
+    log(`ASSISTANT GRADING: scenarios classified point-in-time — ${scenarios.map(s => `${s.label}→${s.classified}(ATR×${s.atrRatio.toFixed(2)})`).join(' · ')}`);
+    for (const rule of ASSISTANT_RULES) {
+      const grade = gradeAssistantRule(rule);
+      if (grade.verdict === 'promoted') {
+        state = setAssistantStatus(state, rule.id, 'active');
+        log(`ASSISTANT [${rule.id}] ${grade.reasons[0]} → CERTIFIED.`);
+      } else {
+        state = setAssistantStatus(state, rule.id, 'needs_recert');
+        log(`ASSISTANT [${rule.id}] ${grade.reasons[0]} → stays in probation.`);
+      }
+    }
+    renderAssistant();
+  };
+
   const bReset = button('RESET PLAYBOOK');
   bReset.onclick = () => {
     state = resetPlaybook();
@@ -270,8 +321,11 @@ export function openOakGuard(): void {
     stepLabel('STEP 3 — INDEPENDENT EVALUATOR SCORES THEM'), b3,
     stepLabel('STEP 4 — ONLY EVIDENCE PROMOTES'), b4,
     stepLabel('STEP 5 — SAME TASK, NEW PLAYBOOK'), b5,
-    stepLabel('STEP 6 — THE PLAYBOOK IS LIVE AFTER THE DEMO'), b6, bReset,
+    stepLabel('STEP 6 — THE PLAYBOOK IS LIVE AFTER THE DEMO'), b6,
+    stepLabel('TWO ROLES, ONE REFEREE — ASSISTANT PACK'), b7, b8, bReset,
   );
+  side.appendChild(assistantBox);
+  renderAssistant();
   side.append(
     el('div', { fontSize: '11px', color: '#8fb8e8', lineHeight: '1.5' },
       'Purpose: a fixed LLM proposes declarative validation rules; an independent evaluator promotes only what passes every gate. Promoted rules then enforce LIVE in the editor validator + agent auto-fix loop for every future script (Step 6 proves it). Rejections are preserved in Emeritus with counterexamples.'),

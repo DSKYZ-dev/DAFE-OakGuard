@@ -13,6 +13,11 @@ export type RuleFamily = 'positive-int-length' | 'unknown-dotted-call';
 export interface RuleSpec {
   id: string;
   name: string;
+  /** Which agent role this rule serves. One engine, two policy packs. */
+  role?: 'editor' | 'assistant';
+  /** Tools/rules this artifact depends on — when a dependency changes
+   * state, dependents are invalidated back to probation (needs recert). */
+  dependsOn?: string[];
   family: RuleFamily;
   /** ValidationIssue.code emitted when this rule fires. */
   issueCode: string;
@@ -95,4 +100,19 @@ export interface PlaybookState {
   activeRuleIds: string[];
   promotions: PromotionRecord[];
   emeritus: EmeritusRecord[];
+  /** Assistant-rule status by id: certified rules whose dependencies
+   * changed drop to 'needs_recert' until re-graded. */
+  assistantStatus?: Record<string, 'active' | 'needs_recert'>;
+}
+
+/** Trade Assistant rule — graded on process compliance + correct
+ * abstention over point-in-time replayed scenarios, never on P&L alone. */
+export interface AssistantRule {
+  id: string;
+  name: string;
+  description: string;
+  dependsOn: string[];
+  /** Deterministic policy over a regime read. */
+  decide: (regime: string, atrRatio: number) => 'trade' | 'reduce' | 'abstain';
+  rationale: string;
 }

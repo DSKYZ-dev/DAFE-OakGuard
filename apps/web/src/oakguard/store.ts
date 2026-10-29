@@ -68,3 +68,39 @@ export function findEmeritusBySignature(state: PlaybookState, rule: RuleSpec): E
   const sig = failureSignature(rule);
   return state.emeritus.find(e => e.failureSignature === sig);
 }
+
+/**
+ * Cross-role dependency invalidation. The Assistant's rules depend on
+ * Editor-certified tools (indicators by name). When a tool changes state
+ * (upgraded, superseded, re-certified), every dependent Assistant rule
+ * drops to needs_recert until it re-earns its seat via the grader.
+ * Returns the invalidated rule ids.
+ */
+export function invalidateDependents(state: PlaybookState, changedTool: string, assistantRules: Array<{ id: string; dependsOn: string[] }>): { state: PlaybookState; invalidated: string[] } {
+  const status: Record<string, 'active' | 'needs_recert'> = { ...(state.assistantStatus || {}) };
+  const invalidated: string[] = [];
+  // Breadth-first: a rule may also depend on another assistant rule id.
+  const queue = [changedTool];
+  const seen = new Set<string>();
+  while (queue.length) {
+    const cur = queue.shift()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const rule of assistantRules) {
+      if (rule.dependsOn.includes(cur) && status[rule.id] !== 'needs_recert') {
+        status[rule.id] = 'needs_recert';
+        invalidated.push(rule.id);
+        queue.push(rule.id);
+      }
+    }
+  }
+  const next: PlaybookState = { ...state, assistantStatus: status };
+  savePlaybook(next);
+  return { state: next, invalidated };
+}
+
+export function setAssistantStatus(state: PlaybookState, ruleId: string, statusValue: 'active' | 'needs_recert'): PlaybookState {
+  const next: PlaybookState = { ...state, assistantStatus: { ...(state.assistantStatus || {}), [ruleId]: statusValue } };
+  savePlaybook(next);
+  return next;
+}

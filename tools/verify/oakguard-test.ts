@@ -8,7 +8,8 @@
  */
 import { CANDIDATE_CATALOGUE } from '../../apps/web/src/oakguard/rules';
 import { evaluateCandidate, proveSeedFailure, corpusManifest, SEED_SCRIPT } from '../../apps/web/src/oakguard/evaluator';
-import { validateWithPlaybook } from '../../apps/web/src/oakguard/store';
+import { validateWithPlaybook, invalidateDependents } from '../../apps/web/src/oakguard/store';
+import { ASSISTANT_RULES, gradeAssistantRule, buildScenarios } from '../../apps/web/src/oakguard/assistant';
 import type { PlaybookState } from '../../apps/web/src/oakguard/types';
 
 let failures = 0;
@@ -54,6 +55,20 @@ check('refined dotted candidate zero false positives', refinedReport.falsePositi
 const v2: PlaybookState = { version: 2, activeRuleIds: ['cand-length-v1'], promotions: [], emeritus: [] };
 const seedIssues = validateWithPlaybook(v2, SEED_SCRIPT);
 check('playbook v2 catches seed script', seedIssues.some(i => i.code === 'INVALID_LENGTH_ARG'), seedIssues.map(i => i.code));
+
+// 4. Two-role pack: Assistant rules grade on compliance + abstention,
+//    and dependency invalidation drops dependents of a changed tool.
+console.log('\n[assistant pack] Trade Assistant rules (process compliance, point-in-time scenarios)');
+const scenarios = buildScenarios();
+console.log(`  scenarios: ${scenarios.map(s => `${s.label}→${s.classified}(ATR×${s.atrRatio.toFixed(2)})`).join(' · ')}`);
+for (const rule of ASSISTANT_RULES) {
+  const grade = gradeAssistantRule(rule);
+  console.log(`  [${rule.id}] compliant ${grade.compliant}/${grade.scenarios} · correct abstentions ${grade.abstentionsCorrect} → ${grade.verdict.toUpperCase()}`);
+  check(`assistant rule ${rule.id} certified`, grade.verdict === 'promoted');
+}
+const inv = invalidateDependents(v2, 'CCI Manifold Sheet', ASSISTANT_RULES);
+check('tool upgrade invalidates CCI-dependent assistant rules', inv.invalidated.includes('ast-volatile-abstain') && inv.invalidated.includes('ast-range-only-extremes'), inv.invalidated);
+check('non-dependent rule untouched by CCI invalidation', !inv.invalidated.includes('ast-atr-reduce'), inv.invalidated);
 
 console.log(failures === 0 ? '\nALL OAKGUARD CHECKS PASS' : `\n${failures} OAKGUARD CHECK(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
