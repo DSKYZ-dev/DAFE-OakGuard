@@ -879,7 +879,24 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(alertsBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   alertsBtn.onclick = () => toggleAlerts();
 
+  // Clear — wipe the editor to a truly empty state (with confirm). Sits
+  // next to Hide, per user request. Also clears the saved-source cache so
+  // a reload doesn't resurrect what was just cleared.
+  const clearBtn = document.createElement('button');
+  clearBtn.textContent = '🧹 Clear';
+  clearBtn.title = 'Clear all code from the editor (fresh start)';
+  Object.assign(clearBtn.style, btnStyle('#ff7d9c', 'rgba(255,68,119,0.08)'));
+  clearBtn.onclick = () => {
+    if (!textarea) return;
+    if (textarea.value.trim() && !confirm('Clear all code from the editor? Unsaved work will be lost.')) return;
+    textarea.value = '';
+    localStorage.removeItem('oakscript_source');
+    showResults([], []);
+    textarea.focus();
+  };
+
   controls.appendChild(viewBtn);
+  controls.appendChild(clearBtn);
   controls.appendChild(saveBtn);
   controls.appendChild(manageBtn);
   controls.appendChild(importBtn);

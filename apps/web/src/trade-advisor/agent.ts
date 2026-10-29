@@ -491,6 +491,23 @@ Important: Fix ALL errors. The corrected code must parse and execute without any
     chartSnapshot?: ChartSnapshot,
     onPhase?: (phase: number, result: string) => void,
   ): Promise<{ finalCode: string; phases: string[] }> {
+    // Robust code extraction: closed fence, truncated fence salvage, or a
+    // bare reply that is clearly code. The old closed-fence-only match
+    // turned good generations into "Agent did not produce code" whenever
+    // the model skipped or truncated the fence.
+    const extractOakCode = (text: string): string => {
+      const closed = text.match(/```(?:oakscript|js|javascript)?\s*\n([\s\S]*?)```/);
+      if (closed && closed[1].trim().length > 10) return closed[1].trim();
+      const open = text.match(/```(?:oakscript|js|javascript)?\s*\n([\s\S]*)$/);
+      if (open && open[1].trim().length > 40) return open[1].trim();
+      if (/\binput\s*\(|\bplot\w*\s*\(/.test(text)) {
+        const lines = text.split('\n');
+        const startIdx = lines.findIndex(l => /\binput\s*\(|=|plot\w*\s*\(|var |if |for /.test(l));
+        if (startIdx >= 0) return lines.slice(startIdx).join('\n').trim();
+        return text.trim();
+      }
+      return '';
+    };
     const phases: string[] = [];
     let accumulatedCode = '';
     let accumulatedLogic = '';
@@ -550,12 +567,20 @@ Write the code following these rules:
 - Add brief // comments for each logical section.
 - Output ONLY the code inside \`\`\`oakscript fences. No explanation needed.`;
 
-    const r2 = await this.sendMessage(phase2Prompt, chartSnapshot);
+    // Code generation is CODER work — without the override this ran under
+    // the advisor persona, which answers in prose and often returns no
+    // usable code at all.
+    const r2 = await this.sendMessage(phase2Prompt, chartSnapshot, undefined, 'oakscript_coder');
     phases.push(r2.reply);
 
-    // Extract code block
-    const codeMatch = r2.reply.match(/```(?:oakscript)?\s*\n([\s\S]*?)```/);
-    accumulatedCode = codeMatch ? codeMatch[1].trim() : '';
+    accumulatedCode = extractOakCode(r2.reply);
+    if (!accumulatedCode) {
+      const retry = await this.sendMessage(
+        `Output ONLY the complete OakScript code for this request inside \`\`\`oakscript fences. No prose, no explanation.\n\nREQUEST: "${description}"\n\nDESIGN:\n${accumulatedLogic.slice(0, 1500)}`,
+        chartSnapshot, undefined, 'oakscript_coder');
+      phases.push(retry.reply);
+      accumulatedCode = extractOakCode(retry.reply);
+    }
     onPhase?.(2, r2.reply);
 
     // Store code in memory
@@ -591,14 +616,14 @@ Self-check:
 
 Output the FINAL corrected code inside \`\`\`oakscript fences. Before the code, list any fixes you applied.`;
 
-      const r3 = await this.sendMessage(phase3Prompt, chartSnapshot);
+      const r3 = await this.sendMessage(phase3Prompt, chartSnapshot, undefined, 'oakscript_coder');
       phases.push(r3.reply);
       onPhase?.(3, r3.reply);
 
       // Use corrected code if available, otherwise keep phase 2 code
-      const fixedMatch = r3.reply.match(/```(?:oakscript)?\s*\n([\s\S]*?)```/);
-      if (fixedMatch && fixedMatch[1].trim().length > 10) {
-        accumulatedCode = fixedMatch[1].trim();
+      const fixed = extractOakCode(r3.reply);
+      if (fixed.length > 10) {
+        accumulatedCode = fixed;
       }
 
       // Store final code in memory
