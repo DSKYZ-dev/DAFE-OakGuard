@@ -102,17 +102,19 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
     else if (lengthLike && max <= def) problems.push(`COVERAGE: input "${title}" max (${max}) <= default (${def}) — the slider cannot go higher. Set max well above the default.`);
   }
 
-  // 4. Dimension enforcement: Prefer-3D must actually render in 3D.
+  // 4. Dimension enforcement: Prefer-3D must actually render in 3D — but
+  // in the RIGHT scene. Price-denominated series (EMAs, levels) belong in
+  // the unified pane="3d" scene with the bars; oscillator series (RSI,
+  // CCI, MACD…) belong in the 3D LOWER pane ("separate") — forcing them
+  // into the price scene renders a spiky forest over the candles.
   const wants2DOnly = /\b(main chart only|2d only|no 3d|without 3d|remove( the)? 3d|flat chart)\b/i.test(req);
   if (opts.prefer3D && !wants2DOnly) {
-    const has3dScene = /plot3d\s*\([^)]*"3d"/.test(src);
-    const has3dShapes = /plotshape_3d\s*\([^)]*"3d"/.test(src);
-    const has2dShapes = /(?<![\w.])plotshape\s*\(/.test(src);
-    if (!has3dScene) {
-      problems.push('COVERAGE: Prefer 3D is on but the script has no plot3d(..., "3d") — it will render as a flat 2D indicator. Add a plot3d series with pane "3d" that carries the requested logic.');
-    }
-    if (has2dShapes && !has3dShapes && has3dScene) {
-      problems.push('COVERAGE: the script uses 2D plotshape() for signals in a pane="3d" indicator — 2D shapes do not render in the 3D scene. Pair every signal with plotshape_3d(..., "3d") at the same bar/price.');
+    const has3dAny = /plot3d\s*\(/.test(src);
+    const oscillatorStudy = /\b(rsi|cci|macd|stoch|mfi|adx)\s*\(/.test(src);
+    if (!has3dAny) {
+      problems.push('COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane "3d" for price-denominated series (EMAs, levels), pane "separate" for oscillator series (RSI/CCI/MACD).');
+    } else if (oscillatorStudy && /plot3d\s*\([^)]*"3d"/.test(src)) {
+      problems.push('COVERAGE: oscillator series rendered with pane "3d" — inside the price scene it becomes a spiky forest over the candles. Use pane "separate" for oscillator plot3d layers; keep main-chart plotshape() signals.');
     }
   }
   if (wants2DOnly && /plot3d\s*\(|plotshape_3d\s*\(/.test(src)) {

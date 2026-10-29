@@ -942,8 +942,21 @@ function enableOrbitMain(): void {
   };
   c.onpointermove = (e: PointerEvent) => {
     if (!_orbitDragging || !_camera) return;
-    _orbitTheta -= (e.clientX - _orbitLX) * 0.008;
-    _orbitPhi = Math.max(0.15, Math.min(1.5, _orbitPhi - (e.clientY - _orbitLY) * 0.008));
+    const dx = e.clientX - _orbitLX;
+    const dy = e.clientY - _orbitLY;
+    if (e.shiftKey) {
+      // Shift-drag = pan the camera target (screen-plane): drag zoomed-out
+      // content back into view instead of rotating around it.
+      const right = new THREE.Vector3().setFromMatrixColumn(_camera.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(_camera.matrix, 1);
+      const scale = _orbitDist * 0.0016;
+      _orbitTarget.addScaledVector(right, -dx * scale);
+      _orbitTarget.addScaledVector(up, dy * scale);
+      _orbitTarget.y = Math.max(-6, Math.min(6, _orbitTarget.y));
+    } else {
+      _orbitTheta -= dx * 0.008;
+      _orbitPhi = Math.max(0.15, Math.min(1.5, _orbitPhi - dy * 0.008));
+    }
     _orbitLX = e.clientX; _orbitLY = e.clientY;
     applyOrbitCam();
     renderFrame();
