@@ -29,8 +29,11 @@ interface Family {
 }
 
 const FAMILIES: Family[] = [
-  { id: 'ema', label: 'EMA', requestRe: /\bema\b|exponential moving/i, codeRe: /\bema\s*\(/ },
-  { id: 'sma', label: 'SMA / moving average', requestRe: /\bsma\b|moving average|\bma cross/i, codeRe: /\b(sma|wma|hma|rma|vwma)\s*\(/ },
+  // Moving-average families only count when applied to PRICE (close).
+  // sma()/ema() used to smooth a requested oscillator (sma(k,3) on %K,
+  // ema(obv,21)) is a utility, not an MA-template substitution.
+  { id: 'ema', label: 'EMA', requestRe: /\bema\b|exponential moving/i, codeRe: /\bema\s*\(\s*close\b/ },
+  { id: 'sma', label: 'SMA / moving average', requestRe: /\bsma\b|moving average|\bma cross/i, codeRe: /\b(?:sma|wma|hma|rma|vwma)\s*\(\s*close\b/ },
   { id: 'macd', label: 'MACD', requestRe: /\bmacd\b/i, codeRe: /\bmacd\s*\(/ },
   { id: 'rsi', label: 'RSI', requestRe: /\brsi\b|relative strength/i, codeRe: /\brsi\s*\(/ },
   { id: 'atr', label: 'ATR', requestRe: /\batr\b|average true range/i, codeRe: /\batr\s*\(/ },
@@ -55,9 +58,14 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
   // 1. Unrequested / explicitly-rejected concept families.
   for (const fam of FAMILIES) {
     if (!fam.codeRe.test(src)) continue;
-    const requested = fam.requestRe.test(req);
-    const negated = new RegExp(`\\b(not|no|never|without|don'?t|remove|drop)\\b[^.\\n]{0,40}${fam.requestRe.source}`, 'i').test(req)
-      || new RegExp(`${fam.requestRe.source}[^\\w]{0,12}\\b(not|no|never)\\b`, 'i').test(req);
+    // "Band" requests (Bollinger-style) intrinsically need an SMA basis.
+    const requested = fam.requestRe.test(req)
+      || ((fam.id === 'sma' || fam.id === 'ema') && /\bbollinger|\bbands?\b/i.test(req));
+    // Negation must be syntactically tied to the family ("do not use EMA",
+    // "no EMAs", "without moving averages") — a stray "no" elsewhere in
+    // the sentence ("No trading signals", "RSI Length") is not a rejection.
+    const negated = new RegExp(`\\b(?:do not|don't|dont|never|without|no)\\s+(?:use\\s+|using\\s+)?(?:any\\s+)?(?:${fam.requestRe.source})`, 'i').test(req)
+      || new RegExp(`\\bremove\\s+(?:the\\s+|all\\s+)?(?:${fam.requestRe.source})`, 'i').test(req);
     const preExisting = prev ? fam.codeRe.test(prev) : false;
     if (negated) {
       problems.push(`COVERAGE: the user explicitly rejected ${fam.label} ("${req.slice(0, 90)}") but the script uses it. Remove every ${fam.label} calculation and plot.`);
@@ -100,6 +108,38 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
     if (min >= max) problems.push(`COVERAGE: input "${title}" has min ${min} >= max ${max} — its slider is locked. Give it a usable range around the default ${def}.`);
     else if (lengthLike && min >= def) problems.push(`COVERAGE: input "${title}" min (${min}) >= default (${def}) — the slider cannot go lower. Set min well below the default (e.g. 2).`);
     else if (lengthLike && max <= def) problems.push(`COVERAGE: input "${title}" max (${max}) <= default (${def}) — the slider cannot go higher. Set max well above the default.`);
+  }
+
+  // 3d. Ungated level-triggered signals: a plotshape whose script has no
+  // crossover/crossunder anywhere and no compound (and-gated) condition
+  // fires on EVERY bar the level holds — the "signals painted everywhere"
+  // failure. State machines and compound conditions are exempt.
+  if (/\bplotshape\s*\(/.test(src) && !/cross(?:over|under)\s*\(/.test(src)) {
+    // Gated = a compound condition anywhere (if-line or the assignment
+    // that defines the signal), or a var state machine doing the gating.
+    const gated = src.split('\n').some(l => /\band\b/.test(l) && /=|if\b/.test(l))
+      || (/\bvar\s+\w+/.test(src) && /:=/.test(src));
+    if (!gated) {
+      problems.push('COVERAGE: signals are level-triggered (a bare comparison like close > x with no crossover and no compound/state gate) — they fire on every bar the level holds and paint the chart. Gate signals with crossover/crossunder, a state machine (var inPos), or a compound condition.');
+    }
+  }
+
+  // 3e. Same series plotted under multiple 3D styles — wasted layers that
+  // answer the same question (the visual-focus rule, made checkable).
+  {
+    const sources = [...src.matchAll(/plot3d\s*\(\s*([^,]+),/g)].map(m => m[1].trim());
+    const dup = sources.find((s, i) => sources.indexOf(s) !== i);
+    if (dup) {
+      problems.push(`COVERAGE: plot3d source "${dup}" is plotted under multiple styles — each 3D layer must carry a genuinely different value (raw vs smoothed, margin, count), not the same number restyled.`);
+    }
+  }
+
+  // 3c. Table dashboards duplicate the app's own metrics Dashboard
+  // (observed live: script table top-right + app Dashboard bottom-right
+  // showing the same numbers). Only an explicit on-chart TABLE request
+  // justifies table.new.
+  if (/table\.new\s*\(/.test(src) && !/\btable\b|on-chart table|table dashboard/i.test(req)) {
+    problems.push('COVERAGE: the script builds a table.new dashboard, but the app already renders a metrics Dashboard for every script — a table duplicates it in the top-right corner. Remove the table unless the user explicitly asked for an on-chart table; the requested dashboard values are already shown by the app.');
   }
 
   // 4. Dimension enforcement: Prefer-3D must actually render in 3D — but

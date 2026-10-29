@@ -47,7 +47,7 @@ import { LiveDataStream } from './data-stream';
 import { HybridDataEngine } from './data-stream/hybrid-engine';
 import { getMarketStatus, marketStatusLabel } from './market-hours';
 import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene } from './three-indicators';
-import { show3D, hide3D } from './three-lower-pane';
+import { show3D, hide3D, setLowerPaneBackground } from './three-lower-pane';
 import { draw3DScene } from './iso3d';
 import type { OakPlot3D } from './oakscript/runtime';
 import {
@@ -802,6 +802,7 @@ function resize() {
   canvas.height = Math.round(h * dpr);
   secCanvas.width = Math.round(w * dpr);
   secCanvas.height = Math.round(lowerHeight * dpr);
+  secCanvas.style.height = `${lowerHeight}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   secCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   const pane3D = document.getElementById('three-lower-scene');
@@ -3960,8 +3961,13 @@ CRITICAL RULES:
       if(paneDominance!=='both') return;
       sY = e.clientY; splitter.classList.add('dragging');
       const onMove = (ev: MouseEvent) => {
-        const avail = Math.max(200, window.innerHeight - (document.getElementById('toolbar')?.getBoundingClientRect().top ?? window.innerHeight) + 8);
-        lowerHeight = Math.max(avail*0.1, Math.min(avail*0.9, lowerHeight + (sY - ev.clientY)));
+        // Available chart height (same math as resize()): viewport minus
+        // the floating toolbar's footprint. The old formula collapsed
+        // avail to ~200px, clamping the pane so it could lower but
+        // never raise back.
+        const toolbarTop = document.getElementById('toolbar')?.getBoundingClientRect().top ?? window.innerHeight;
+        const avail = Math.max(240, Math.min(window.innerHeight, toolbarTop - 8));
+        lowerHeight = Math.max(80, Math.min(avail * 0.85, lowerHeight + (sY - ev.clientY)));
         sY = ev.clientY;
         const pctLower = Math.round(lowerHeight/avail*100);
         splitter.title = `Lower ${pctLower}% — Main ${100-pctLower}% — drag to adjust`;
@@ -4045,6 +4051,7 @@ function frameBody(now: number) {
 
   // Regime Ribbon — throttled internally, safe to call every frame.
   updateRegimeRibbon(now);
+  setLowerPaneBackground(bgViz);
 
   // Compute visible range once per frame — shared by all drawing functions
   const { start: visStart, end: visEnd } = getVisibleRange(view, canvas.clientWidth, transformed.length);

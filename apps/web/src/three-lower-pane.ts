@@ -137,6 +137,17 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   } catch { return null; }
 }
 
+/** Display-background obedience for the lower pane (Settings → Display). */
+let _lowerBgMode = 'stars';
+export function setLowerPaneBackground(mode: string): void {
+  _lowerBgMode = mode;
+  if (_renderer) {
+    const col = mode === 'plain' ? 0x0a0a18 : mode === 'graph' ? 0x080816 : 0x04040f;
+    _renderer.setClearColor(col, 1);
+    if (_scene) _scene.background = new THREE.Color(col);
+  }
+}
+
 export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: number): void {
   if (plots.length === 0 && (!shapePlots || shapePlots.length === 0)) { hide3D(); return; }
   const r = ensure();
@@ -647,6 +658,30 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
     }
   }
 
+  // Generated legend — how a trader reads this pane: what each layer IS,
+  // its latest value, and how many signals fired. Built from the actual
+  // plot data, never hand-written, so it cannot drift from the scene.
+  {
+    let legend = document.getElementById('lower-pane-legend') as HTMLDivElement | null;
+    if (!legend) {
+      legend = document.createElement('div');
+      legend.id = 'lower-pane-legend';
+      legend.style.cssText = 'flex-shrink:0;padding:4px 10px;font-family:ui-monospace,Menlo,monospace;font-size:10px;color:rgba(190,220,255,0.85);background:rgba(5,7,16,0.92);border-top:1px solid rgba(120,180,255,0.14);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      const sec = document.getElementById('secondary-canvas');
+      const container = document.getElementById('chart-container');
+      if (container && sec) container.insertBefore(legend, sec);
+    }
+    legend.style.display = 'block';
+    const parts = plots.map(p => {
+      const finite = p.series.filter(v => isFinite(v));
+      const last = finite.length ? finite[finite.length - 1] : NaN;
+      return `${p.name} [${p.style}] ${isFinite(last) ? last.toFixed(1) : '—'}`;
+    });
+    const sigCount = (shapePlots || []).filter(p => p.type === 'plot3d_shape').length;
+    legend.textContent = `3D LOWER PANE · ${parts.join('  ·  ')}${sigCount ? `  ·  signals: ${sigCount}` : ''}  ·  drag orbit · shift-drag pan · scroll zoom`;
+    legend.title = legend.textContent;
+  }
+
   if (_rafId) cancelAnimationFrame(_rafId);
   const loop = () => {
     if (!document.getElementById(ID)) { _rafId = 0; return; }
@@ -694,6 +729,8 @@ function dispose(obj: THREE.Object3D): void {
 
 export function hide3D(): void {
   _ok = false;
+  const legend = document.getElementById('lower-pane-legend');
+  if (legend) legend.style.display = 'none';
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
   _composer?.dispose();
   _composer = null; _bloomPass = null;
@@ -772,8 +809,19 @@ function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): v
     if (!dragging) return;
     const dx = e.clientX - lx, dy = e.clientY - ly;
     if (Math.abs(dx) + Math.abs(dy) > 6) movedFar = true;
-    theta -= dx * 0.01;
-    phi = Math.max(0.2, Math.min(1.4, phi - dy * 0.01));
+    if (e.shiftKey) {
+      // Shift-drag = pan target in screen plane (same modifier as the
+      // main chart and the unified 3D scene).
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+      const up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      const scale = dist * 0.0016;
+      target.addScaledVector(right, -dx * scale);
+      target.addScaledVector(up, dy * scale);
+      target.y = Math.max(-4, Math.min(8, target.y));
+    } else {
+      theta -= dx * 0.01;
+      phi = Math.max(0.2, Math.min(1.4, phi - dy * 0.01));
+    }
     lx = e.clientX; ly = e.clientY;
     apply();
     if (movedFar) e.preventDefault();
