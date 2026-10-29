@@ -1,0 +1,104 @@
+{
+  "label": "meta",
+  "at": "2026-10-29T17:48:52.867Z",
+  "results": [
+    {
+      "id": 1,
+      "pass": false,
+      "rounds": 1,
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": false,
+        "twoIndependentReadings": false,
+        "hasMainSignals": true,
+        "layersSane": false,
+        "noTable": true,
+        "releaseGated": false,
+        "executesClean": true,
+        "shapesSparse": false,
+        "shapesAligned": true
+      },
+      "problems": [
+        "COVERAGE: signals are level-triggered (a bare comparison like close > x with no crossover and no compound/state gate) — they fire on every bar the level holds and paint the chart. Gate signals with crossover/crossunder, a state machine (var inPos), or a compound condition.",
+        "COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane \"3d\" for price-denominated series (EMAs, levels), pane \"separate\" for oscillator series (RSI/CCI/MACD)."
+      ],
+      "codeLen": 313,
+      "code": "minMove = input(0.0, \"Min Move\", 0.0, 100.0, 0.1)\nsrc = close\nchg = src - src[1]\nbuySig = chg > minMove\nsellSig = chg < 0 - minMove\nif buySig {\nplotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\nplotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nplot(src, \"Price\", \"#22cc88\", 1)"
+    },
+    {
+      "id": 2,
+      "pass": false,
+      "rounds": 1,
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": false,
+        "marginAndDisagreement": false,
+        "agreementGate": false,
+        "hasMainSignals": false,
+        "noTable": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [
+        "COVERAGE: Prefer 3D is on but the script has no plot3d() at all — it will render as a flat 2D indicator. Add plot3d geometry: pane \"3d\" for price-denominated series (EMAs, levels), pane \"separate\" for oscillator series (RSI/CCI/MACD)."
+      ],
+      "codeLen": 114,
+      "code": "priceMult = input(1.0, \"Price Multiplier\", 0.1, 5.0, 0.1)\nsrc = close * priceMult\nplot(src, \"Price\", \"#22cc88\", 1)"
+    },
+    {
+      "id": 3,
+      "pass": false,
+      "rounds": 0,
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "modelExecution": false,
+        "hardStop": false,
+        "confirmedHTF": false,
+        "noDecorative3D": true,
+        "hasMainSignals": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 285,
+      "code": "showLine = input(true, \"Show Price\")\npx = close\nbuySig = false and showLine\nsellSig = false and showLine\nif buySig {\nplotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\nplotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nplot(px, \"Price\", \"#888888\", 1)"
+    },
+    {
+      "id": 4,
+      "pass": false,
+      "rounds": 1,
+      "checks": {
+        "hasCode": false,
+        "validAndCoverageClean": false
+      },
+      "problems": [
+        "NO_CODE"
+      ],
+      "codeLen": 0,
+      "code": "",
+      "replyHead": "(empty response)"
+    },
+    {
+      "id": 5,
+      "pass": true,
+      "rounds": 2,
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "noFutureIndex": true,
+        "noFrozenVar": true,
+        "noPineSignature": true,
+        "oscillatorNotInPriceScene": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 1004,
+      "code": "// FIX 1: frozen var — var lvl = highest(high, 20) freezes at bar 0, plain lvl = highest(high, lvlLen) recomputes every bar.\n// FIX 2: future index — close[-1] reads an unformed future bar and repaints, fixed to close vs lvl[1] history only.\n// FIX 3: Pine plotshape signature — Pine plotshape(series, style) is invalid, fixed to plotshape(bar_index, price, title, style, color).\n// FIX 4: oscillator forced into pane 3d — pane=\"3d\" hides all 2D plotshape, fixed by removing RSI/plot3d and keeping 2D breakout visuals.\nlvlLen = input(20, \"High Length\", 2, 100, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\nlvl = highest(high, lvlLen)\nlvlPrev = lvl[1]\nconeSize = 1.0 * markerSize\nbuySig = crossover(close, lvlPrev)\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif buySig {\n    plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", coneSize, 0, \"3d\")\n}\nplot(lvl, \"High Level\", \"#b48cff\", 1, \"stepline\")\nplot3d(lvl, \"High Level 3D\", \"line3d\", \"#b48cff\", \"3d\", 0)"
+    }
+  ]
+}

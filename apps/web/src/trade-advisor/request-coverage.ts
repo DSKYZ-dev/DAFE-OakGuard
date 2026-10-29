@@ -110,6 +110,13 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
     else if (lengthLike && max <= def) problems.push(`COVERAGE: input "${title}" max (${max}) <= default (${def}) — the slider cannot go higher. Set max well above the default.`);
   }
 
+  // 3f. Explicit "no decorative visuals" — any plot3d is decoration the
+  // user forbade (observed in limit testing: a backtest-focused siege
+  // model still grew a 3D layer).
+  if (/no decorative|no visuals|backtest(ing)?[- ]only|execution[- ]only/i.test(req) && /plot3d\s*\(|plotshape_3d\s*\(/.test(src)) {
+    problems.push('COVERAGE: the user explicitly forbade decorative visuals / asked for execution only, but the script contains 3D calls. Remove all plot3d/plotshape_3d calls.');
+  }
+
   // 3d. Ungated level-triggered signals: a plotshape whose script has no
   // crossover/crossunder anywhere and no compound (and-gated) condition
   // fires on EVERY bar the level holds — the "signals painted everywhere"
@@ -148,7 +155,8 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
   // CCI, MACD…) belong in the 3D LOWER pane ("separate") — forcing them
   // into the price scene renders a spiky forest over the candles.
   const wants2DOnly = /\b(main chart only|2d only|no 3d|without 3d|remove( the)? 3d|flat chart)\b/i.test(req);
-  if (opts.prefer3D && !wants2DOnly) {
+  const forbidsDecor = /no decorative|no visuals|backtest(ing)?[- ]only|execution[- ]only/i.test(req);
+  if (opts.prefer3D && !wants2DOnly && !forbidsDecor) {
     const has3dAny = /plot3d\s*\(/.test(src);
     const oscillatorStudy = /\b(rsi|cci|macd|stoch|mfi|adx)\s*\(/.test(src);
     if (!has3dAny) {

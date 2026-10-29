@@ -200,6 +200,7 @@ T.push(
   },
 );
 
+const IS_MAIN = (process.argv[1] || '').includes('editor-agent-test');
 let failures = 0;
 function check(label: string, cond: boolean, detail?: unknown): void {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${label}${detail !== undefined ? ' :: ' + JSON.stringify(detail).slice(0, 180) : ''}`);
@@ -210,7 +211,7 @@ const bars = syntheticBars(220);
 const barData = { ...bars };
 const barsArr = bars.close.map((c, i) => ({ open: bars.open[i], high: bars.high[i], low: bars.low[i], close: c }));
 
-for (const t of T) {
+if (IS_MAIN) for (const t of T) {
   const badProblems = [
     ...checkRequestCoverage(t.prompt, t.badDraft, { prefer3D: t.prefer3D }),
     ...validate(t.badDraft).issues.map(i => `[${i.code}] ${i.message}`),
@@ -247,8 +248,10 @@ for (const t of T) {
   }
 }
 
-console.log(failures === 0 ? `\nALL ${T.length} EDITOR-AGENT TESTS PASS` : `\n${failures} EDITOR-AGENT CHECK(S) FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+if (IS_MAIN) {
+  console.log(failures === 0 ? `\nALL ${T.length} EDITOR-AGENT TESTS PASS` : `\n${failures} EDITOR-AGENT CHECK(S) FAILED`);
+  process.exit(failures === 0 ? 0 : 1);
+}
 
 /** Final limit prompts — run live against each candidate model after the
  *  20 above pass. A pass = validated + coverage-clean in <= 2 fix rounds,
