@@ -329,6 +329,8 @@ export interface RuntimeBarData {
   volume: number[];
   time: number[];
   count: number;
+  /** True while the last bar is still forming (live tick feed). */
+  live?: boolean;
 }
 
 export interface PlotResult {
@@ -742,7 +744,11 @@ function evaluateIdentifier(node: Identifier, ctx: RuntimeContext): RuntimeValue
   if (name === 'volume') return ctx.bars.volume[ctx.barIndex];
   if (name === 'time') return ctx.bars.time[ctx.barIndex];
   if (name === 'bar_index') return ctx.barIndex;
-  if (name === 'barstate') return { isnew: ctx.barIndex > 0, isrealtime: false, isconfirmed: true };
+  if (name === 'barstate') {
+    // Only the forming bar of a live feed is unconfirmed; history is final.
+    const forming = ctx.bars.live === true && ctx.barIndex === ctx.bars.count - 1;
+    return { isnew: ctx.barIndex > 0, isrealtime: forming, isconfirmed: !forming };
+  }
 
   // Check vars
   if (ctx.vars.has(name)) return ctx.vars.get(name)!;

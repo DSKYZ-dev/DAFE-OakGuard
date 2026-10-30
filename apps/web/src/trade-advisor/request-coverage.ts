@@ -256,6 +256,28 @@ export function checkRequestCoverage(request: string, code: string, opts: Covera
     problems.push('COVERAGE: the user asked for divergence but the script has no divergence logic (price extreme vs a counter-moving measure such as RSI/deviation). A plain crossover is not divergence.');
   }
 
+  // 2a. A named indicator family must be computed, not just mentioned. The
+  // family's builtin counts, and so does the operation that defines it when a
+  // model writes it out by hand (highest/lowest for %K, cum for VWAP). The
+  // moving-average and Bollinger families have several equivalent forms, so they
+  // are not checked here.
+  const FAMILY_COMPUTED: Record<string, { test: (s: string) => boolean; example: string }> = {
+    ema: { test: s => /\bema\s*\(/.test(s), example: 'ema(close, n)' },
+    macd: { test: s => /\bmacd\s*\(/.test(s), example: 'macd(close, fast, slow, signal)' },
+    rsi: { test: s => /\brsi\s*\(/.test(s), example: 'rsi(close, n)' },
+    atr: { test: s => /\batr\s*\(/.test(s), example: 'atr(high, low, close, n)' },
+    stoch: { test: s => /\bstoch\s*\(/.test(s) || (/\bhighest\s*\(/.test(s) && /\blowest\s*\(/.test(s)), example: 'stoch(high, low, close, n)' },
+    vwap: { test: s => /\bvwap\s*\(/.test(s) || /\bcum\s*\(/.test(s), example: 'vwap(close, volume)' },
+  };
+  const { requested: askedFamilies } = classifyRequestFamilies(req);
+  for (const id of askedFamilies) {
+    const computed = FAMILY_COMPUTED[id];
+    if (computed && !computed.test(src)) {
+      const label = getFamilyLabel(id);
+      problems.push(`COVERAGE: the request asks for ${label}, but the script never computes it (expected ${computed.example}). Compute ${label} from the bar data and drive the signal logic with it.`);
+    }
+  }
+
   // 2b. Composite-model requests carry their own structural contract. These
   // checks catch the observed "semantic drift" failures where a valid script
   // has nothing to do with the requested model (e.g. a KNN request answered

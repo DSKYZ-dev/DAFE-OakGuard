@@ -364,12 +364,13 @@ fib618 = swingHigh - rng * 0.618
 buySig = crossover(close, fib618)
 sellSig = crossunder(close, fib382)
 
-if buySig {
+// Confirmed bars only: a forming-bar cross would vanish at the close.
+if barstate.isconfirmed and buySig {
     plotshape(bar_index, low, "Reclaim 61.8%", "triangleup", "#22cc88")
     plotshape_3d(bar_index, low, "Reclaim 61.8%", "coneup", "#22cc88", markerSize, 3, "3d")
     label3d(bar_index, fib618, "Reclaim 61.8%", "#22cc88", 0.9, 3, "3d")
 }
-if sellSig {
+if barstate.isconfirmed and sellSig {
     plotshape(bar_index, high, "Lost 38.2%", "triangledown", "#ff4477")
     plotshape_3d(bar_index, high, "Lost 38.2%", "conedown", "#ff4477", markerSize, 1, "3d")
     label3d(bar_index, fib382, "Lost 38.2%", "#ff4477", 0.9, 1, "3d")
@@ -608,13 +609,14 @@ flow = cmf(high, low, close, volume, cmfLen)
 plot(flow * 100, "CMF", "#ffd43b", 1, "separate")
 hline(0, "rgba(255,255,255,0.3)", "separate")
 
-if crossover(flow, 0)
+// Confirmed bars only: a forming-bar cross would vanish at the close.
+if barstate.isconfirmed and crossover(flow, 0)
     plotshape_3d(bar_index, flow * 100, "Flow +", "coneup", "#22cc88", markerSize, 0, "separate")
-if crossunder(flow, 0)
+if barstate.isconfirmed and crossunder(flow, 0)
     plotshape_3d(bar_index, flow * 100, "Flow -", "conedown", "#ff4477", markerSize, 0, "separate")
-if crossover(flow, 0)
+if barstate.isconfirmed and crossover(flow, 0)
     plotshape(bar_index, low, "Flow +", "triangleup", "#22cc88")
-if crossunder(flow, 0)
+if barstate.isconfirmed and crossunder(flow, 0)
     plotshape(bar_index, high, "Flow -", "triangledown", "#ff4477")
 
 plot3d(flow * 100, "Flow Stars", "constellation", "#ffd43b", "separate", 0)
@@ -769,9 +771,10 @@ if showSignals
     // all bars and buries the chart in markers.
     upCross = crossover(kVal, dVal) and kVal < osLevel + 10
     dnCross = crossunder(kVal, dVal) and kVal > obLevel - 10
-    if upCross
+    // Confirmed bars only: a forming-bar cross would vanish at the close.
+    if barstate.isconfirmed and upCross
         plotshape(bar_index, low, "Stoch BUY", "triangleup", "#22cc88")
-    if dnCross
+    if barstate.isconfirmed and dnCross
         plotshape(bar_index, high, "Stoch SELL", "triangledown", "#ff4477")`,
   },
 
@@ -798,9 +801,10 @@ fill(upper, lower, "rgba(180,140,255,0.08)")
 if showSignals
     buyCross = crossover(close, lower)
     sellCross = crossunder(close, upper)
-    if buyCross
+    // Confirmed bars only: a forming-bar cross would vanish at the close.
+    if barstate.isconfirmed and buyCross
         plotshape(bar_index, low, "BB BUY", "triangleup", "#22cc88")
-    if sellCross
+    if barstate.isconfirmed and sellCross
         plotshape(bar_index, high, "BB SELL", "triangledown", "#ff4477")`,
   },
 

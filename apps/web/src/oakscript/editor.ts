@@ -15,6 +15,7 @@ import { playTone } from '../accessibility';
 import { addStoryboardEntry } from '../storyboard';
 import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
+import { backtestCertificate } from '../oakguard/honesty';
 import type { BaseBar } from '@dafe/types';
 import { renderEquityCurve } from '../backtest/chart';
 import {
@@ -252,6 +253,7 @@ let lastBacktestConfig: Partial<BacktestConfig> | null = null;
 // (SPY 1m, synthetic)") — rendered with results so provenance is explicit.
 let lastBacktestDataLabel: string | null = null;
 let lastBacktestResult: BacktestResult | null = null;
+let lastBacktestEvidence: { source: string; bars: ReturnType<typeof barsToRuntimeBarData> } | null = null;
 let backtestAbortController: AbortController | null = null;
 let lastStrategyLabConfig: Partial<BacktestConfig> | null = null;
 let lastStrategyLabRows: OptimizerRunRow[] | null = null;
@@ -2436,6 +2438,38 @@ function renderBacktest(): void {
     return wrap;
   }
 
+  // Honesty certificate: the procedure behind a result, checked on the bars and
+  // script it actually ran on. It certifies the procedure, not the outcome.
+  function renderHonestyCertificate(cert: ReturnType<typeof backtestCertificate>): HTMLElement {
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+      fontSize: '10px', color: 'rgba(255,255,255,0.8)', background: 'rgba(45,255,179,0.05)',
+      border: '1px solid rgba(45,255,179,0.25)', borderRadius: '4px', padding: '6px 8px', marginBottom: '6px',
+    });
+    const head = document.createElement('div');
+    head.textContent = cert.honest ? 'Honesty certificate: procedure checks PASS' : 'Honesty certificate: procedure checks FAIL';
+    head.style.fontWeight = '700';
+    head.style.color = cert.honest ? 'rgba(45,255,179,0.95)' : 'rgba(255,120,120,0.95)';
+    box.appendChild(head);
+    for (const c of cert.checks) {
+      const row = document.createElement('div');
+      row.style.marginTop = '3px';
+      row.style.color = c.passed ? 'rgba(255,255,255,0.75)' : 'rgba(255,140,140,0.95)';
+      row.textContent = `${c.passed ? '✓' : '✗'} ${c.name} — ${c.detail}`;
+      box.appendChild(row);
+    }
+    const live = document.createElement('div');
+    Object.assign(live.style, { marginTop: '5px', paddingTop: '4px', borderTop: '1px solid rgba(255,255,255,0.1)' });
+    live.style.color = cert.live.passed ? 'rgba(255,255,255,0.75)' : 'rgba(255,200,80,0.95)';
+    live.textContent = `${cert.live.passed ? '✓' : '⚠'} live use — ${cert.live.detail}`;
+    box.appendChild(live);
+    const note = document.createElement('div');
+    Object.assign(note.style, { marginTop: '4px', fontSize: '9px', color: 'rgba(255,255,255,0.45)' });
+    note.textContent = cert.disclaimer;
+    box.appendChild(note);
+    return box;
+  }
+
   function renderResults(result: BacktestResult): void {
     resultsDiv.innerHTML = '';
 
@@ -2464,6 +2498,14 @@ function renderBacktest(): void {
       border: '1px solid rgba(180,140,255,0.18)', borderRadius: '4px', padding: '5px 7px', marginBottom: '6px',
     });
     resultsDiv.appendChild(provenance);
+
+    if (lastBacktestEvidence && lastBacktestResult === result) {
+      resultsDiv.appendChild(renderHonestyCertificate(backtestCertificate({
+        source: lastBacktestEvidence.source,
+        bars: lastBacktestEvidence.bars,
+        result,
+      })));
+    }
 
     if (result.scriptErrors.length > 0) {
       const errBox = document.createElement('div');
@@ -2540,6 +2582,7 @@ function renderBacktest(): void {
         },
       });
       lastBacktestResult = result;
+      lastBacktestEvidence = { source, bars };
       const signalNote = result.signalSourceUsed === 'shapes'
         ? `${result.orderCount} orders derived from plotted signals`
         : result.signalSourceUsed === 'strategy'

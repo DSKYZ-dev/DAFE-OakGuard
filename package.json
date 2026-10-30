@@ -24,7 +24,9 @@
     "verify:tricks": "npx tsx tools/verify/perf-tricks-test.ts 5000",
     "verify:pipeline": "npx tsx tools/verify/generation-pipeline-test.ts",
     "verify:extreme": "npx tsx tools/verify/extreme-limit-test.ts",
-    "verify:signals": "npx tsx tools/verify/signal-engine-audit.ts"
+    "verify:signals": "npx tsx tools/verify/signal-engine-audit.ts",
+    "verify:honesty": "npx tsx tools/verify/honesty-test.ts",
+    "verify:intent": "npx tsx tools/verify/intent-mutants-test.ts"
   },
   "workspaces": [
     "packages/types",

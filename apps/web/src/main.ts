@@ -670,6 +670,7 @@ function getBarData() {
     low: transformed.map(b => b.low),
     volume: transformed.map(b => b.volume),
     time: transformed.map(b => b.timestamp),
+    live: liveTicksEnabled,
   };
 }
 

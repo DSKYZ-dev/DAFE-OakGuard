@@ -267,7 +267,7 @@ function tripCircuitBreaker(inst: IndicatorInstance, reason: string): void {
 
 export function runAllInstances(barData: {
   close: number[]; open: number[]; high: number[];
-  low: number[]; volume: number[]; time: number[];
+  low: number[]; volume: number[]; time: number[]; live?: boolean;
 }, imageAssets?: Map<string, string>): void {
   for (const id of instanceOrder) {
     const inst = instances.get(id);
@@ -286,6 +286,7 @@ export function runAllInstances(barData: {
         volume: barData.volume,
         time: barData.time,
         count: barData.close.length,
+        live: barData.live,
       }, persist, inst.overrides.size > 0 ? inst.overrides : undefined, imageAssets);
       inst.plots = result.plots;
       inst.errors = result.errors;
