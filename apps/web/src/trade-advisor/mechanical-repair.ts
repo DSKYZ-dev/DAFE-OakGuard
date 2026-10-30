@@ -10,7 +10,7 @@
  * to the model, because removing code cannot invent the missing logic.
  */
 
-import { classifySeries, plot3dLayers, seriesDefs } from './pane-law';
+import { callArgs, classifySeries, plot3dLayers, seriesDefs } from './pane-law';
 
 export interface MechanicalRepairResult {
   code: string;
@@ -191,6 +191,23 @@ export function repairArrayConstructor(code: string): MechanicalRepairResult {
   return { code: out, removed };
 }
 
+/** Prefer 3D and no plot3d() at all: mirror the script's main plotted series into the 3D
+ *  scene as its own twin, so the indicator is not flat. The pane follows the pane law the
+ *  coverage gate uses: a price level goes to "3d", anything else to "separate". */
+export function addMissing3DTwin(code: string): MechanicalRepairResult {
+  const main = callArgs(code, 'plot').find(c =>
+    c.args.length >= 3 && /^"[^"]*"$/.test(c.args[1]) && !/^-?[\d.]+$/.test(c.args[0]));
+  if (!main) return { code, removed: [] };
+  const [series, quotedTitle, color] = main.args;
+  const title = quotedTitle.slice(1, -1);
+  const pane = classifySeries(series, seriesDefs(code)) === 'price' ? '3d' : 'separate';
+  const twin = `plot3d(${series}, "${title} 3D", "line3d", ${color}, "${pane}", 0)`;
+  return {
+    code: `${code.replace(/\s+$/, '')}\n${twin}`,
+    removed: [`added a 3D twin of plot("${title}"), routed to "${pane}"`],
+  };
+}
+
 export function repairMechanicalViolations(
   code: string,
   request: string,
@@ -215,6 +232,11 @@ export function repairMechanicalViolations(
   if (forbids3D && /\b(?:plot3d|plotshape_3d|label3d)\s*\(/.test(result.code)) {
     const stripped = strip3DCalls(result.code);
     if (!/\b(?:plot3d|plotshape_3d|label3d)\s*\(/.test(stripped.code)) result = merge(result, stripped);
+  }
+
+  if (opts.prefer3D && !forbids3D && !/\bplot3d\s*\(/.test(result.code)) {
+    const twin = addMissing3DTwin(result.code);
+    if (twin.removed.length > 0) result = merge(result, twin);
   }
 
   if (/\bplot3d\s*\(/.test(result.code)) {

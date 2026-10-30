@@ -108,3 +108,33 @@ export function classifySeries(expr: string, defs: Map<string, string[]>, visiti
   if (oscillator) return 'oscillator';
   return priceRef ? 'price' : 'unknown';
 }
+
+/** Every call to `name(...)`: its top-level arguments as written, and where the call starts. */
+export function callArgs(code: string, name: string): { args: string[]; at: number }[] {
+  const calls: { args: string[]; at: number }[] = [];
+  for (const m of code.matchAll(new RegExp(`(?<![\\w.])${name}\\s*\\(`, 'g'))) {
+    const args: string[] = [];
+    let depth = 1;
+    let inStr = false;
+    let cur = '';
+    for (let i = (m.index ?? 0) + m[0].length; i < code.length; i++) {
+      const ch = code[i];
+      if (ch === '"') inStr = !inStr;
+      if (!inStr) {
+        if (ch === '(' || ch === '[') depth++;
+        else if (ch === ')' || ch === ']') {
+          depth--;
+          if (depth === 0) break;
+        } else if (ch === ',' && depth === 1) {
+          args.push(cur.trim());
+          cur = '';
+          continue;
+        }
+      }
+      cur += ch;
+    }
+    args.push(cur.trim());
+    calls.push({ args, at: m.index ?? 0 });
+  }
+  return calls;
+}

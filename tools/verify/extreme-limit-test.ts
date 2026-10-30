@@ -192,6 +192,61 @@ plot3d(r, "RSI 3D", "ribbon", "#b48cff", "separate", 1)`;
     const stdReq = 'Create an RSI 3D model.';
     const fibReq = 'Create a Fibonacci retracement indicator showing the 23.6%, 38.2%, 50%, and 61.8% levels in 3D.';
     const fiveChReq = 'Create a 3D cellular signal array indicator that reads an array of 5 distinct channel strengths [ch1, ch2, ch3, ch4, ch5] mapped to 5 parallel vertical cylinders plus a spline curve.';
+    {
+      // 2j–2l. Prefer 3D with no plot3d(): the acceptance run-1 prompt-5 failure. The repair
+      // mirrors the main plotted series into the 3D scene, routed by the pane law.
+      const repairRequest = 'Fix and upgrade this broken script (I will paste one with a frozen var, a future index, a Pine plotshape signature, and an oscillator forced into pane 3d): explain each defect in one line, return the corrected complete script, and do not change its intended logic.';
+      const flatFix = [
+        'lenHigh = input(20, "High Length", 1, 100, 1)',
+        'rsiLen = input(14, "RSI Length", 2, 50, 1)',
+        'markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1)',
+        'lvl = highest(high, lenHigh)',
+        'r = rsi(close, rsiLen)',
+        'buySig = close > lvl',
+        'osSig = crossover(r, 30)',
+        'if buySig {',
+        '  plotshape(bar_index, low, "Buy", "triangleup", "#22cc88")',
+        '}',
+        'if osSig {',
+        '  plotshape(bar_index, low, "OS", "triangleup", "#22cc88")',
+        '}',
+        'plot(lvl, "High20", "#ffcc33", 1, "stepline")',
+        'plot(r, "RSI", "#b48cff", 1, "line")',
+      ].join('\n');
+      const twinned = repairMechanicalViolations(flatFix, repairRequest, { prefer3D: true });
+      const flatAfter = gradeCode(twinned.code, repairRequest, { prefer3D: true });
+      check('2j. A flat repair gets a 3D twin of its main series, routed by the pane law',
+        twinned.code.includes('plot3d(lvl, "High20 3D", "line3d", "#ffcc33", "3d", 0)') && !flatAfter.problems.some(p => /no plot3d/.test(p)),
+        flatAfter.problems);
+      const twoD = repairMechanicalViolations(flatFix, 'Build a 2D main chart only breakout indicator.', { prefer3D: true });
+      check('2k. A 2D-only request gets no 3D twin', !/plot3d\s*\(/.test(twoD.code), twoD.removed);
+      const oscMain = repairMechanicalViolations(flatFix.replace('plot(lvl, "High20", "#ffcc33", 1, "stepline")\n', ''), repairRequest, { prefer3D: true });
+      const attempt3Script = `// FIX 1: var lvl = highest(high,20) froze at bar 0 — changed to plain assignment so it recomputes every bar.
+// FIX 2: close[-1] peeked one bar into the future — changed to close so the breakout uses only confirmed price.
+// FIX 3: plotshape(true,low,"Buy",shape.triangleup,color.green) was Pine signature — changed to OakScript (bar_index,price,title,style,color) with quoted style/color.
+// FIX 4: oscillator in price scene fixed — RSI now renders only in 2D, breakout level stays on price chart.
+lenHigh = input(20, "High Length", 1, 100, 1)
+rsiLen = input(14, "RSI Length", 2, 50, 1)
+markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1)
+lvl = highest(high, lenHigh)
+r = rsi(close, rsiLen)
+buySig = close > lvl
+osSig = crossover(r, 30)
+if buySig {
+  plotshape(bar_index, low, "Buy", "triangleup", "#22cc88")
+}
+if osSig {
+  plotshape(bar_index, low, "OS", "triangleup", "#22cc88")
+}
+plot(lvl, "High20", "#ffcc33", 1, "stepline")
+plot(r, "RSI", "#b48cff", 1, "line")`;
+      const attempt3Fixed = repairMechanicalViolations(attempt3Script, repairRequest, { prefer3D: true });
+      const attempt3Grade = gradeCode(attempt3Fixed.code, repairRequest, { prefer3D: true });
+      check('2m. The exact script that failed acceptance run 1 now passes the Prefer-3D gate',
+        !attempt3Grade.problems.some(p => /no plot3d/.test(p)), attempt3Grade.problems);
+      check('2l. An oscillator as the main series twins into the separate pane',
+        oscMain.code.includes('plot3d(r, "RSI 3D", "line3d", "#b48cff", "separate", 0)'), oscMain.removed);
+    }
     check('3a. Default max 3D layers = 3', max3DLayersForRequest(stdReq) === 3);
     check('3b. Fibonacci max 3D layers = 4', max3DLayersForRequest(fibReq) === 4);
     check('3c. 5-channel cylinder array max 3D layers = 6', max3DLayersForRequest(fiveChReq) === 6);
