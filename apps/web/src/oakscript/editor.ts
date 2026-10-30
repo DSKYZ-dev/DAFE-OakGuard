@@ -10,6 +10,7 @@ import { getDocumentation, type DocSection } from './docs';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
 import { runBacktestOnBars, BacktestCancelledError, DEFAULT_ENTRY_MATCH, DEFAULT_EXIT_MATCH } from '../backtest/engine';
+import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, clearOfHeaderTop } from '../header-band';
 import { playTone } from '../accessibility';
 import { addStoryboardEntry } from '../storyboard';
 import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
@@ -50,6 +51,184 @@ export interface ParsedError {
   col: number;
   message: string;
   raw: string;
+}
+
+export interface ConfirmModalOptions {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: 'danger' | 'accent';
+}
+
+/**
+ * Themed in-app confirmation modal replacing the browser's raw window.confirm()
+ * dialog. Matches the terminal's dark glass + neon card treatment and supports
+ * Escape / Enter / backdrop dismissal.
+ */
+export function showEditorConfirmModal(opts: ConfirmModalOptions): Promise<boolean> {
+  return new Promise((resolve) => {
+    const existing = document.getElementById('dafe-confirm-modal-backdrop');
+    if (existing) existing.remove();
+
+    const isDanger = (opts.tone ?? 'danger') === 'danger';
+    const accent = isDanger ? '#ff5c8a' : '#22cc88';
+    const accentBorder = isDanger ? 'rgba(255, 92, 138, 0.45)' : 'rgba(34, 204, 136, 0.45)';
+    const accentBg = isDanger ? 'rgba(255, 68, 119, 0.16)' : 'rgba(34, 204, 136, 0.16)';
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'dafe-confirm-modal-backdrop';
+    Object.assign(backdrop.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '10050',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(5, 7, 15, 0.72)',
+      backdropFilter: 'blur(8px)',
+      WebkitBackdropFilter: 'blur(8px)',
+      fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
+    });
+
+    const card = document.createElement('div');
+    card.className = 'dafe-glow-window';
+    Object.assign(card.style, {
+      width: 'min(400px, calc(100vw - 32px))',
+      background: 'linear-gradient(180deg, rgba(16, 20, 36, 0.98) 0%, rgba(10, 12, 24, 0.98) 100%)',
+      border: '1px solid rgba(34, 204, 136, 0.28)',
+      borderRadius: '12px',
+      boxShadow: '0 22px 56px rgba(0, 0, 0, 0.72), 0 0 28px rgba(34, 204, 136, 0.08)',
+      padding: '18px 20px 16px',
+      color: '#e8ecf8',
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      marginBottom: '10px',
+    });
+
+    const titleWrap = document.createElement('div');
+    Object.assign(titleWrap.style, {
+      display: 'flex',
+      alignItems: 'center',
+      gap: '9px',
+    });
+
+    const dot = document.createElement('span');
+    Object.assign(dot.style, {
+      width: '8px',
+      height: '8px',
+      borderRadius: '50%',
+      background: accent,
+      boxShadow: `0 0 10px ${accent}`,
+      flexShrink: '0',
+    });
+
+    const titleEl = document.createElement('div');
+    titleEl.textContent = opts.title;
+    Object.assign(titleEl.style, {
+      fontSize: '13px',
+      fontWeight: '700',
+      letterSpacing: '0.04em',
+      textTransform: 'uppercase',
+      color: '#22ffbb',
+    });
+
+    titleWrap.appendChild(dot);
+    titleWrap.appendChild(titleEl);
+
+    const closeX = document.createElement('button');
+    closeX.textContent = '✕';
+    Object.assign(closeX.style, {
+      background: 'transparent',
+      border: 'none',
+      color: 'rgba(232, 236, 248, 0.55)',
+      fontSize: '13px',
+      cursor: 'pointer',
+      padding: '2px 6px',
+      borderRadius: '4px',
+    });
+
+    header.appendChild(titleWrap);
+    header.appendChild(closeX);
+
+    const msgEl = document.createElement('div');
+    msgEl.textContent = opts.message;
+    Object.assign(msgEl.style, {
+      fontSize: '12.5px',
+      lineHeight: '1.55',
+      color: 'rgba(224, 230, 245, 0.85)',
+      marginBottom: '18px',
+    });
+
+    const actions = document.createElement('div');
+    Object.assign(actions.style, {
+      display: 'flex',
+      justifyContent: 'flex-end',
+      gap: '8px',
+    });
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+    Object.assign(cancelBtn.style, {
+      padding: '6px 14px',
+      borderRadius: '6px',
+      border: '1px solid rgba(255, 255, 255, 0.16)',
+      background: 'rgba(255, 255, 255, 0.05)',
+      color: '#cfd6ea',
+      fontSize: '11.5px',
+      fontWeight: '600',
+      cursor: 'pointer',
+    });
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.textContent = opts.confirmLabel || 'Confirm';
+    Object.assign(confirmBtn.style, {
+      padding: '6px 15px',
+      borderRadius: '6px',
+      border: `1px solid ${accentBorder}`,
+      background: accentBg,
+      color: accent,
+      fontSize: '11.5px',
+      fontWeight: '700',
+      cursor: 'pointer',
+      boxShadow: `0 0 14px ${isDanger ? 'rgba(255, 68, 119, 0.14)' : 'rgba(34, 204, 136, 0.14)'}`,
+    });
+
+    actions.appendChild(cancelBtn);
+    actions.appendChild(confirmBtn);
+
+    card.appendChild(header);
+    card.appendChild(msgEl);
+    card.appendChild(actions);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+
+    let settled = false;
+    const finish = (val: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('keydown', onKey, true);
+      backdrop.remove();
+      resolve(val);
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      else if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    };
+    window.addEventListener('keydown', onKey, true);
+
+    cancelBtn.onclick = () => finish(false);
+    closeX.onclick = () => finish(false);
+    confirmBtn.onclick = () => finish(true);
+    backdrop.onclick = (e) => { if (e.target === backdrop) finish(false); };
+    confirmBtn.focus();
+  });
 }
 
 let currentResult: OakscriptResult | null = null;
@@ -380,7 +559,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   editorPanel = document.createElement('div');
   editorPanel.id = 'oakscript-editor';
   Object.assign(editorPanel.style, {
-    position: 'fixed', left: '300px', top: '60px', width: '460px', maxHeight: '90vh',
+    position: 'fixed', left: `${SECOND_COLUMN_LEFT}px`, top: `${WINDOW_TOP_MIN}px`, width: '460px', maxHeight: '90vh',
     minWidth: '420px', minHeight: '320px',
     background: 'rgba(8, 8, 20, 0.95)', border: '1px solid rgba(180, 140, 255, 0.15)',
     borderRadius: '10px', display: 'none', flexDirection: 'column', zIndex: '10001',
@@ -409,17 +588,17 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   if (saved && typeof saved.width === 'number' && typeof saved.height === 'number') {
     const w = Math.max(420, Math.min(window.innerWidth - 40, saved.width));
     const h = Math.max(320, Math.min(window.innerHeight - 40, saved.height));
-    // Keep the panel away from the top-left indicator list (which sits at 12,12)
+    // Keep the panel below the header bar and on screen
     const left = Math.max(12, Math.min(window.innerWidth - w - 12, saved.left ?? 300));
-    const top = Math.max(12, Math.min(window.innerHeight - h - 12, saved.top ?? 60));
+    const top = clearOfHeaderTop(Math.min(window.innerHeight - h - 12, saved.top ?? WINDOW_TOP_MIN));
     Object.assign(editorPanel.style, {
       left: left + 'px', top: top + 'px',
       width: w + 'px', height: h + 'px',
       maxHeight: 'none', right: 'auto', bottom: 'auto',
     });
   } else {
-    // Default position: offset to the right so it doesn't cover the indicator list
-    Object.assign(editorPanel.style, { left: '300px', top: '60px' });
+    // Default position: below the header bar, in the column after Trading
+    Object.assign(editorPanel.style, { left: `${SECOND_COLUMN_LEFT}px`, top: `${WINDOW_TOP_MIN}px` });
   }
 
   // Drag logic
@@ -436,7 +615,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   document.addEventListener('mousemove', (e) => {
     if (!dragging || !editorPanel) return;
     const x = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dragOffX));
-    const y = Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragOffY));
+    const y = clearOfHeaderTop(Math.min(window.innerHeight - 40, e.clientY - dragOffY));
     editorPanel.style.left = x + 'px';
     editorPanel.style.top = y + 'px';
   });
@@ -879,20 +1058,38 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   Object.assign(alertsBtn.style, btnStyle('rgba(255,255,255,0.4)', 'transparent'));
   alertsBtn.onclick = () => toggleAlerts();
 
-  // Clear — wipe the editor to a truly empty state (with confirm). Sits
-  // next to Hide, per user request. Also clears the saved-source cache so
-  // a reload doesn't resurrect what was just cleared.
+  // Clear — wipe the editor to a truly empty state (with a themed in-app
+  // confirmation dialog instead of the browser's raw window.confirm alert).
+  // Also clears the saved-source cache so a reload doesn't resurrect what was
+  // just cleared.
   const clearBtn = document.createElement('button');
   clearBtn.textContent = '🧹 Clear';
   clearBtn.title = 'Clear all code from the editor (fresh start)';
   Object.assign(clearBtn.style, btnStyle('#ff7d9c', 'rgba(255,68,119,0.08)'));
-  clearBtn.onclick = () => {
+  clearBtn.onclick = async () => {
     if (!textarea) return;
-    if (textarea.value.trim() && !confirm('Clear all code from the editor? Unsaved work will be lost.')) return;
+    if (textarea.value.trim()) {
+      const ok = await showEditorConfirmModal({
+        title: 'Clear Editor Workspace',
+        message: 'Clear all code from the editor? Unsaved work in the current workspace will be lost.',
+        confirmLabel: 'Clear Code',
+        cancelLabel: 'Cancel',
+        tone: 'danger',
+      });
+      if (!ok) return;
+    }
     textarea.value = '';
     localStorage.removeItem('oakscript_source');
     showResults([], []);
     textarea.focus();
+  };
+
+  const oakguardBtn = document.createElement('button');
+  oakguardBtn.textContent = '⬢ OakGuard';
+  oakguardBtn.title = 'OakGuard: Self-Improving Verification Playbook — the fixed model proposes validation rules; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus).';
+  Object.assign(oakguardBtn.style, btnStyle('#2dffb3', 'rgba(45,255,179,0.10)'));
+  oakguardBtn.onclick = () => {
+    document.getElementById('set-open-oakguard')?.click();
   };
 
   controls.appendChild(viewBtn);
@@ -908,6 +1105,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   controls.appendChild(strategyLabBtn);
   controls.appendChild(mlLabBtn);
   controls.appendChild(alertsBtn);
+  controls.appendChild(oakguardBtn);
 
   const applyBtn = document.createElement('button');
   applyBtn.textContent = '▶ Apply';
@@ -3266,6 +3464,7 @@ function renderAlerts(): void {
 
   for (const a of history) {
     const card = document.createElement('div');
+    card.className = 'dafe-glow-window';
     Object.assign(card.style, {
       border: '1px solid rgba(180,140,255,0.12)', borderRadius: '5px',
       padding: '6px 8px', marginBottom: '5px', background: 'rgba(255,255,255,0.02)',

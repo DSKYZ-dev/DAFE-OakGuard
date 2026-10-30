@@ -115,16 +115,23 @@ export function generateMutants(family: RuleFamily, corpus: CorpusEntry[]): Muta
   return family === 'positive-int-length' ? generateLengthMutants(corpus) : generateDottedMutants(corpus);
 }
 
-/** Deterministic synthetic bars for execution probes (mulberry32, same family as mega-test). */
-export function syntheticBars(count = 120): { close: number[]; open: number[]; high: number[]; low: number[]; volume: number[]; time: number[]; count: number } {
-  let s = 42 >>> 0;
-  const rnd = () => {
+export interface SyntheticBarSet { close: number[]; open: number[]; high: number[]; low: number[]; volume: number[]; time: number[]; count: number }
+
+/** mulberry32 PRNG (same family as mega-test): deterministic for a given seed. */
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
     s = (s + 0x6d2b79f5) >>> 0;
     let t = s;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/** Deterministic synthetic bars for execution probes (mulberry32, same family as mega-test). */
+export function syntheticBars(count = 120): SyntheticBarSet {
+  const rnd = mulberry32(42);
   const close: number[] = [], open: number[] = [], high: number[] = [], low: number[] = [], volume: number[] = [], time: number[] = [];
   let px = 100;
   for (let i = 0; i < count; i++) {
@@ -133,6 +140,26 @@ export function syntheticBars(count = 120): { close: number[]; open: number[]; h
     close.push(c); open.push(o);
     high.push(Math.max(o, c) + rnd());
     low.push(Math.min(o, c) - rnd());
+    volume.push(1000 + Math.floor(rnd() * 5000));
+    time.push(1700000000000 + i * 60000);
+    px = c;
+  }
+  return { close, open, high, low, volume, time, count };
+}
+
+/** Trend-biased synthetic bars for the signal-clustering probe. `drift` is the
+ *  fractional move per bar (0.003 = +0.3%); `noise` is the full width of the
+ *  per-bar shock as a fraction of price. */
+export function syntheticTrendBars(count: number, drift: number, noise: number, seed: number): SyntheticBarSet {
+  const rnd = mulberry32(seed);
+  const close: number[] = [], open: number[] = [], high: number[] = [], low: number[] = [], volume: number[] = [], time: number[] = [];
+  let px = 100;
+  for (let i = 0; i < count; i++) {
+    const o = px;
+    const c = Math.max(1, o * (1 + drift + (rnd() - 0.5) * noise));
+    close.push(c); open.push(o);
+    high.push(Math.max(o, c) + o * noise * 0.5 * rnd());
+    low.push(Math.min(o, c) - o * noise * 0.5 * rnd());
     volume.push(1000 + Math.floor(rnd() * 5000));
     time.push(1700000000000 + i * 60000);
     px = c;

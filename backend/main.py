@@ -225,42 +225,104 @@ async def _hosted_chat(
     convo = [m for m in messages if m.get("role") in ("user", "assistant")]
     if not convo:
         convo = [{"role": "user", "content": ""}]
+
+    def _headers() -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        if rec.get("id") == "openrouter":
+            headers["HTTP-Referer"] = "https://dafecharts.app"
+            headers["X-Title"] = "DAFE Charts"
+        return headers
+
+    is_meta = rec.get("id") == "meta"
+
+    async def _post(client: httpx.AsyncClient, reasoning_effort: str = "low"):
+        if rec.get("auth") == "anthropic":
+            return await client.post(
+                f"{base}/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                json={
+                    "model": model, "max_tokens": max_tokens, "temperature": temperature,
+                    "system": system, "messages": convo,
+                },
+            )
+        payload: dict[str, Any] = {
+            "model": model, "stream": False, "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [{"role": "system", "content": system}] + convo,
+        }
+        # Muse Spark always reasons and reasoning tokens share max_tokens with
+        # the visible reply. At the provider's default effort a hard prompt can
+        # burn the whole budget on hidden reasoning and return an EMPTY
+        # candidate (observed on the KNN limit prompt at 2048/8192 tokens).
+        # Pin a low effort so code/design output always has room; the empty
+        # retry drops to minimal.
+        if is_meta:
+            payload["reasoning_effort"] = reasoning_effort
+        return await client.post(
+            f"{base}/chat/completions",
+            headers=_headers(),
+            json=payload,
+        )
+
+    def _extract(data: dict[str, Any]) -> str:
+        if rec.get("auth") == "anthropic":
+            text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        else:
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        return re.sub(r"</?think>", "", text or "").strip()
+
+    def _log_reply(data: dict[str, Any], reply: str, attempt: str) -> None:
+        choice = (data.get("choices") or [{}])[0]
+        usage = data.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        logger.info(
+            "hosted reply: provider=%s model=%s attempt=%s finish=%s completion=%s reasoning=%s chars=%d",
+            rec.get("id"), model, attempt, choice.get("finish_reason"),
+            usage.get("completion_tokens"), details.get("reasoning_tokens"), len(reply or ""),
+        )
+
+    async def _post_with_retry(client: httpx.AsyncClient, reasoning_effort: str = "low"):
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                resp = await _post(client, reasoning_effort=reasoning_effort)
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    await asyncio.sleep(1.2 * (attempt + 1))
+                    continue
+                return resp
+            except (httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError, httpx.PoolTimeout) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.2 * (attempt + 1))
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return await _post(client, reasoning_effort=reasoning_effort)
+
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            if rec.get("auth") == "anthropic":
-                resp = await client.post(
-                    f"{base}/messages",
-                    headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                    json={
-                        "model": model, "max_tokens": max_tokens, "temperature": temperature,
-                        "system": system, "messages": convo,
-                    },
-                )
-            else:
-                headers: dict[str, str] = {}
-                if key:
-                    headers["Authorization"] = f"Bearer {key}"
-                if rec.get("id") == "openrouter":
-                    headers["HTTP-Referer"] = "https://dafecharts.app"
-                    headers["X-Title"] = "DAFE Charts"
-                resp = await client.post(
-                    f"{base}/chat/completions",
-                    headers=headers,
-                    json={
-                        "model": model, "stream": False, "max_tokens": max_tokens,
-                        "temperature": temperature,
-                        "messages": [{"role": "system", "content": system}] + convo,
-                    },
-                )
-        if resp.status_code != 200:
-            return {"ok": False, "detail": f"{label} returned {resp.status_code}: {(resp.text or '')[:300]}"}
-        data = resp.json()
-        if rec.get("auth") == "anthropic":
-            reply = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-        else:
-            reply = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        reply = re.sub(r"</?think>", "", reply or "").strip()
-        return {"ok": True, "reply": reply or "(empty response)"}
+            resp = await _post_with_retry(client)
+            if resp.status_code != 200:
+                return {"ok": False, "detail": f"{label} returned {resp.status_code}: {(resp.text or '')[:300]}"}
+            data = resp.json()
+            reply = _extract(data)
+            _log_reply(data, reply, "first")
+            if not reply:
+                # Hosted models occasionally return an empty candidate (a
+                # transient truncation or content-filter false positive).
+                # Retry exactly once; callers cannot do anything with
+                # "(empty response)" and an empty code reply previously
+                # looked like a successful generation.
+                resp = await _post_with_retry(client, reasoning_effort="minimal")
+                if resp.status_code != 200:
+                    return {"ok": False, "detail": f"{label} returned {resp.status_code} on retry: {(resp.text or '')[:300]}"}
+                data = resp.json()
+                reply = _extract(data)
+                _log_reply(data, reply, "retry")
+            return {"ok": True, "reply": reply or "(empty response)"}
     except httpx.ConnectError:
         return {"ok": False, "detail": f"{label} is not reachable at {base}."}
     except httpx.TimeoutException:
@@ -763,7 +825,7 @@ AGENT_SYSTEM_PROMPTS = {
         "The engine has a full 3D renderer: plot3d(series, name, style, color, pane, z_level?) with 15 styles: surface/ribbon/scatter/bars3d/wireframe/mesh/line3d/helix/vortex/manifold/nebula/constellation/torus/trail/ridgeline (ridgeline = temporal distribution joyplot: the series is sliced into time windows and each window's value histogram stacks in depth — ideal for price/volume profiles over time; needs 24+ bars). z_level (number) stacks multiple plot3d calls at different depths — same value = same Z layer, different values = spaced apart (2.4 units). Omit for auto-spacing. "
         "pane=\"3d\" is the flagship mode: an exclusive full-chart takeover where the geometry renders unified WITH the 3D price bars (orbit camera to rotate/zoom) — while it's active, NO 2D plots or separate-pane 3D render from any model, and only one pane=\"3d\" model can be active at a time. "
         "pane=\"separate\" renders in the lower 3D pane instead (multiple calls stack together there; also exclusive, one at a time). Default/pane=\"main\" is a lighter legacy overlay mode — prefer pane=\"3d\" or pane=\"separate\" explicitly. "
-        "CRITICAL 3D RULE: When the chart pane is in 3D mode, 2D plot() and plotshape() do NOT render — only plot3d() and plotshape_3d() execute. plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?) places geometric shapes at exact bar/price/Z coordinates. pane=\"separate\" (default) renders in lower 3D pane; pane=\"3d\" renders in main 3D chart scene alongside the 3D bars. Shapes: cube, sphere, pyramid, torus, diamond, coneup, conedown. Size: 0.2-3.0. STANDARD SIGNAL MARKERS: buy = \"coneup\" green (#22cc88) at low (auto-offsets BELOW the bar, tip pointing up at it); sell = \"conedown\" red (#ff4477) at high (flipped upside down, auto-offsets ABOVE the bar, tip pointing down). Derive size from signal strength (e.g. spread/ATR clamped to 0.6-2.2) so cones are proportional to signal quality. rx/ry/rz (optional, DEGREES) rotate any shape on top of its built-in orientation for custom scenes. PANE MATCHING: in a pane=\"3d\" script, EVERY plotshape_3d/label3d must pass \"3d\" as its pane argument — omitting it defaults the marker to the (hidden) separate pane and it renders nowhere. "
+        "CRITICAL 3D RULE: Always emit BOTH 2D plot()/plotshape() AND 3D plot3d()/plotshape_3d() so the model renders in both 2D and 3D modes. plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?) places geometric shapes at exact bar/price/Z coordinates. pane=\"separate\" (default) renders in lower 3D pane; pane=\"3d\" renders in main 3D chart scene alongside the 3D bars. Shapes: cube, sphere, pyramid, torus, diamond, coneup, conedown. Size: 0.2-3.0. STANDARD SIGNAL MARKERS: buy = \"coneup\" green (#22cc88) at low (auto-offsets BELOW the bar, tip pointing up at it); sell = \"conedown\" red (#ff4477) at high (flipped upside down, auto-offsets ABOVE the bar, tip pointing down). Pass markerSize (default 1.0) as the cone size — NEVER introduce atr() or any unrequested indicator just to scale cone size. rx/ry/rz (optional, DEGREES) rotate any shape on top of its built-in orientation for custom scenes. PANE MATCHING: in a pane=\"3d\" script, EVERY plotshape_3d/label3d must pass \"3d\" as its pane argument — omitting it defaults the marker to the (hidden) separate pane and it renders nowhere. "
         "label3d(bar_index, price, text, color?, size?, z_level?, pane?) places a billboard TEXT label at exact 3D coordinates — use it to NAME peaks, levels, zones, and signals (\"POC\", \"Breakout\"). Keep text short and use it for RARE, meaningful moments only — never label every signal bar (dense repeats stack into unreadable towers); the cones already mark the signals, a label should call out at most the standout events. "
         "Price LEVELS in 3D (fibs, pivots, S/R): use style \"line3d\" — it draws exact straight segments. NEVER render a level series with \"ribbon\"/\"surface\": their spline smoothing turns the steps into spike blades that look nothing like level lines. Give EACH level line a DISTINCT z_level (0, 1, 2, …) so they render as cleanly separated parallel planes — putting multiple level lines on the SAME z_level overlaps them into a twisted rope. "
         "MANDATORY: Whenever you use plotshape_3d() or label3d(), you MUST ALSO include at least one plot3d() call (surface/ribbon/bars3d/etc.) using the EXACT SAME pane string — not just 'a' plot3d, the SAME pane value. If your plotshape_3d/label3d pass \"3d\", every accompanying plot3d must also pass \"3d\" (never \"separate\"); if they pass \"separate\", every accompanying plot3d must also pass \"separate\" (never \"3d\"). Mixing panes puts the shapes and the geometry in two different, mutually-exclusive scenes — one of them silently renders nowhere, which is exactly the kind of bug that looks fine in review and is broken on screen. "
@@ -961,9 +1023,13 @@ async def api_chat(body: dict[str, Any]):
             return {"ok": False, "detail": f"Pick a model for {rec.get('label') or provider} in Settings."}
         is_coder = agent == "oakscript_coder"
         logger.info("chat request: provider=%s hosted model=%s agent=%s", provider, chosen, agent)
+        # Muse Spark consumes output budget for hidden reasoning; give the
+        # advisor enough room to finish a structured design brief instead of
+        # truncating to an empty candidate.
+        advisor_tokens = 8192 if provider == "meta" else 2048
         return await _hosted_chat(
             rec, chosen, full_system, ollama_messages[1:],
-            max_tokens=8192 if is_coder else 2048,
+            max_tokens=8192 if is_coder else advisor_tokens,
             temperature=0.3 if is_coder else 0.5,
         )
 

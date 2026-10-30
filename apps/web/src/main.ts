@@ -50,6 +50,7 @@ import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene,
 import { show3D, hide3D, setLowerPaneBackground } from './three-lower-pane';
 import { draw3DScene } from './iso3d';
 import type { OakPlot3D } from './oakscript/runtime';
+import { layerTwins, shapeTwins } from './plot-twins';
 import {
   initParticleSystem, updateGPUParticles, drawCPUParticles,
   resizeParticleField, setParticleCount, setParticleMode, setParticleIntensity,
@@ -57,6 +58,7 @@ import {
 import { PerfGovernor, recommendInitialTier, tierParticleCount, type PerfTier } from './perf-governor';
 import { createInputsPanel } from './age-inputs-panel';
 import { createDashboard } from './dashboard-widget';
+import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, clearOfHeaderTop } from './header-band';
 import { registerWidget, initWidgetMenu } from './widget-registry';
 import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
 import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
@@ -76,7 +78,7 @@ import {
   runAllInstances, getCombinedPlots, hasActiveIndicators,
   setInstanceOverrides, setInstanceEnabled, updateInstanceSource,
   setInstanceDashboardVisible, setInstanceAutoTradeArmed, getInstance,
-  type IndicatorInstance,
+  isIndicatorNameActive, type IndicatorInstance,
 } from './indicator-manager';
 import { setMlRedrawCallback } from './ml-client';
 import { mountOakGuardLauncher, openOakGuard } from './oakguard/panel';
@@ -170,6 +172,7 @@ function restoreLiveAnchor(): void {
 // Wall-clock time of the last bar roll — bars advance on real elapsed time, NOT
 // on (now - lastBarTimestamp), which floods flat bars when the feed is delayed.
 let lastBarRollTime = 0;
+let lastLiveIndicatorRefresh = 0;
 
 // Data source mode. 'hybrid' = correction-anchored blend of Massive (paid,
 // sparse) + yfinance (free, frequent) + synthetic fill, for near-live accuracy
@@ -238,6 +241,7 @@ function startLiveTicks(): void {
     // stamp a bar past real "now" — guards against runaway bars if the last
     // bar's timestamp is off (stale feed data, symbol/timeframe switch, tab
     // throttling causing missed rolls to pile up).
+    const barsBefore = transformed.length;
     const nextBarTs = last.timestamp + intervalMs;
     if (now - lastBarRollTime >= intervalMs && nextBarTs <= now) {
       lastBarRollTime = now;
@@ -301,6 +305,13 @@ function startLiveTicks(): void {
     // made the 3-5 newest extrusions jump. It refreshes on bar roll only.
     // Keep the one-click trading panel (buy/sell/spread) in sync with the tick.
     updateTradingPanel();
+    // Live bars feed the indicators. Re-run them on every bar roll and at most
+    // every 2 s while ticking, so plots, labels and signals keep pace with the
+    // newest bar instead of stopping at the last full run.
+    if (transformed.length !== barsBefore || now - lastLiveIndicatorRefresh >= 2000) {
+      lastLiveIndicatorRefresh = now;
+      refreshLiveIndicators();
+    }
   }, tickMs);
 }
 
@@ -681,7 +692,7 @@ function updateRegimeRibbon(now: number): void {
   const fresh = classifyRegime(high, low, close);
   if (!fresh) { regimeRibbon.update(null, applyIndicatorByName, regimeRibbonEnabled); return; }
   const displayed: RegimeResult = applyHysteresis(regimeState, fresh, now);
-  regimeRibbon.update(displayed, applyIndicatorByName, regimeRibbonEnabled);
+  regimeRibbon.update(displayed, applyIndicatorByName, regimeRibbonEnabled, isIndicatorNameActive);
 }
 
 // Programmatically apply a built-in indicator by name — the same direct path
@@ -690,7 +701,7 @@ function updateRegimeRibbon(now: number): void {
 // rather than duplicating the apply logic.
 function applyIndicatorByName(name: string): void {
   const ind = getIndicators().find(i => i.name === name);
-  if (!ind) return;
+  if (!ind || isIndicatorNameActive(name)) return;
   const inst = addIndicator(ind);
   runAllIndicators();
   enforceSingle3DPerPosition(inst.id);
@@ -700,6 +711,26 @@ function applyIndicatorByName(name: string): void {
   inputsPanel.show();
   dashboard.show();
   updateUI();
+}
+
+// Library models already on the chart are greyed out and unselectable in the
+// Indicators menu, so one model can't be stacked on itself. Re-synced from
+// updateUI(), so adding, removing or evicting a model updates the menu.
+let syncedActiveKey = '';
+function syncIndicatorMenu(): void {
+  const sel = document.getElementById('indicator-select') as HTMLSelectElement | null;
+  if (!sel) return;
+  const active = new Set(getActiveInstances().map(i => i.name));
+  const key = [...active].sort().join('\n');
+  if (key !== syncedActiveKey) { syncedActiveKey = key; lastRegimeComputeAt = 0; }
+  for (const opt of Array.from(sel.querySelectorAll<HTMLOptionElement>('option[data-library="true"]'))) {
+    const on = active.has(opt.value);
+    if (opt.disabled === on && opt.dataset.active === String(on)) continue;
+    opt.disabled = on;
+    opt.dataset.active = String(on);
+    opt.textContent = on ? `${opt.value} · on chart` : opt.value;
+    opt.style.color = on ? 'rgba(255,255,255,0.3)' : '';
+  }
 }
 
 // A main-pane 3D indicator (pane="3d") takes over the whole chart, and a
@@ -729,6 +760,17 @@ function enforceSingle3DPerPosition(newId: string): void {
 // the unified 3D scene takes over the whole chart in this state.
 function hasPane3DActive(): boolean {
   return hasActiveIndicators() && getCombinedPlots().plot3d.some(p => (p as any).pane === '3d');
+}
+
+/** Re-run the scripts on the live bar array. Unlike runAllIndicators() this skips
+ *  the sidebar rebuild, so it is cheap enough for the tick timer. */
+function refreshLiveIndicators(): void {
+  if (!hasActiveIndicators()) return;
+  runAllInstances(getBarData(), imageAssetsCache);
+  oakPathKey = '';
+  oakPathCache = null;
+  mark3DSceneDirty();
+  dashboard.refresh();
 }
 
 function runAllIndicators(): void {
@@ -1352,21 +1394,41 @@ function buildIndicatorList() {
 
   indicatorListEl = document.createElement('div');
   indicatorListEl.id = 'indicator-list';
+  indicatorListEl.className = 'dafe-glow-window';
   Object.assign(indicatorListEl.style, {
-    position: 'fixed', top: '12px', left: '12px', zIndex: '90',
+    position: 'fixed', top: `${WINDOW_TOP_MIN}px`, left: `${SECOND_COLUMN_LEFT}px`, zIndex: '90',
     background: 'rgba(8, 8, 20, 0.85)', border: '1px solid rgba(180, 140, 255, 0.15)',
     borderRadius: '8px', padding: '8px 10px', backdropFilter: 'blur(12px)',
     boxShadow: '0 4px 20px rgba(0,0,0,0.4)', minWidth: '180px', maxWidth: '280px',
     fontSize: '11px', color: 'rgba(255,255,255,0.7)',
   });
 
+  const titleRow = document.createElement('div');
+  Object.assign(titleRow.style, {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    gap: '8px', marginBottom: '6px',
+  });
   const title = document.createElement('div');
   Object.assign(title.style, {
-    color: 'rgba(180,140,255,0.5)', fontSize: '9px', fontWeight: '600',
-    textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px',
+    color: 'var(--dafe-glow, rgba(180,140,255,0.8))', fontSize: '9px', fontWeight: '700',
+    textTransform: 'uppercase', letterSpacing: '0.5px',
   });
   title.textContent = `Active Signal Models (${active.length})`;
-  indicatorListEl.appendChild(title);
+
+  const ogBtn = document.createElement('button');
+  ogBtn.textContent = '⬢ OakGuard';
+  ogBtn.title = 'OakGuard: Self-Improving Verification Playbook (Probation → Duel → Promotion / Emeritus)';
+  Object.assign(ogBtn.style, {
+    padding: '1px 6px', fontSize: '8.5px', fontWeight: '700',
+    border: '1px solid rgba(45,255,179,0.4)', borderRadius: '4px',
+    background: 'rgba(45,255,179,0.08)', color: 'var(--dafe-glow, #2dffb3)',
+    cursor: 'pointer',
+  });
+  ogBtn.onclick = () => openOakGuard();
+
+  titleRow.appendChild(title);
+  titleRow.appendChild(ogBtn);
+  indicatorListEl.appendChild(titleRow);
 
   for (const inst of active) {
     const section = document.createElement('div');
@@ -1560,6 +1622,7 @@ function buildIndicatorList() {
 }
 
 function updateUI() {
+  syncIndicatorMenu();
   const vpToggle = document.getElementById('vp-toggle');
   if (vpToggle) {
     vpToggle.classList.toggle('active', volumeEnabled);
@@ -2071,6 +2134,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const opt = document.createElement('option');
         opt.value = ind.name;
         opt.textContent = ind.name;
+        opt.dataset.library = 'true';
         group.appendChild(opt);
       }
       indSelect.appendChild(group);
@@ -2084,6 +2148,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       indSelect.value = '';
     });
+    syncIndicatorMenu();
   }
 
   document.getElementById('bar-type-select')?.addEventListener('change', (e) => {
@@ -2297,14 +2362,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const appendChat = (role: string, text: string) => {
       (window as any).__osAppendChat?.(role, text);
     };
-    // Fresh-create intent ("create a NEW indicator…") must not be routed
-    // through the edit path — preservation instructions there made the
-    // model keep the previous script's machinery (EMA ribbon) inside an
-    // unrelated RSI request. Explicit create → phased generation.
-    const wantsFreshCreate = /\b(create|generate|build|make)\b[^.\n]{0,70}\b(new|indicator|script|model)\b/i.test(msg)
-      && !/\b(edit|modify|change|add|remove|keep|preserve|delete)\b/i.test(msg);
-    if (wantsFreshCreate && hasRealEditorScript()) {
-      appendChat('agent', 'Creating a new indicator from scratch (not editing the current script)…');
+    // Route to the full hardened create pipeline (concept brief -> exemplar
+    // injection -> best-of-2 drafts -> mechanical repair -> gated fix loop)
+    // whenever:
+    //   1. the editor is empty (!hasRealEditorScript()) and the message did
+    //      not paste an inline script to repair, OR
+    //   2. the user is asking to create/design/build a model rather than edit
+    //      the existing script in the editor.
+    const isInlineScriptRepair = /\b(fix|repair|upgrade|correct|debug)\b[^.\n]{0,50}\bscript\b/i.test(msg) && /```/.test(msg);
+    const wantsFreshCreate = (
+      /\b(create|generate|build|make|design|write)\b/i.test(msg)
+      || /\bi want (?:an?|to)\b/i.test(msg)
+    ) && !/\b(edit|modify|change|fix|repair|upgrade|preserve|this script|current script)\b/i.test(msg);
+    if ((!hasRealEditorScript() && !isInlineScriptRepair) || wantsFreshCreate) {
+      appendChat('agent', hasRealEditorScript()
+        ? 'Creating a new signal model from scratch (not editing the current script)…'
+        : 'Generating signal model through the verified pipeline…');
       await agentGenerateIndicatorPhased(msg, undefined, (t) => appendChat('agent', t.slice(0, 300)));
       return;
     }
@@ -2402,7 +2475,7 @@ CRITICAL RULES:
               appendChat('agent', coverageProblems.length > 0
                 ? `⏳ Draft failed request-coverage (${coverageProblems.length} problem(s)) — auto-fixing…`
                 : '⏳ Draft failed validation — auto-fixing…');
-              const iter = await advisor.validateAndIterate(code, 3, snapshot, undefined, msg, coverageFn);
+              const iter = await advisor.validateAndIterate(code, 3, snapshot, undefined, msg, coverageFn, source, prefer3D);
               code = iter.finalCode;
               appendChat('agent', iter.valid
                 ? '✓ Auto-fix passed validation and request-coverage.'
@@ -3846,7 +3919,7 @@ CRITICAL RULES:
       tradingPanel.classList.add('dragging');
       const onMove = (ev: MouseEvent) => {
         tradingPanel.style.left = Math.max(0, Math.min(window.innerWidth - 100, ev.clientX - tOffX)) + 'px';
-        tradingPanel.style.top = Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - tOffY)) + 'px';
+        tradingPanel.style.top = clearOfHeaderTop(Math.min(window.innerHeight - 40, ev.clientY - tOffY)) + 'px';
         tradingPanel.style.right = 'auto';
       };
       const onUp = () => {
@@ -3936,7 +4009,7 @@ CRITICAL RULES:
       nY = e.clientY - newsBox.offsetTop;
       const onMove = (ev: MouseEvent) => {
         newsBox.style.left = Math.max(0, ev.clientX - nX) + 'px';
-        newsBox.style.top = Math.max(0, ev.clientY - nY) + 'px';
+        newsBox.style.top = clearOfHeaderTop(ev.clientY - nY) + 'px';
         newsBox.style.right = 'auto';
       };
       const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -4077,6 +4150,11 @@ function frameBody(now: number) {
     vpCacheBins = volumeBins;
   }
 
+  // The 3D Bar View sits on top of this canvas. Clear it every 3D frame so the
+  // last 2D frame (candles, overlays, background) never shows through as a
+  // second image of the same chart.
+  if (is3DMode) ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+
   // ── 3D indicator scene takes over when pane='3d' is active ──
   // getCombinedPlots() walks every plot of every active indicator (which can
   // be thousands of entries — plot()/hline() push once per BAR, not once per
@@ -4084,10 +4162,36 @@ function frameBody(now: number) {
   // of calling it again, which was doubling that cost on every single frame.
   const activeIndicators = hasActiveIndicators();
   const combined3d = activeIndicators ? getCombinedPlots() : null;
+  // Runtime Pane-Law Enforcement: if a script passes pane="3d" on a series
+  // whose values sit outside the visible candle price range (e.g. stdev/vol,
+  // momentum, RSI, or ATR at 0.5..3 on a 600 SPY chart), automatically route
+  // that layer to pane="separate" (the lower 3D Instrument Deck) so it never
+  // renders as a giant spiky forest over the price candles.
+  if (combined3d && transformed.length > 0) {
+    let vMin = Infinity, vMax = -Infinity;
+    const s0 = Math.max(0, visStart), s1 = Math.min(transformed.length - 1, visEnd);
+    for (let i = s0; i <= s1; i++) {
+      if (transformed[i].low < vMin) vMin = transformed[i].low;
+      if (transformed[i].high > vMax) vMax = transformed[i].high;
+    }
+    const vSpan = (vMax - vMin) || 1;
+    for (const p3 of combined3d.plot3d as OakPlot3D[]) {
+      if (p3.pane !== '3d') continue;
+      const fin = p3.series.slice(s0, s1 + 1).filter(v => isFinite(v) && !isNaN(v));
+      if (fin.length === 0) continue;
+      const inPrice = fin.filter(v => v >= vMin - vSpan * 0.5 && v <= vMax + vSpan * 0.5).length;
+      if (inPrice / fin.length < 0.5) {
+        p3.pane = 'separate';
+      }
+    }
+  }
   // The 2D/3D mode toggle is authoritative: in 2D mode a pane="3d" script
   // degrades to the lower 3D pane + 2D main plots instead of forcing the
   // unified takeover (the "chose 2D but it stayed 3D" bug).
   const hasPane3d = is3DMode && combined3d ? combined3d.plot3d.some(p => p.pane === '3d') : false;
+  // Main-pane 3D layers are drawn by the 3D overlay (toggle3DViz); their 2D
+  // twins must not also draw beneath it.
+  const main3DActive = is3DMode && combined3d ? combined3d.plot3d.some(p => p.pane === 'main') : false;
   if (!hasPane3d && isChart3DMode()) dispose3DScene();
 
   // barcolor() plots recolor candles directly (not drawn via
@@ -4115,9 +4219,36 @@ function frameBody(now: number) {
 
   if (hasPane3d) {
     // 3D indicator mode: render bars + indicator geometry + 3D shapes in Three.js
-    const shape3DForMain = combined3d
+    const shape3DForMain: OakPlot[] = combined3d
       ? [...combined3d.main, ...combined3d.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane === '3d')
       : [];
+    // Bilateral 2D → 3D signal bridge: if the script emitted 2D plotshape()
+    // markers on the main chart without plotshape_3d(), mirror them as 3D
+    // cones on the candle plane so signals are always visible in 3D mode.
+    if (combined3d && !shape3DForMain.some(p => p.type === 'plot3d_shape')) {
+      for (const p of combined3d.main) {
+        if (p.type !== 'shape') continue;
+        const st = String((p as any).style || '').toLowerCase();
+        const shape3d = st === 'triangledown' || st === 'arrowdown'
+          ? 'conedown'
+          : st === 'circle'
+            ? 'sphere'
+            : st === 'diamond' || st === 'square'
+              ? 'diamond'
+              : 'coneup';
+        shape3DForMain.push({
+          type: 'plot3d_shape',
+          name: p.name || '',
+          barIdx: p.barIdx,
+          price: p.price ?? p.value,
+          color: p.color || (shape3d === 'conedown' ? '#ff4477' : '#22cc88'),
+          shape3d: shape3d as any,
+          size: 0.8,
+          z_level: 0,
+          pane: '3d',
+        });
+      }
+    }
     renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.clientWidth, canvas.clientHeight, shape3DForMain, bgViz);
     // Draw time axis on the 2D canvas (always needed)
     drawTimeAxis(ctx, transformed, view);
@@ -4180,22 +4311,82 @@ function frameBody(now: number) {
       }
     }
 
-    if (String(filterKey) !== oakPathKey || !oakPathCache) {
-      oakPathKey = String(filterKey);
-      oakPathCache = { mainPlots: combined.main, sepPlots: combined.sep };
+    const nextOakKey = `${filterKey}|${is3DMode ? 3 : 2}|${hasPane3d ? 1 : 0}`;
+    if (nextOakKey !== oakPathKey || !oakPathCache) {
+      oakPathKey = nextOakKey;
+      const mainPlots: OakPlot[] = [...combined.main];
+      const sepPlots: OakPlot[] = [...combined.sep];
+
+      // Bilateral 3D ↔ 2D bridge: every 3D layer and 3D marker that the 2D view
+      // does not already draw gets a 2D twin, so a mixed script reads in both views.
+      if (!is3DMode) {
+        const layers3d = combined.plot3d as OakPlot3D[];
+        mainPlots.push(...layerTwins(layers3d.filter(p => p.pane === '3d' || p.pane === 'main'), mainPlots, 'main'));
+        sepPlots.push(...layerTwins(layers3d.filter(p => p.pane === 'separate'), sepPlots, 'separate'));
+        mainPlots.push(...shapeTwins([...combined.main, ...combined.sep].filter(p => p.type === 'plot3d_shape'), mainPlots));
+      }
+
+      oakPathCache = { mainPlots, sepPlots };
+
+      const synthesizeSep3D = (): OakPlot3D[] => {
+        const out: OakPlot3D[] = [...(combined.plot3d.filter(p => p.pane === 'separate') as OakPlot3D[])];
+        if (out.length === 0 && sepPlots.length > 0) {
+          const byName = new Map<string, { series: number[]; color: string }>();
+          for (const sp of sepPlots) {
+            if (sp.type !== 'line' || typeof sp.value !== 'number') continue;
+            const key = sp.name || 'Series';
+            let entry = byName.get(key);
+            if (!entry) {
+              entry = { series: new Array(transformed.length).fill(NaN), color: sp.color || '#38d0ff' };
+              byName.set(key, entry);
+            }
+            const idx = typeof sp.barIdx === 'number' ? sp.barIdx : 0;
+            if (idx >= 0 && idx < transformed.length) entry.series[idx] = sp.value;
+          }
+          const synthStyles: Array<OakPlot3D['style']> = ['manifold', 'ribbon', 'bars3d'];
+          let sIdx = 0;
+          for (const [name, entry] of byName) {
+            out.push({
+              type: 'plot3d',
+              name,
+              series: entry.series,
+              style: synthStyles[sIdx % synthStyles.length],
+              color: entry.color,
+              pane: 'separate',
+              z_level: sIdx,
+            });
+            sIdx++;
+          }
+        }
+        return out;
+      };
 
       if (hasPane3d) {
-        // 3D indicator active: no separate pane 3D, no 2D overlays
-        hide3D();
+        // 3D main-chart takeover active: if the script also has separate-pane
+        // 3D layers (or separate-pane 2D series), keep the lower 3D Instrument
+        // Deck open too; otherwise hide it.
+        const extraSep3D = synthesizeSep3D();
+        if (extraSep3D.length > 0) {
+          const shape3DforSep = [...combined.main, ...combined.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane !== '3d');
+          show3D(extraSep3D, shape3DforSep, transformed.length);
+        } else {
+          hide3D();
+        }
         if (isViz3DActive()) disposeViz();
-      } else {
-        // Regular mode: handle separate pane 3D + overlay 3D
-        const sep3D = combined.plot3d.filter(p => p.pane === 'separate' || (!is3DMode && p.pane === '3d')) as OakPlot3D[];
+      } else if (is3DMode) {
+        // 3D mode: lower pane ALWAYS renders the 3D Quantitative Instrument Deck
+        // whenever separate-pane 3D layers OR separate-pane 2D series exist.
+        const sep3D = synthesizeSep3D();
         const shape3DforSep = [...combined.main, ...combined.sep].filter(p => (p.type === 'plot3d_shape' || p.type === 'plot3d_label') && p.pane !== '3d');
-        show3D(sep3D, shape3DforSep, transformed.length);
-        const main3D = combined.plot3d.filter(p => p.pane !== 'separate') as OakPlot3D[];
+        if (sep3D.length > 0) show3D(sep3D, shape3DforSep, transformed.length);
+        else hide3D();
+        const main3D = combined.plot3d.filter(p => p.pane === 'main') as OakPlot3D[];
         if (main3D.length > 0 && !isViz3DActive()) toggle3DViz(transformed, view, canvas.clientWidth, canvas.clientHeight);
         if (main3D.length === 0 && isViz3DActive()) { disposeViz(); }
+      } else {
+        // 2D mode: tear down 3D overlays and render 2D main + 2D secondary charts
+        if (isViz3DActive()) disposeViz();
+        hide3D();
       }
     }
     if (filterKey > 0) {
@@ -4204,7 +4395,7 @@ function frameBody(now: number) {
         secCtx.fillStyle = '#0a0a18';
         secCtx.fillRect(0, 0, secCanvas.clientWidth, secCanvas.clientHeight);
       } else {
-        if (oakPathCache.mainPlots.length > 0 && !isChart3DMode()) {
+        if (oakPathCache.mainPlots.length > 0 && !isChart3DMode() && !main3DActive) {
           drawOakScriptPlots(ctx, oakPathCache.mainPlots, transformed, view);
         }
         if (oakPathCache.sepPlots.length > 0) drawSecondaryChart(secCtx, oakPathCache.sepPlots, transformed, view);

@@ -645,6 +645,32 @@ export function validate(source: string): ValidationResult {
     });
   }
 
+  // ── array(...) takes ONE size argument. Given values it returns an EMPTY
+  //    array, so every average over it silently reads 0. Values go in [a, b]. ──
+  for (let i = 0; i + 1 < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.value !== 'array' || tokens[i + 1]?.value !== '(' || tokens[i - 1]?.value === '.') continue;
+    let depth = 0;
+    let commas = 0;
+    let inside = 0;
+    for (let j = i + 2; j < tokens.length; j++) {
+      const nt = tokens[j];
+      if (nt.value === ')' && depth === 0) break;
+      if (nt.value === '(' || nt.value === '[') depth++;
+      else if (nt.value === ')' || nt.value === ']') depth--;
+      else if (nt.value === ',' && depth === 0) commas++;
+      inside++;
+    }
+    if (inside > 0 && commas + 1 >= 2) {
+      issues.push({
+        line: t.line, col: t.col,
+        severity: 'error', code: 'ARRAY_CTOR_VALUES',
+        message: 'array() takes one size argument and returns an EMPTY array when given values, so every average or sum over it reads 0',
+        fix: 'build the array with a literal: values = [ch1, ch2, ch3]',
+      });
+    }
+  }
+
   // ── Function signature check ──
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];

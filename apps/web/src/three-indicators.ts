@@ -69,7 +69,7 @@ export function setChart3DVisualSettings(patch: Partial<Chart3DVisualSettings>):
 }
 
 export function resetChart3DCamera(): void {
-  _orbitTheta = 0; _orbitPhi = 1.0; _orbitDist = 18;
+  _orbitTheta = -0.16; _orbitPhi = 1.24; _orbitDist = 14;
   _orbitTarget.set(0, 0, 0);
   applyOrbitCam();
   renderFrame();
@@ -140,8 +140,9 @@ const BASE_FOV_DEG = 45;
 const X_STRETCH_CLAMP: [number, number] = [0.85, 1.8];
 let _lastMainFitSig: string | null = null;
 
+// The instrument frame is content, not scenery: it stretches with the bars.
 function isSceneDecoration(obj: THREE.Object3D): boolean {
-  return obj instanceof THREE.Light || obj instanceof THREE.GridHelper;
+  return obj instanceof THREE.Light || obj instanceof THREE.GridHelper || obj === _starfield || obj instanceof THREE.Points;
 }
 
 function mainContentBox(): THREE.Box3 | null {
@@ -156,19 +157,32 @@ function mainContentBox(): THREE.Box3 | null {
   return has && !box.isEmpty() ? box : null;
 }
 
+/** Stretch main-scene content along X by k. Idempotent: each object keeps its
+ *  unstretched base transform and is set from it on every call. The old
+ *  multiply compounded on persisting objects (the candle group), so candles
+ *  drifted wider than freshly built indicator lines. */
 function stretchMainContentX(k: number): void {
   if (!_scene) return;
   for (const child of _scene.children) {
     if (isSceneDecoration(child)) continue;
-    child.position.x *= k;
-    child.scale.x *= k;
-    child.traverse(o => { if (o instanceof THREE.Sprite) o.scale.x /= k; });
+    const base = child.userData as { baseX?: number; baseSX?: number };
+    if (base.baseX === undefined) { base.baseX = child.position.x; base.baseSX = child.scale.x; }
+    child.position.x = (base.baseX as number) * k;
+    if (child instanceof THREE.Sprite) continue;
+    child.scale.x = (base.baseSX as number) * k;
+    child.traverse(o => {
+      if (o === child || !(o instanceof THREE.Sprite)) return;
+      const sb = o.userData as { baseSX?: number };
+      if (sb.baseSX === undefined) sb.baseSX = o.scale.x;
+      o.scale.x = (sb.baseSX as number) / k;
+    });
   }
 }
 
 function fitAndStretchMainScene(contentSig: string): void {
   if (!_scene || !_camera) return;
   const aspect = _camera.aspect;
+  stretchMainContentX(1);
   const box = mainContentBox();
   if (!box) return;
   const size = box.getSize(new THREE.Vector3());
@@ -180,16 +194,15 @@ function fitAndStretchMainScene(contentSig: string): void {
   _lastMainFitSig = contentSig;
   const fitted = mainContentBox();
   if (!fitted) return;
-  // Box-face fit + 0.75×depth margin — fills the frame while keeping the
-  // tilted orbit camera outside the content's front face (see the lower
-  // pane's twin of this logic for why both fit extremes failed).
+  // Box-face fit + bounded depth margin — fills the frame while keeping the
+  // tilted orbit camera outside the content's front face.
   const s = fitted.getSize(new THREE.Vector3());
   const center = fitted.getCenter(new THREE.Vector3());
   const vHalf = (_camera.fov * Math.PI / 180) / 2;
   const hHalf = Math.atan(Math.tan(vHalf) * aspect);
   const dV = (s.y / 2) / Math.tan(vHalf);
   const dH = (s.x / 2) / Math.tan(hHalf);
-  _orbitDist = Math.max(4, Math.min(50, Math.max(dV, dH) * 1.1 + s.z * 0.75));
+  _orbitDist = Math.max(8, Math.min(20, Math.max(dV, dH) * 1.12 + Math.min(s.z, 3) * 0.5));
   _orbitTarget.copy(center);
   applyOrbitCam();
 }
@@ -927,7 +940,7 @@ let _barGroup: THREE.Group | null = null;
 let _lastVisibleRangeKey: string | null = null;
 let _orbitEnabled = false;
 let _orbitDragging = false, _orbitLX = 0, _orbitLY = 0;
-let _orbitTheta = 0, _orbitPhi = 1.0, _orbitDist = 18;
+let _orbitTheta = -0.16, _orbitPhi = 1.24, _orbitDist = 14;
 const _orbitTarget = new THREE.Vector3(0, 0, 0);
 
 function enableOrbitMain(): void {
@@ -1000,7 +1013,45 @@ function applyOrbitCam(): void {
 
 export function isChart3DMode(): boolean { return _chart3DMode; }
 
-// ─── 3D price bar group builder ─────────────────────────────
+function buildMainInstrumentCage(bars: BaseBar[], view: ViewState, width: number): THREE.Group | null {
+  const visible = visibleBars(bars, view, width);
+  if (visible.length < 2) return null;
+  const { min: minP, max: maxP, range: pRange } = normRange(visible);
+  const cage = new THREE.Group();
+
+  // Span the same bars as the candles (first and last visible bar, plus room for
+  // the candle bodies), so the frame follows zoom, pan and new bars.
+  const total = visible.length;
+  const x0 = barXNorm(0, total, width, view) - 0.35;
+  const x1 = barXNorm(total - 1, total, width, view) + 0.35;
+  const y0 = -3.0, y1 = 3.0;
+  const zBack = -0.65, zFront = 0.65;
+
+  const linePts: THREE.Vector3[] = [];
+  // Horizontal price reference lines on back plane + right scale post
+  for (let s = 0; s <= 4; s++) {
+    const frac = s / 4;
+    const y = y0 + (y1 - y0) * frac;
+    linePts.push(
+      new THREE.Vector3(x0, y, zBack), new THREE.Vector3(x1, y, zBack),
+      new THREE.Vector3(x1, y, zBack), new THREE.Vector3(x1, y, zFront),
+    );
+    const price = minP + pRange * frac;
+    const fmt = price >= 100 ? price.toFixed(2) : price.toFixed(3);
+    const lbl = makeTextSprite(fmt, s === 2 ? '#ffd43b' : '#7ce8ff', 0.48);
+    lbl.position.set(x1 + 0.65, y, zFront * 0.5);
+    cage.add(lbl);
+  }
+  // Vertical corner posts
+  for (const [cx, cz] of [[x0, zBack], [x1, zBack], [x1, zFront]]) {
+    linePts.push(new THREE.Vector3(cx, y0, cz), new THREE.Vector3(cx, y1, cz));
+  }
+  cage.add(new THREE.LineSegments(
+    new THREE.BufferGeometry().setFromPoints(linePts),
+    new THREE.LineBasicMaterial({ color: 0x2b4b88, transparent: true, opacity: 0.36 }),
+  ));
+  return cage;
+}
 
 function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.Group | null {
   const visible = visibleBars(bars, view, width);
@@ -1010,7 +1061,10 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
   const total = visible.length;
   const maxV = Math.max(...visible.map(b => b.volume), 1);
   const group = new THREE.Group();
-  const depthScale = 0.8;
+  // Candle width, depth and wick thickness are fractions of one bar pitch, so
+  // neighbouring bodies never overlap and each candle sits on its own bar.
+  const pitch = (view.barSpacing / halfW) * 5;
+  const wickW = Math.max(0.006, pitch * 0.14);
 
   for (let i = 0; i < total; i++) {
     const bar = visible[i];
@@ -1029,8 +1083,8 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
     const bodyBot = Math.min(oY, cY);
     const bodyH = Math.max(0.06, bodyTop - bodyBot);
     const vs = bar.volume / maxV;
-    const bw = 0.12 + vs * 0.2;
-    const bd = depthScale * 0.3 + vs * depthScale * 0.2;
+    const bw = Math.max(0.012, pitch * (0.55 + 0.3 * vs));
+    const bd = Math.max(0.012, pitch * (0.55 + 0.3 * vs));
 
     // Body
     const body = new THREE.Mesh(
@@ -1044,7 +1098,7 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
     if (hY > bodyTop + 0.01) {
       const wickH = hY - bodyTop;
       const wick = new THREE.Mesh(
-        new THREE.BoxGeometry(0.035, wickH, 0.035),
+        new THREE.BoxGeometry(wickW, wickH, wickW),
         new THREE.MeshPhongMaterial({ color: col, emissive: em, transparent: true, opacity: 0.6 })
       );
       wick.position.set(xNorm, bodyTop + wickH / 2, 0);
@@ -1055,7 +1109,7 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
     if (bodyBot - lY > 0.01) {
       const wickH = bodyBot - lY;
       const wick = new THREE.Mesh(
-        new THREE.BoxGeometry(0.035, wickH, 0.035),
+        new THREE.BoxGeometry(wickW, wickH, wickW),
         new THREE.MeshPhongMaterial({ color: col, emissive: em, transparent: true, opacity: 0.6 })
       );
       wick.position.set(xNorm, lY + wickH / 2, 0);
@@ -1067,16 +1121,27 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
 
 // ─── Series-level geometry builders for plot3d data ─────────
 
-function seriesNorm(series: number[], view: ViewState, width: number, _totalBars: number): { vals: number[]; sMin: number; sMax: number; sRange: number } {
-  const vals = series.filter(v => isFinite(v) && !isNaN(v));
-  const sMin = Math.min(...vals, 0);
+function seriesNorm(series: number[], _view: ViewState, _width: number, _totalBars: number): {
+  vals: number[];
+  indexed: Array<{ barIdx: number; val: number }>;
+  sMin: number;
+  sMax: number;
+  sRange: number;
+} {
+  const indexed: Array<{ barIdx: number; val: number }> = [];
+  for (let i = 0; i < series.length; i++) {
+    const v = series[i];
+    if (isFinite(v) && !isNaN(v)) indexed.push({ barIdx: i, val: v });
+  }
+  const vals = indexed.map(p => p.val);
+  const sMin = vals.length ? Math.min(...vals) : 0;
   // Robust max (98th percentile): one warmup spike (e.g. the first ATR
   // value) used to either flatten every other bar or render as a single
   // giant column filling the scene. Visual scaling only — data untouched.
   const sorted = [...vals].sort((a, b) => a - b);
   const p98 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.98))] : 1;
-  const sMax = Math.max(p98, 1);
-  return { vals, sMin, sMax, sRange: sMax - sMin || 1 };
+  const sMax = vals.length ? Math.max(p98, sMin + 1e-6) : 1;
+  return { vals, indexed, sMin, sMax, sRange: sMax - sMin || 1 };
 }
 
 function seriesX(i: number, count: number, view: ViewState, width: number, visibleCount?: number): number {
@@ -1103,22 +1168,24 @@ function seriesY(val: number, sMin: number, sRange: number): number {
 }
 
 function buildSurfaceFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Mesh | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
+  const { vals, indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
   if (vals.length < 3) return null;
   const count = Math.min(vals.length, 100);
   const segments = count, depth = 20;
   const verts: number[] = [], idx: number[] = [], cols: number[] = [];
   const baseCol = new THREE.Color(color);
+  const totalLen = Math.max(series.length, 2);
 
   for (let xi = 0; xi < segments; xi++) {
-    const vi = Math.floor((xi / (segments - 1)) * (vals.length - 1));
-    const x = seriesX(xi, segments, view, width, visibleCount);
-    const val = seriesY(vals[vi], sMin, sRange);
+    const vi = Math.floor((xi / (segments - 1)) * (indexed.length - 1));
+    const sample = indexed[vi];
+    const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+    const val = seriesY(sample.val, sMin, sRange);
     // Height-ramp vertex colors (deep blue → cyan → green → yellow →
     // magenta) — the layered-terrain read of the Pine "3D surface"
     // creations, instead of one flat color fading to black. The script's
     // own color tints the ramp so author intent still shows.
-    const frac = Math.max(0, Math.min(1, (vals[vi] - sMin) / sRange));
+    const frac = Math.max(0, Math.min(1, (sample.val - sMin) / sRange));
     const ramp = new THREE.Color().setHSL((1 - frac) * 0.68, 0.85, 0.32 + frac * 0.3);
     ramp.lerp(baseCol, 0.25);
     for (let di = 0; di < depth; di++) {
@@ -1141,12 +1208,19 @@ function buildSurfaceFromSeries(series: number[], view: ViewState, width: number
 }
 
 function buildRibbonFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number, straight = false): THREE.Mesh | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 3) return null;
-  const step = Math.max(1, Math.floor(vals.length / 150));
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 3) return null;
+  const step = Math.max(1, Math.floor(indexed.length / 150));
+  const totalLen = Math.max(series.length, 2);
   const pts: THREE.Vector3[] = [];
-  for (let i = 0; i < vals.length; i += step)
-    pts.push(new THREE.Vector3(seriesX(i, vals.length, view, width, visibleCount), seriesY(vals[i], sMin, sRange), 0));
+  for (let i = 0; i < indexed.length; i += step) {
+    const sample = indexed[i];
+    pts.push(new THREE.Vector3(seriesX(sample.barIdx, totalLen, view, width, visibleCount), seriesY(sample.val, sMin, sRange), 0));
+  }
+  if (indexed.length - 1 > 0 && (indexed.length - 1) % step !== 0) {
+    const last = indexed[indexed.length - 1];
+    pts.push(new THREE.Vector3(seriesX(last.barIdx, totalLen, view, width, visibleCount), seriesY(last.val, sMin, sRange), 0));
+  }
   // straight (line3d): exact segments — Catmull-Rom smoothing turns
   // step-shaped level series (fibs/pivots) into spike blades.
   let curve: THREE.Curve<THREE.Vector3>;
@@ -1157,58 +1231,59 @@ function buildRibbonFromSeries(series: number[], view: ViewState, width: number,
   } else {
     curve = new THREE.CatmullRomCurve3(pts);
   }
-  return new THREE.Mesh(new THREE.TubeGeometry(curve, pts.length * 2, straight ? 0.03 : 0.06, 6, false),
-    new THREE.MeshPhongMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color).multiplyScalar(0.15), shininess: 50 }));
+  return new THREE.Mesh(new THREE.TubeGeometry(curve, pts.length * 2, straight ? 0.032 : 0.06, 6, false),
+    new THREE.MeshPhongMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color).multiplyScalar(0.22), shininess: 60 }));
 }
 
 function buildBarsFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 2) return null;
-  const count = Math.min(vals.length, 80);
-  const bw = 10 / count * 0.5;
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 2) return null;
+  const count = Math.min(indexed.length, 80);
+  const bw = 10 / Math.max(series.length, count) * 0.5;
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   const col = new THREE.Color(color);
   for (let i = 0; i < count; i++) {
-    const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-    // Baseline-anchored columns: height grows UP from the floor (-3),
-    // clamped to the scene. Centering boxes on seriesY made tall values
-    // tower both ways and read as floating slabs.
-    const h = Math.min(3, Math.max(0.05, ((vals[vi] - sMin) / sRange) * 3));
+    const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+    const sample = indexed[vi];
+    const h = Math.min(3, Math.max(0.05, ((sample.val - sMin) / sRange) * 3));
     const b = new THREE.Mesh(new THREE.BoxGeometry(bw, h, bw), new THREE.MeshPhongMaterial({ color: col, emissive: col.clone().multiplyScalar(0.15 * _vis.emissiveScale), shininess: 30 }));
-    b.position.set(seriesX(i, count, view, width, visibleCount), -3 + h / 2, 0);
+    b.position.set(seriesX(sample.barIdx, totalLen, view, width, visibleCount), -3 + h / 2, 0);
     group.add(b);
   }
   return group;
 }
 
 function buildScatterFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 2) return null;
-  const count = Math.min(vals.length, 120);
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 2) return null;
+  const count = Math.min(indexed.length, 120);
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   for (let i = 0; i < count; i++) {
-    const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-    const frac = (vals[vi] - sMin) / sRange;
+    const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+    const sample = indexed[vi];
+    const frac = (sample.val - sMin) / sRange;
     const hue = (1 - frac) * 0.35;
     const c = new THREE.Color().setHSL(hue, 0.75, 0.45 + frac * 0.25);
-    // Deterministic placement/size — random jitter made identical data
-    // render differently every rebuild and read as noise, not signal.
     const s = new THREE.Mesh(new THREE.SphereGeometry(0.05 + frac * 0.05, 5, 4),
       new THREE.MeshPhongMaterial({ color: c, emissive: c.clone().multiplyScalar(0.2 * _vis.emissiveScale), shininess: 40 }));
-    s.position.set(seriesX(i, count, view, width, visibleCount), seriesY(vals[vi], sMin, sRange), 0);
+    s.position.set(seriesX(sample.barIdx, totalLen, view, width, visibleCount), seriesY(sample.val, sMin, sRange), 0);
     group.add(s);
   }
   return group;
 }
 
 function buildHelixFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 4) return null;
-  const count = vals.length, twists = 3, radius = 0.6;
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 4) return null;
+  const count = indexed.length, twists = 3, radius = 0.6;
+  const totalLen = Math.max(series.length, 2);
   const s1: THREE.Vector3[] = [], s2: THREE.Vector3[] = [];
   for (let i = 0; i < count; i++) {
-    const x = seriesX(i, count, view, width, visibleCount);
-    const y = seriesY(vals[i], sMin, sRange);
+    const sample = indexed[i];
+    const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+    const y = seriesY(sample.val, sMin, sRange);
     const a = (i / count) * Math.PI * 2 * twists;
     s1.push(new THREE.Vector3(x + Math.cos(a) * radius, y, Math.sin(a) * radius));
     s2.push(new THREE.Vector3(x + Math.cos(a + Math.PI) * radius, y, Math.sin(a + Math.PI) * radius));
@@ -1223,18 +1298,20 @@ function buildHelixFromSeries(series: number[], view: ViewState, width: number, 
 }
 
 function buildManifoldFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 5) return null;
-  const count = Math.min(vals.length, 60), longs = 6, mw = 1.0;
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 5) return null;
+  const count = Math.min(indexed.length, 60), longs = 6, mw = 1.0;
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   const col = new THREE.Color(color);
   for (let l = 0; l < longs; l++) {
     const lf = l / (longs - 1);
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i < count; i++) {
-      const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-      const x = seriesX(i, count, view, width, visibleCount);
-      const y = seriesY(vals[vi], sMin, sRange);
+      const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+      const sample = indexed[vi];
+      const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+      const y = seriesY(sample.val, sMin, sRange);
       pts.push(new THREE.Vector3(x + (lf - 0.5) * mw, y + (lf - 0.5) * 0.6, (lf - 0.5) * 0.6));
     }
     const c = col.clone().lerp(new THREE.Color(0x4488ff), lf);
@@ -1246,18 +1323,20 @@ function buildManifoldFromSeries(series: number[], view: ViewState, width: numbe
 }
 
 function buildTrailFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 3) return null;
-  const count = Math.min(vals.length, 80);
+  const { vals, indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 3) return null;
+  const count = Math.min(indexed.length, 80);
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   const col = new THREE.Color(color);
   const maxV = Math.max(...vals.map(Math.abs), 1);
   const upper: THREE.Vector3[] = [], lower: THREE.Vector3[] = [];
   for (let i = 0; i < count; i++) {
-    const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-    const x = seriesX(i, count, view, width, visibleCount);
-    const y = seriesY(vals[vi], sMin, sRange);
-    const w = 0.06 + (Math.abs(vals[vi]) / maxV) * 0.35;
+    const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+    const sample = indexed[vi];
+    const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+    const y = seriesY(sample.val, sMin, sRange);
+    const w = 0.06 + (Math.abs(sample.val) / maxV) * 0.35;
     upper.push(new THREE.Vector3(x, y + w, 0.12));
     lower.push(new THREE.Vector3(x, y - w, 0.12));
   }
@@ -1272,21 +1351,21 @@ function buildTrailFromSeries(series: number[], view: ViewState, width: number, 
 }
 
 function buildVortexFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 4) return null;
-  const count = Math.min(vals.length, 100), spirals = 6, maxR = 1.6;
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 4) return null;
+  const count = Math.min(indexed.length, 100), spirals = 6, maxR = 1.6;
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   for (let s = 0; s < spirals; s++) {
     const phase = (s / spirals) * Math.PI * 2;
     const hue = (s / spirals) * 0.8;
     const pts: THREE.Vector3[] = [];
     for (let i = 0; i < count; i++) {
-      const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-      const x = seriesX(i, count, view, width, visibleCount);
-      const y = seriesY(vals[vi], sMin, sRange);
+      const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+      const sample = indexed[vi];
+      const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+      const y = seriesY(sample.val, sMin, sRange);
       const pct = i / count;
-      // Spiral tightens toward the most recent bar — visually reads as
-      // "converging" when the underlying series stays coherent/aligned.
       const r = maxR * (1 - pct * 0.85);
       const angle = pct * Math.PI * 4 + phase;
       pts.push(new THREE.Vector3(x + Math.cos(angle) * r, y + Math.sin(angle) * r * 0.5, Math.sin(angle) * r));
@@ -1299,15 +1378,17 @@ function buildVortexFromSeries(series: number[], view: ViewState, width: number,
 }
 
 function buildNebulaFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 3) return null;
-  const count = Math.min(vals.length, 60), perBar = 7;
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 3) return null;
+  const count = Math.min(indexed.length, 60), perBar = 7;
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   for (let i = 0; i < count; i++) {
-    const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-    const x = seriesX(i, count, view, width, visibleCount);
-    const y = seriesY(vals[vi], sMin, sRange);
-    const frac = (vals[vi] - sMin) / sRange;
+    const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+    const sample = indexed[vi];
+    const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+    const y = seriesY(sample.val, sMin, sRange);
+    const frac = (sample.val - sMin) / sRange;
     const hue = 0.65 - frac * 0.65;
     for (let p = 0; p < perBar; p++) {
       const c = new THREE.Color().setHSL(hue + (Math.random() - 0.5) * 0.08, 0.65, 0.35 + Math.random() * 0.3);
@@ -1321,17 +1402,17 @@ function buildNebulaFromSeries(series: number[], view: ViewState, width: number,
 }
 
 function buildConstellationFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 3) return null;
-  const count = Math.min(vals.length, 80);
+  const { indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 3) return null;
+  const count = Math.min(indexed.length, 80);
+  const totalLen = Math.max(series.length, 2);
   const group = new THREE.Group();
   const positions: THREE.Vector3[] = [];
   for (let i = 0; i < count; i++) {
-    const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-    positions.push(new THREE.Vector3(seriesX(i, count, view, width, visibleCount), seriesY(vals[vi], sMin, sRange), 0));
+    const vi = Math.floor((i / (count - 1)) * (indexed.length - 1));
+    const sample = indexed[vi];
+    positions.push(new THREE.Vector3(seriesX(sample.barIdx, totalLen, view, width, visibleCount), seriesY(sample.val, sMin, sRange), 0));
   }
-  // Connect nearby points only — dense clusters read as "strongly correlated",
-  // sparse/unconnected stretches read as "structure breaking down".
   const linkPts: THREE.Vector3[] = [];
   for (let i = 0; i < count; i++) {
     for (let j = i + 1; j < Math.min(i + 4, count); j++) {
@@ -1352,28 +1433,41 @@ function buildConstellationFromSeries(series: number[], view: ViewState, width: 
   return group;
 }
 
-function buildTorusFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number): THREE.Group | null {
-  const { vals, sMin, sRange } = seriesNorm(series, view, width, 0);
-  if (vals.length < 3) return null;
-  const count = Math.min(vals.length, 70);
+function buildTorusFromSeries(series: number[], view: ViewState, width: number, color: string, visibleCount?: number, layerIdx = 0): THREE.Group | null {
+  const { vals, indexed, sMin, sRange } = seriesNorm(series, view, width, 0);
+  if (indexed.length < 2) return null;
+  // Event/shockwave series often sit at 0 on normal bars and spike > 0 on
+  // trigger bars. Render rings only on active bars when 0 is the baseline, so
+  // inactive bars don't litter the floor with dead rings or vertical spikes.
+  const nonZero = indexed.filter(s => Math.abs(s.val) > 1e-6);
+  const isSparseEvent = nonZero.length >= 1 && nonZero.length < indexed.length * 0.75;
+  const active = isSparseEvent ? nonZero : indexed;
+  const count = Math.min(active.length, 18);
+  const totalLen = Math.max(series.length, 2);
   const maxV = Math.max(...vals.map(Math.abs), 1);
   const group = new THREE.Group();
   const col = new THREE.Color(color);
   const centerPts: THREE.Vector3[] = [];
+  const concentricBoost = layerIdx * 0.14;
   for (let i = 0; i < count; i++) {
-    const vi = Math.floor((i / (count - 1)) * (vals.length - 1));
-    const x = seriesX(i, count, view, width, visibleCount);
-    const y = seriesY(vals[vi], sMin, sRange);
+    const vi = count > 1 ? Math.floor((i / (count - 1)) * (active.length - 1)) : 0;
+    const sample = active[vi];
+    const x = seriesX(sample.barIdx, totalLen, view, width, visibleCount);
+    const y = seriesY(sample.val, sMin, sRange);
     centerPts.push(new THREE.Vector3(x, y, 0));
-    const mag = Math.abs(vals[vi]) / maxV;
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.18 + mag * 0.35, 0.018 + mag * 0.025, 6, 10),
-      new THREE.MeshPhongMaterial({ color: col, emissive: col.clone().multiplyScalar(0.25), transparent: true, opacity: 0.4 + mag * 0.35 }));
+    const mag = Math.abs(sample.val) / maxV;
+    const radius = 0.16 + concentricBoost + mag * 0.24;
+    const tube = 0.016 + mag * 0.018;
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, tube, 8, 20),
+      new THREE.MeshPhongMaterial({ color: col, emissive: col.clone().multiplyScalar(0.35), transparent: true, opacity: 0.55 + mag * 0.35 }));
     ring.position.set(x, y, 0);
     ring.rotation.x = Math.PI / 2;
     group.add(ring);
   }
-  group.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(centerPts), count, 0.02, 6, false),
-    new THREE.MeshPhongMaterial({ color: 0xb48cff, emissive: 0x442288, transparent: true, opacity: 0.3 })));
+  if (!isSparseEvent && centerPts.length >= 3) {
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(centerPts), centerPts.length * 2, 0.016, 6, false),
+      new THREE.MeshPhongMaterial({ color: col, emissive: col.clone().multiplyScalar(0.2), transparent: true, opacity: 0.25 })));
+  }
   return group;
 }
 
@@ -1482,6 +1576,8 @@ export function renderMain3DScene(
       const bg = buildBarGroup(bars, view, width);
       if (bg) { _barGroup = bg; _scene.add(_barGroup); }
     }
+    const mainCage = buildMainInstrumentCage(bars, view, width);
+    if (mainCage) _scene.add(mainCage);
 
     const visibleCount = end - start + 1;
 
@@ -1538,7 +1634,20 @@ export function renderMain3DScene(
       const zKey = anyLevel ? (p.z_level ?? 0) : pi;
       const occurrence = zKeyOccurrence.get(zKey) ?? 0;
       zKeyOccurrence.set(zKey, occurrence + 1);
-      const zPlane = (zPlaneByKey.get(zKey) ?? 0) - zCenter + occurrence * 0.6;
+      // Price-level lines/ribbons (Fibonacci retracements, session extremes,
+      // price EMAs) are ALREADY separated vertically in Y by their price.
+      // Spreading them across Z (-3..+3) pushes them off the candles across
+      // the floor. Keep price-scaled lines/ribbons hugging the candle plane!
+      const isPriceLine = _yPriceMap !== null && (p.style === 'line3d' || p.style === 'ribbon');
+      const isPriceLevel = _yPriceMap !== null && p.style === 'line3d';
+      const isCenteredTorus = p.style === 'torus';
+      const zPlane = isCenteredTorus
+        ? 0
+        : isPriceLevel
+          ? 0
+          : isPriceLine
+            ? 0.22 + pi * 0.04
+            : (zPlaneByKey.get(zKey) ?? 0) - zCenter + occurrence * 0.6;
 
       let obj: THREE.Object3D | null = null;
       switch (p.style) {
@@ -1563,11 +1672,20 @@ export function renderMain3DScene(
         case 'constellation':
           obj = buildConstellationFromSeries(series, view, width, col, visibleCount); break;
         case 'torus':
-          obj = buildTorusFromSeries(series, view, width, col, visibleCount); break;
+          obj = buildTorusFromSeries(series, view, width, col, visibleCount, pi); break;
         case 'ridgeline':
           obj = buildRidgelineFromSeries(series, view, width, visibleCount); break;
       }
       if (obj) { obj.position.z += zPlane; _scene.add(obj); }
+      if (obj && isPriceLevel) {
+        // Levels sit on the candle plane, so they draw over the bodies rather
+        // than being hidden inside them.
+        obj.traverse(o => {
+          if (!(o instanceof THREE.Mesh) || Array.isArray(o.material)) return;
+          o.material.depthTest = false;
+          o.renderOrder = 10;
+        });
+      }
     }
 
     // ── Render 3D shapes (plotshape_3d with pane="3d") ──
@@ -1577,34 +1695,36 @@ export function renderMain3DScene(
         const { min: minP, max: maxP, range: pRange } = normRange(visible);
         const halfW = width * 0.5;
         const total = visible.length;
-        // A shape/label sharing a z_level with a plot3d series lands at that
-        // SAME depth (falls back to the plain magnitude formula if no series
-        // uses that level) — previously this used an unrelated `* 0.3` scale,
-        // so e.g. a "BUY" label never actually lined up with its own signal
-        // line's plane once that line had a non-zero z_level.
-        const shapeZ = (zLevel: number | undefined): number => {
+        const isPriceAligned = (price: number | undefined): boolean =>
+          typeof price === 'number' && isFinite(price)
+          && price >= minP - pRange * 0.5 && price <= maxP + pRange * 0.5;
+        const shapeZ = (zLevel: number | undefined, price?: number): number => {
+          if (isPriceAligned(price)) return 0.28;
           const key = zLevel ?? 0;
           const known = zPlaneByKey.get(key);
           return (known ?? key * Z_SPACING) - zCenter;
         };
-        let labelBudget = 40;
-        // Declutter: skip same-text labels that would land on top of an
-        // already-placed one (newest wins) — dense signal runs otherwise
-        // stack "BULL FIB" dozens of times into unreadable towers.
+        let labelBudget = 4;
+        // Declutter: keep only the MOST RECENT visible occurrence of each
+        // distinct label text (newest wins) and avoid close spatial overlap.
+        const seenLabelTexts = new Set<string>();
         const placedLabels: Array<{ text: string; x: number; y: number }> = [];
         for (let li = shapes.length - 1; li >= 0 && labelBudget > 0; li--) {
           const sp = shapes[li];
           if (sp.type !== 'plot3d_label' || sp.pane !== '3d' || !sp.text) continue;
           const vi = (sp.barIdx ?? 0) - start;
           if (vi < 0 || vi >= total) continue;
+          if (seenLabelTexts.has(sp.text)) continue;
           const px = barX(vi, total, width, view.barSpacing, view.scrollX);
           const x = ((px - halfW) / halfW) * 5;
-          const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3 + 0.4;
-          if (placedLabels.some(pl => pl.text === sp.text && Math.abs(pl.x - x) < 1.0 && Math.abs(pl.y - y) < 0.6)) continue;
+          const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3 + 0.42;
+          if (placedLabels.some(pl => Math.abs(pl.x - x) < 1.2 && Math.abs(pl.y - y) < 0.5)) continue;
+          seenLabelTexts.add(sp.text);
           placedLabels.push({ text: sp.text, x, y });
           labelBudget--;
-          const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', sp.size ?? 1);
-          sprite.position.set(x, y, shapeZ(sp.z_level));
+          const sprite = makeTextSprite(sp.text, sp.color ?? '#ffffff', Math.min(1.0, sp.size ?? 0.9));
+          sprite.position.set(x, y, shapeZ(sp.z_level, sp.price));
+          sprite.renderOrder = 20;
           _scene.add(sprite);
         }
         for (const sp of shapes) {
@@ -1615,8 +1735,8 @@ export function renderMain3DScene(
           const px = barX(vi, total, width, view.barSpacing, view.scrollX);
           const x = ((px - halfW) / halfW) * 5;
           const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
-          const z = shapeZ(sp.z_level);
-          const s = (sp.size ?? 1) * _vis.markerScale;
+          const z = shapeZ(sp.z_level, sp.price);
+          const s = Math.max(0.45, Math.min(1.0, sp.size ?? 0.8)) * _vis.markerScale;
           // 3D image billboard (plotimage_3d) — resolved from the shared
           // sync-read image decode cache; skip the geometry switch entirely.
           if (sp.shape3d === 'image') {
@@ -1634,28 +1754,29 @@ export function renderMain3DScene(
           }
           let geometry: THREE.BufferGeometry;
           switch (sp.shape3d) {
-            case 'cube': geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3); break;
-            case 'sphere': geometry = new THREE.SphereGeometry(s * 0.2, 8, 6); break;
-            case 'pyramid': geometry = new THREE.ConeGeometry(s * 0.25, s * 0.35, 4); break;
-            case 'torus': geometry = new THREE.TorusGeometry(s * 0.2, s * 0.07, 6, 8); break;
-            case 'diamond': geometry = new THREE.OctahedronGeometry(s * 0.25); break;
-            case 'coneup': case 'conedown': geometry = new THREE.ConeGeometry(s * 0.22, s * 0.5, 12); break;
-            default: geometry = new THREE.BoxGeometry(s * 0.25, s * 0.25, s * 0.25);
+            case 'cube': geometry = new THREE.BoxGeometry(s * 0.22, s * 0.22, s * 0.22); break;
+            case 'sphere': geometry = new THREE.SphereGeometry(s * 0.16, 8, 6); break;
+            case 'pyramid': geometry = new THREE.ConeGeometry(s * 0.18, s * 0.28, 4); break;
+            case 'torus': geometry = new THREE.TorusGeometry(s * 0.16, s * 0.05, 6, 8); break;
+            case 'diamond': geometry = new THREE.OctahedronGeometry(s * 0.18); break;
+            case 'coneup': case 'conedown': geometry = new THREE.ConeGeometry(s * 0.12, s * 0.28, 12); break;
+            default: geometry = new THREE.BoxGeometry(s * 0.2, s * 0.2, s * 0.2);
           }
           const col = new THREE.Color(sp.color ?? '#b48cff');
           const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
-            color: col, emissive: col.clone().multiplyScalar(0.2 * _vis.emissiveScale),
+            color: col, emissive: col.clone().multiplyScalar(0.25 * _vis.emissiveScale),
             specular: 0x222244, shininess: 60,
           }));
           // Signal cones: offset from the bar (gap scales with size), tip
           // pointing AT the price — coneup below, conedown flipped above.
           let yOff = 0;
           let baseRotZ = 0;
-          if (sp.shape3d === 'coneup') { yOff = -(0.15 + 0.25) * s * _vis.markerGap; }
-          else if (sp.shape3d === 'conedown') { yOff = (0.15 + 0.25) * s * _vis.markerGap; baseRotZ = Math.PI; }
+          if (sp.shape3d === 'coneup') { yOff = -(0.20) * s * _vis.markerGap; }
+          else if (sp.shape3d === 'conedown') { yOff = (0.20) * s * _vis.markerGap; baseRotZ = Math.PI; }
           const d2r = Math.PI / 180;
           mesh.rotation.set((sp.rx ?? 0) * d2r, (sp.ry ?? 0) * d2r, baseRotZ + (sp.rz ?? 0) * d2r);
           mesh.position.set(x, y + yOff, z);
+          mesh.renderOrder = 20;
           _scene.add(mesh);
         }
       }
@@ -1680,7 +1801,7 @@ export function dispose3DScene(): void {
   _barGroup = null;
   _lastVisibleRangeKey = null;
   _lastMainFitSig = null;
-  _orbitTheta = 0; _orbitPhi = 1.0; _orbitDist = 18;
+  _orbitTheta = -0.16; _orbitPhi = 1.24; _orbitDist = 14;
   _orbitTarget.set(0, 0, 0);
   disableOrbitMain();
   disposeViz();

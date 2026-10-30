@@ -388,6 +388,7 @@ export function rejectEdit(editId: string): void {
   // Restore the original code if available
   if (edit?.originalCode && config) {
     config.setEditorSource(edit.originalCode);
+    config.onRunScript(edit.originalCode);
   }
 
   pendingEdits = pendingEdits.filter(e => e.id !== editId);
@@ -424,8 +425,10 @@ export function applyAgentCode(
   if (permissionMode === 'auto-accept') {
     acceptEdit(edit.id);
   } else {
-    // Always show the code first, then ask
+    // Immediately run a live preview on the chart so the user sees the new
+    // 2D/3D visuals right away, while keeping the Accept/Decline bar active.
     config.setEditorSource(normalized);
+    config.onRunScript(normalized);
     showPermissionPanel(edit);
   }
 }
@@ -491,8 +494,12 @@ export async function agentGenerateIndicator(
   if (resp.ok) {
     const codeBlocks = extractCodeBlocks(resp.reply);
     if (codeBlocks.length > 0) {
-      applyAgentCode(codeBlocks[0], description, 'create');
-      onUpdate?.(resp.reply);
+      const prefer3D = (window as any).__osGetPrefer3D?.() ?? true;
+      const { checkRequestCoverage } = await import('./request-coverage');
+      const coverageFn = (code: string) => checkRequestCoverage(description, code, { prefer3D });
+      const iter = await agent.validateAndIterate(codeBlocks[0], 3, snapshot, undefined, description, coverageFn, undefined, prefer3D);
+      applyAgentCode(iter.finalCode, description, 'create');
+      onUpdate?.(iter.valid ? resp.reply : `${resp.reply}\n\n⚠ May have remaining issues — review in editor.`);
     } else {
       onUpdate?.(resp.reply);
     }
@@ -514,17 +521,17 @@ export async function agentGenerateIndicatorPhased(
   if (!agent || !config) return;
 
   const snapshot = config.getSnapshot() || undefined;
+  const prefer3D = (window as any).__osGetPrefer3D?.() ?? true;
 
   try {
-    const result = await agent.generateIndicatorPhased(description, snapshot, onPhase);
+    const result = await agent.generateIndicatorPhased(description, snapshot, onPhase, { prefer3D });
 
     if (result.finalCode) {
-      // Run pre-flight validation AND request-coverage before applying.
-      // "Validated" must mean both syntactically legal AND actually the
-      // requested indicator (see request-coverage.ts).
+      // The agent pipeline already ran the gates; this is the bridge's
+      // independent acceptance check (same validator + coverage the harness
+      // uses). It must pass before code reaches the review panel.
       const { validate, formatValidationIssues } = await import('../oakscript/validator');
       const { checkRequestCoverage } = await import('./request-coverage');
-      const prefer3D = (window as any).__osGetPrefer3D?.() ?? true;
       const coverageFn = (code: string) => checkRequestCoverage(description, code, { prefer3D });
       const validation = validate(result.finalCode);
       const coverageProblems = coverageFn(result.finalCode);
@@ -534,7 +541,7 @@ export async function agentGenerateIndicatorPhased(
         // Iterate with the agent to fix — pass the original request so the
         // self-correction loop doesn't lose track of what the script was
         // supposed to do (see validateAndIterate's fixPrompt).
-        const iterResult = await agent.validateAndIterate(result.finalCode, 3, snapshot, undefined, description, coverageFn);
+        const iterResult = await agent.validateAndIterate(result.finalCode, 3, snapshot, undefined, description, coverageFn, undefined, prefer3D);
         if (iterResult.valid) {
           applyAgentCode(iterResult.finalCode, description, 'create');
           onUpdate?.(`✓ Indicator generated and validated (${iterResult.iterations} iteration(s))`);
@@ -634,13 +641,17 @@ export async function agentEditIndicator(
 
   const currentSource = config.getEditorSource();
   const snapshot = config.getSnapshot() || undefined;
+  const prefer3D = (window as any).__osGetPrefer3D?.() ?? true;
   const resp = await agent.editIndicator(currentSource, editDescription, snapshot);
 
   if (resp.ok) {
     const codeBlocks = extractCodeBlocks(resp.reply);
     if (codeBlocks.length > 0) {
-      applyAgentCode(codeBlocks[0], editDescription, 'edit', currentSource);
-      onUpdate?.(resp.reply);
+      const { checkRequestCoverage } = await import('./request-coverage');
+      const coverageFn = (code: string) => checkRequestCoverage(editDescription, code, { prefer3D, previousSource: currentSource });
+      const iter = await agent.validateAndIterate(codeBlocks[0], 3, snapshot, undefined, editDescription, coverageFn, currentSource, prefer3D);
+      applyAgentCode(iter.finalCode, editDescription, 'edit', currentSource);
+      onUpdate?.(iter.valid ? resp.reply : `${resp.reply}\n\n⚠ May have remaining issues — review in editor.`);
     } else {
       onUpdate?.(resp.reply);
     }
@@ -695,13 +706,16 @@ export async function agentDiagnoseErrors(
   if (resp.ok) {
     const codeBlocks = extractCodeBlocks(resp.reply);
     if (codeBlocks.length > 0) {
+      // Diagnose is already a repair request; run the same validator gate so
+      // a "fixed" reply that still does not parse never reaches the editor.
+      const iter = await agent.validateAndIterate(codeBlocks[0], 2, snapshot);
       applyAgentCode(
-        codeBlocks[0],
+        iter.finalCode,
         `Auto-fix ${errors.length} indicator error(s)`,
         'fix',
         currentSource,
       );
-      onUpdate?.(resp.reply);
+      onUpdate?.(iter.valid ? resp.reply : `${resp.reply}\n\n⚠ Some issues remain — review in editor.`);
     } else {
       onUpdate?.(resp.reply);
     }

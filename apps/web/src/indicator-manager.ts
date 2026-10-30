@@ -177,6 +177,12 @@ export function getActiveInstances(): IndicatorInstance[] {
   return instanceOrder.map(i => instances.get(i)!).filter(Boolean);
 }
 
+/** True while a library model with this name is on the chart (one instance per model). */
+export function isIndicatorNameActive(name: string): boolean {
+  for (const inst of instances.values()) if (inst.name === name) return true;
+  return false;
+}
+
 export function setInstanceOverrides(id: string, overrides: Map<string, any>): void {
   const inst = instances.get(id);
   if (inst) inst.overrides = overrides;

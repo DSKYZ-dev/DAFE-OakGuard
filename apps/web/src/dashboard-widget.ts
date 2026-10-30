@@ -6,6 +6,8 @@ import { getActiveInstances } from './indicator-manager';
 import type { IndicatorInstance } from './indicator-manager';
 import type { OakPlot } from './oakscript/runtime';
 import type { InputDef } from './oakscript/editor';
+import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-band';
+import { WINDOW_TOP_MIN, NEWS_BOX_BOTTOM, WINDOW_GAP, clearOfHeaderTop } from './header-band';
 
 export function createDashboard(): {
   panel: HTMLDivElement;
@@ -20,8 +22,8 @@ export function createDashboard(): {
   Object.assign(panel.style, {
     position: 'fixed',
     right: '12px',
-    top: '60px',
-    width: '340px',
+    top: `${WINDOW_TOP_MIN}px`,
+    width: '320px',
     minWidth: '240px',
     minHeight: '180px',
     maxHeight: '75vh',
@@ -36,12 +38,19 @@ export function createDashboard(): {
     overflow: 'hidden',
   });
 
+  let placedBySaved = false;
   // Restore position
   try {
     const saved = JSON.parse(localStorage.getItem('dafe_dashboard_bounds') || 'null');
-    if (saved) {
+    // A window saved over the bottom toolbar covers its selects and buttons, so
+    // drop that position and open the window in its default place instead.
+    const onToolbar = !!saved
+      && overlapsToolbarBand(saved.left || 0, saved.width || 0, (saved.top || 0) + (saved.height || 0));
+    if (onToolbar) localStorage.removeItem('dafe_dashboard_bounds');
+    else if (saved) {
+      placedBySaved = true;
       if (saved.left) { panel.style.left = `${saved.left}px`; panel.style.right = 'auto'; }
-      if (saved.top) panel.style.top = `${saved.top}px`;
+      if (saved.top) panel.style.top = `${clearOfHeaderTop(saved.top)}px`;
       if (saved.width) panel.style.width = `${saved.width}px`;
       if (saved.height) panel.style.maxHeight = `${saved.height}px`;
     }
@@ -103,8 +112,11 @@ export function createDashboard(): {
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
     panel.style.right = 'auto';
-    panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dragX))}px`;
-    panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragY))}px`;
+    placedBySaved = true;
+    const left = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dragX));
+    const top = clearOfHeaderTop(clearOfToolbarTop(left, Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragY)), panel.offsetWidth, panel.offsetHeight));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
   });
   document.addEventListener('mouseup', () => {
     if (dragging) {
@@ -142,7 +154,11 @@ export function createDashboard(): {
   });
   document.addEventListener('mousemove', (e) => {
     if (!resizing) return;
-    const nh = Math.max(200, startH + (e.clientY - startMY));
+    let nh = Math.max(200, startH + (e.clientY - startMY));
+    const pr = panel.getBoundingClientRect();
+    if (overlapsToolbarBand(pr.left, pr.width, pr.top + nh)) {
+      nh = Math.max(200, window.innerHeight - TOOLBAR_BAND - pr.top);
+    }
     panel.style.maxHeight = `${nh}px`;
     panel.style.height = `${nh}px`;
   });
@@ -153,7 +169,9 @@ export function createDashboard(): {
   let fontSize = 10;
   sizeDown.onclick = () => { fontSize = Math.max(7, fontSize - 1); updateFont(); };
   sizeUp.onclick = () => { fontSize = Math.min(16, fontSize + 1); updateFont(); };
-  function updateFont() { content.style.fontSize = `${fontSize}px`; }
+  // Rows size themselves from fontSize when rendered, so re-render instead of
+  // changing the container's base font (which shrank the text on A+).
+  function updateFont() { widget.refresh(); }
 
   // Collapse toggle
   let collapsed = false;
@@ -188,7 +206,7 @@ export function createDashboard(): {
     return v.toFixed(3);
   }
 
-  return {
+  const widget = {
     panel,
     refresh() {
       const all = getActiveInstances();
@@ -342,8 +360,19 @@ export function createDashboard(): {
       content.innerHTML = html;
     },
     toggle() { panel.style.display = panel.style.display === 'none' ? 'flex' : 'none'; },
-    show() { panel.style.display = 'flex'; this.refresh(); },
+    show() {
+      // First placement sits under News & Events in the right column. A saved or
+      // dragged position stays where the user left it.
+      if (!placedBySaved) {
+        const news = document.getElementById('news-box');
+        const newsShown = !!news && news.style.display !== 'none';
+        panel.style.top = `${newsShown ? NEWS_BOX_BOTTOM + WINDOW_GAP : WINDOW_TOP_MIN}px`;
+      }
+      panel.style.display = 'flex';
+      this.refresh();
+    },
     hide() { panel.style.display = 'none'; },
     destroy() { panel.remove(); },
   };
+  return widget;
 }

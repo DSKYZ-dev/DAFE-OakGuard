@@ -12,6 +12,8 @@
  */
 import type { InputDef } from './oakscript/editor';
 import { setWebhookUrl, getWebhookUrl, getStoredOverrides, setStoredOverrides, sendAlert } from './oakscript/editor';
+import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-band';
+import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, WINDOW_GAP, clearOfHeaderTop } from './header-band';
 
 export interface DashboardToggleState {
   visible: boolean;
@@ -20,23 +22,22 @@ export interface DashboardToggleState {
 
 function triggerRunWithOverrides(inputs: InputDef[], container: HTMLElement, scope: string | undefined, onRun: (overrides: Map<string, any>) => void): void {
   const overrides = new Map<string, any>();
-  const rows = container.querySelectorAll('.age-input-row');
-  let idx = 0;
+  // Read each parameter from its own row. Matching by row index drifted as
+  // soon as a non-parameter row (the Dashboard toggle) sat above the inputs,
+  // so one parameter's value was saved under another's name.
   for (const input of inputs) {
-    const row = rows[idx];
-    if (row) {
-      if (input.type === 'number') {
-        const numInput = row.querySelector('input[type="number"]') as HTMLInputElement;
-        if (numInput) overrides.set(input.name, parseFloat(numInput.value) || input.defaultValue);
-      } else if (input.type === 'boolean') {
-        const cb = row.querySelector('input[type="checkbox"]') as HTMLInputElement;
-        if (cb) overrides.set(input.name, cb.checked);
-      } else {
-        const textInput = row.querySelector('input[type="text"]') as HTMLInputElement;
-        if (textInput) overrides.set(input.name, textInput.value);
-      }
+    const row = container.querySelector<HTMLElement>(`.age-input-row[data-input-name="${CSS.escape(input.name)}"]`);
+    if (!row) continue;
+    if (input.type === 'number') {
+      const numInput = row.querySelector('input[type="number"]') as HTMLInputElement | null;
+      if (numInput) overrides.set(input.name, parseFloat(numInput.value) || input.defaultValue);
+    } else if (input.type === 'boolean') {
+      const cb = row.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+      if (cb) overrides.set(input.name, cb.checked);
+    } else {
+      const textInput = row.querySelector('input[type="text"]') as HTMLInputElement | null;
+      if (textInput) overrides.set(input.name, textInput.value);
     }
-    idx++;
   }
   setStoredOverrides(overrides, scope);
   onRun(overrides);
@@ -54,14 +55,20 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   // update() and used to namespace saved overrides per-indicator (see
   // getStoredOverrides/setStoredOverrides in oakscript/editor.ts).
   let currentScope: string | undefined;
+  // Structure of the controls currently on screen. A run re-applies the same
+  // controls; rebuilding them then replaced the slider under the pointer.
+  let builtKey: string | null = null;
+  // True once the window has a saved or dragged position; a fresh placement
+  // (beside the indicator list) applies only before that.
+  let placedBySaved = false;
 
   const panel = document.createElement('div');
   panel.id = 'age-inputs-panel';
   Object.assign(panel.style, {
     position: 'fixed',
-    left: '320px',
-    top: '100px',
-    width: '360px',
+    left: `${SECOND_COLUMN_LEFT}px`,
+    top: `${WINDOW_TOP_MIN}px`,
+    width: '336px',
     maxHeight: '85vh',
     minWidth: '280px',
     minHeight: '200px',
@@ -80,7 +87,8 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
     const saved = JSON.parse(localStorage.getItem('age_inputs_bounds') || 'null');
     if (saved) {
       panel.style.left = `${saved.left}px`;
-      panel.style.top = `${saved.top}px`;
+      placedBySaved = true;
+      panel.style.top = `${clearOfHeaderTop(saved.top)}px`;
       if (saved.width) panel.style.width = `${saved.width}px`;
     }
   } catch {}
@@ -128,8 +136,11 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   });
   document.addEventListener('mousemove', (e) => {
     if (!dragging) return;
-    panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dragX))}px`;
-    panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragY))}px`;
+    placedBySaved = true;
+    const left = Math.max(0, Math.min(window.innerWidth - 100, e.clientX - dragX));
+    const top = clearOfHeaderTop(clearOfToolbarTop(left, Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragY)), panel.offsetWidth, panel.offsetHeight));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
   });
   document.addEventListener('mouseup', () => {
     if (dragging) {
@@ -222,8 +233,14 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   });
   document.addEventListener('mousemove', (e) => {
     if (!resizing) return;
-    panel.style.width = `${Math.max(280, startW + (e.clientX - startMX))}px`;
-    panel.style.height = `${Math.max(200, startH + (e.clientY - startMY))}px`;
+    const width = Math.max(280, startW + (e.clientX - startMX));
+    let height = Math.max(200, startH + (e.clientY - startMY));
+    const pr = panel.getBoundingClientRect();
+    if (overlapsToolbarBand(pr.left, width, pr.top + height)) {
+      height = Math.max(200, window.innerHeight - TOOLBAR_BAND - pr.top);
+    }
+    panel.style.width = `${width}px`;
+    panel.style.height = `${height}px`;
   });
   document.addEventListener('mouseup', () => {
     if (resizing) {
@@ -248,6 +265,13 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   return {
     panel,
     update(inputs: InputDef[], name?: string, dashboard?: DashboardToggleState) {
+      const structureKey = JSON.stringify([
+        name ?? '',
+        dashboard ? (dashboard.visible ? 1 : 0) : -1,
+        inputs.map(i => [i.name, i.title, i.type, i.min ?? null, i.max ?? null, i.step ?? null, i.defaultValue ?? null]),
+      ]);
+      if (structureKey === builtKey && scrollArea.childElementCount > 0) return;
+      builtKey = structureKey;
       currentScope = name;
       scrollArea.innerHTML = '';
 
@@ -309,6 +333,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
       for (const input of inputs) {
         const row = document.createElement('div');
         row.className = 'age-input-row';
+        row.dataset.inputName = input.name;
         Object.assign(row.style, {
           display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '5px',
         });
@@ -324,17 +349,23 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
         const currentVal = overrides.has(input.name) ? overrides.get(input.name) : input.defaultValue;
 
         if (input.type === 'number') {
+          // A stored override can sit outside the slider range (left behind by
+          // the old row mix-up); clamp so the number box and slider agree.
+          const rawVal = Number(currentVal);
+          const numVal = Number.isFinite(rawVal)
+            ? Math.min(Number(input.max ?? 200), Math.max(Number(input.min ?? 1), rawVal))
+            : Number(input.defaultValue);
           const slider = document.createElement('input');
           slider.type = 'range';
           slider.min = String(input.min ?? 1);
           slider.max = String(input.max ?? 200);
           slider.step = String(input.step ?? 1);
-          slider.value = String(currentVal);
+          slider.value = String(numVal);
           Object.assign(slider.style, { flex: '1', height: '14px', cursor: 'pointer' });
 
           const numInput = document.createElement('input');
           numInput.type = 'number';
-          numInput.value = String(currentVal);
+          numInput.value = String(numVal);
           numInput.min = slider.min;
           numInput.max = slider.max;
           numInput.step = slider.step;
@@ -379,7 +410,19 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
       }
     },
     toggle() { panel.style.display = panel.style.display === 'none' ? 'flex' : 'none'; },
-    show() { panel.style.display = 'flex'; },
+    show() {
+      if (!placedBySaved) {
+        // First placement: beside the indicator list, on the same top line.
+        const list = document.getElementById('indicator-list');
+        const lr = list ? list.getBoundingClientRect() : null;
+        panel.style.left = `${lr && lr.width > 0 ? Math.round(lr.right + WINDOW_GAP) : SECOND_COLUMN_LEFT}px`;
+        panel.style.top = `${WINDOW_TOP_MIN}px`;
+      }
+      panel.style.display = 'flex';
+      // A saved or dragged position can sit over the toolbar or the header; clamp it once laid out.
+      const r = panel.getBoundingClientRect();
+      panel.style.top = `${clearOfHeaderTop(clearOfToolbarTop(r.left, r.top, r.width, r.height))}px`;
+    },
     hide() { panel.style.display = 'none'; },
     destroy() { panel.remove(); },
   };

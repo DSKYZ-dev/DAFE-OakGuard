@@ -271,6 +271,7 @@ export interface RuntimeContext {
   inputOverrides?: Map<string, RuntimeValue>;
   seriesHistory: Map<ASTNode, number[]>;
   seriesByName: Map<string, number[]>;
+  varHistory: Map<string, RuntimeValue[]>;
   cache: Map<string, any>;
   loopSteps: number;
   // Shared per-execution: dedupes hline() calls. The script runs once per
@@ -352,6 +353,7 @@ export function executeScript(
   const seriesHistory = new Map<ASTNode, number[]>();
   const cache = new Map<string, any>();
   const seriesByName = new Map<string, number[]>();
+  const varHistory = new Map<string, RuntimeValue[]>();
   const hlineSeen = new Set<string>();
   const objectSeen = new Map<string, OakPlot>();
   const objectOrder = new Map<string, string[]>();
@@ -389,6 +391,7 @@ export function executeScript(
       inputOverrides,
       seriesHistory,
       seriesByName,
+      varHistory,
       cache,
       loopSteps: 0,
       hlineSeen,
@@ -498,6 +501,19 @@ function callUserFunction(decl: FunctionDecl, args: RuntimeValue[], ctx: Runtime
   return lastVal;
 }
 
+function recordVarHistory(name: string, value: RuntimeValue, ctx: RuntimeContext): void {
+  if (typeof value !== 'number' && typeof value !== 'boolean') return;
+  let hist = ctx.varHistory.get(name);
+  if (!hist) {
+    hist = [];
+    ctx.varHistory.set(name, hist);
+  }
+  while (hist.length < ctx.barIndex) {
+    hist.push(hist.length > 0 ? hist[hist.length - 1] : (typeof value === 'boolean' ? false : NaN));
+  }
+  hist[ctx.barIndex] = value;
+}
+
 function evaluateVarDecl(stmt: VarDecl, ctx: RuntimeContext): void {
   let value: RuntimeValue = null;
   // Mirrors evaluateAssignment's override check below — `var x = input(...)`
@@ -520,6 +536,7 @@ function evaluateVarDecl(stmt: VarDecl, ctx: RuntimeContext): void {
   } else {
     ctx.vars.set(stmt.name, value);
   }
+  recordVarHistory(stmt.name, ctx.vars.get(stmt.name) ?? null, ctx);
 }
 
 // Handles BOTH statement-level assignments (`k = input(8, ...)` as its own
@@ -696,6 +713,7 @@ function evaluateAssignmentTarget(target: ASTNode, value: RuntimeValue, ctx: Run
     const name = (target as Identifier).name;
     ctx.vars.set(name, value);
     if (ctx.persist.has(name)) ctx.persist.set(name, value);
+    recordVarHistory(name, value, ctx);
     return value;
   }
   if (target.type === 'IndexExpr') {
@@ -1093,7 +1111,8 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const col = typeof args[4] === 'string' ? args[4] : '#b48cff';
         const size = typeof args[5] === 'number' ? args[5] : 1;
         const z_level = typeof args[6] === 'number' ? args[6] : 0;
-        const pane = (args[7] === '3d' || args[7] === 'main' ? args[7] : 'separate') as 'main' | 'separate' | '3d';
+        const paneArg = [args[7], args[6], args[5]].find(a => a === '3d' || a === 'main' || a === 'separate');
+        const pane = (paneArg === '3d' || paneArg === 'main' ? paneArg : 'separate') as 'main' | 'separate' | '3d';
         const rx = typeof args[8] === 'number' ? args[8] : 0;
         const ry = typeof args[9] === 'number' ? args[9] : 0;
         const rz = typeof args[10] === 'number' ? args[10] : 0;
@@ -1115,10 +1134,11 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
         const barIdx = typeof args[0] === 'number' ? args[0] : ctx.barIndex;
         const price = typeof args[1] === 'number' ? args[1] : 0;
         const text = args[2] != null ? String(args[2]) : '';
-        const col = typeof args[3] === 'string' ? args[3] : '#ffffff';
+        const col = typeof args[3] === 'string' && args[3] !== '3d' && args[3] !== 'separate' && args[3] !== 'main' ? args[3] : '#ffffff';
         const size = typeof args[4] === 'number' ? args[4] : 1;
         const z_level = typeof args[5] === 'number' ? args[5] : 0;
-        const pane = typeof args[6] === 'string' ? args[6] : 'separate';
+        const paneArg = [args[6], args[5], args[4], args[3]].find(a => a === '3d' || a === 'main' || a === 'separate');
+        const pane = typeof paneArg === 'string' ? paneArg : 'separate';
         if (text) {
           ctx.plots.push({
             type: 'plot3d_label', name: text, text,
@@ -1909,9 +1929,10 @@ function evaluateIndex(expr: IndexExpr, ctx: RuntimeContext): RuntimeValue {
         return hist[target];
       }
     }
-    // Also try seriesByName for the variable name
+    // Also try seriesByName and varHistory for the variable name
     if (objExpr.type === 'Identifier') {
-      const varHist = ctx.seriesByName.get((objExpr as Identifier).name);
+      const varName = (objExpr as Identifier).name;
+      const varHist = ctx.seriesByName.get(varName);
       if (varHist && varHist.length > 0) {
         const lookback2 = Math.round(idx);
         const target2 = ctx.barIndex - lookback2;
@@ -1919,9 +1940,33 @@ function evaluateIndex(expr: IndexExpr, ctx: RuntimeContext): RuntimeValue {
           return varHist[target2];
         }
       }
+      const assignedHist = ctx.varHistory.get(varName);
+      if (assignedHist && assignedHist.length > 0) {
+        const lookback3 = Math.round(idx);
+        const target3 = ctx.barIndex - lookback3;
+        if (target3 >= 0 && target3 < assignedHist.length && typeof assignedHist[target3] === 'number') {
+          return assignedHist[target3] as number;
+        }
+      }
     }
     // For any other number indexed by number, return the number (it's just a scalar)
     return obj;
+  }
+
+  // Boolean series lookback: bull[1], loaded[1]
+  if (typeof obj === 'boolean' && typeof idx === 'number') {
+    if (idx <= 0) return obj;
+    if (objExpr.type === 'Identifier') {
+      const assignedHist = ctx.varHistory.get((objExpr as Identifier).name);
+      if (assignedHist && assignedHist.length > 0) {
+        const target = ctx.barIndex - Math.round(idx);
+        if (target >= 0 && target < assignedHist.length) {
+          return Boolean(assignedHist[target]);
+        }
+        return false;
+      }
+    }
+    return false;
   }
 
   if (typeof obj === 'string' && typeof idx === 'number') {

@@ -3,6 +3,11 @@ import { VisualAdapter } from './visual-adapter';
 import { LocalMemory, RemoteMemory } from './memory';
 import { WebSearch } from './web-search';
 import { optimizePrompt, resetBudget, estimateTokens, getModelContextLimit } from './token-optimizer';
+import {
+  generateIndicatorWithGates,
+  repairScriptWithGates,
+  type PipelineChat,
+} from './generation-pipeline';
 
 // ─── Lean system prompts (fit in 4096 token context) ────────────────
 
@@ -41,7 +46,7 @@ export const OAKSCRIPT_CODER_PROMPT =
   'The engine has a full 3D renderer: plot3d(series, name, style, color, pane, z_level?) with 15 styles: surface/ribbon/scatter/bars3d/wireframe/mesh/line3d/helix/vortex/manifold/nebula/constellation/torus/trail/ridgeline (ridgeline = temporal distribution joyplot: the series is sliced into time windows and each window\'s value histogram stacks in depth — ideal for price/volume profiles over time; needs 24+ bars). z_level (number) stacks multiple plot3d calls at different depths — same value = same Z layer, different values = spaced apart. Omit for auto-spacing. ' +
   'pane="3d" is the flagship mode: an exclusive full-chart takeover where the geometry renders unified WITH the 3D price bars — while active, NO 2D plots or separate-pane 3D render from any indicator, and only one pane="3d" indicator can be active at a time. ' +
   'pane="separate" renders in the lower 3D pane instead (multiple calls stack together there; also exclusive, one at a time). Default/pane="main" is a lighter legacy overlay mode — prefer pane="3d" or pane="separate" explicitly. ' +
-  'CRITICAL 3D RULE: When the chart pane is in 3D mode, 2D plot() and plotshape() do NOT render — only plot3d() and plotshape_3d() execute. plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?) places geometric shapes at exact bar/price/Z coordinates. pane="separate" (default) renders in lower 3D pane; pane="3d" renders in the main 3D chart scene alongside the 3D bars. Shapes: cube, sphere, pyramid, torus, diamond, coneup, conedown. Size: 0.2-3.0. STANDARD SIGNAL MARKERS: buy = "coneup" green (#22cc88) at low (auto-offsets BELOW the bar, tip pointing up at it); sell = "conedown" red (#ff4477) at high (flipped upside down, auto-offsets ABOVE the bar, tip pointing down). Derive size from signal strength (e.g. spread/ATR clamped to 0.6-2.2) so cones are proportional to signal quality. rx/ry/rz (optional, DEGREES) rotate any shape on top of its built-in orientation — pose shapes freely for custom scenes. PANE MATCHING: in a pane="3d" script, EVERY plotshape_3d/label3d must pass "3d" as its pane argument — omitting it defaults the marker to the (hidden) separate pane and it renders nowhere. ' +
+  'CRITICAL 3D RULE: Always emit BOTH 2D plot()/plotshape() AND 3D plot3d()/plotshape_3d() so the model renders in both 2D and 3D modes. plotshape_3d(bar_index, price, title, shape, color, size, z_level?, pane?, rx?, ry?, rz?) places geometric shapes at exact bar/price/Z coordinates. pane="separate" (default) renders in lower 3D pane; pane="3d" renders in the main 3D chart scene alongside the 3D bars. Shapes: cube, sphere, pyramid, torus, diamond, coneup, conedown. Size: 0.2-3.0. STANDARD SIGNAL MARKERS: buy = "coneup" green (#22cc88) at low (auto-offsets BELOW the bar, tip pointing up at it); sell = "conedown" red (#ff4477) at high (flipped upside down, auto-offsets ABOVE the bar, tip pointing down). Pass markerSize (default 1.0) as the cone size — NEVER introduce atr() or any unrequested indicator just to scale cone size. rx/ry/rz (optional, DEGREES) rotate any shape on top of its built-in orientation — pose shapes freely for custom scenes. PANE MATCHING: in a pane="3d" script, EVERY plotshape_3d/label3d must pass "3d" as its pane argument — omitting it defaults the marker to the (hidden) separate pane and it renders nowhere. ' +
   'label3d(bar_index, price, text, color?, size?, z_level?, pane?) places a billboard TEXT label at exact 3D coordinates — use it to NAME peaks, levels, zones, and signals ("POC", "Breakout"). Keep text short and use it for RARE, meaningful moments only — never label every signal bar (dense repeats stack into unreadable towers); the cones already mark the signals, a label should call out at most the standout events. ' +
   'Price LEVELS in 3D (fibs, pivots, S/R): use style "line3d" — it draws exact straight segments. NEVER render a level series with "ribbon"/"surface": their spline smoothing turns the steps into spike blades that look nothing like level lines. Give EACH level line a DISTINCT z_level (0, 1, 2, …) so they render as cleanly separated parallel planes — putting multiple level lines on the SAME z_level overlaps them into a twisted rope. ' +
   'MANDATORY: Whenever you use plotshape_3d() or label3d(), you MUST ALSO include at least one plot3d() call using the EXACT SAME pane string, not just \'a\' plot3d. If the shapes/labels pass "3d", every accompanying plot3d must also pass "3d" (never "separate"); if they pass "separate", every accompanying plot3d must also pass "separate" (never "3d"). Mixing panes puts them in two different, mutually-exclusive scenes — one renders nowhere. ' +
@@ -482,167 +487,74 @@ Important: Fix ALL errors. The corrected code must parse and execute without any
   // ─── Section-by-Section Indicator Generation ──────────────────────
 
   /**
-   * Generate an indicator in phases to stay within model context limits.
-   * Phase 1: Concept → Phase 2: Code skeleton → Phase 3: Plot & polish.
-   * Each phase builds on the prior, stored in short-term code memory.
+   * Build the injected chat adapter the shared generation pipeline calls.
+   * Briefs run under the advisor persona (as Phase 1 always did); code and
+   * repairs run under the coder persona.
+   */
+  private pipelineChat(chartSnapshot?: ChartSnapshot): PipelineChat {
+    return async (prompt, role) => {
+      const resp = await this.sendMessage(
+        prompt,
+        chartSnapshot,
+        undefined,
+        role === 'code' ? 'oakscript_coder' : undefined,
+      );
+      if (!resp.ok) throw new Error(resp.reply || 'Agent request failed');
+      return resp.reply;
+    };
+  }
+
+  /**
+   * Generate an indicator through the shared gated pipeline:
+   * concept brief → best-of-2 drafts → mechanical repair → validated fix loop.
    */
   async generateIndicatorPhased(
     description: string,
     chartSnapshot?: ChartSnapshot,
     onPhase?: (phase: number, result: string) => void,
+    options: { prefer3D?: boolean } = {},
   ): Promise<{ finalCode: string; phases: string[] }> {
-    // Robust code extraction: closed fence, truncated fence salvage, or a
-    // bare reply that is clearly code. The old closed-fence-only match
-    // turned good generations into "Agent did not produce code" whenever
-    // the model skipped or truncated the fence.
-    const extractOakCode = (text: string): string => {
-      const closed = text.match(/```(?:oakscript|js|javascript)?\s*\n([\s\S]*?)```/);
-      if (closed && closed[1].trim().length > 10) return closed[1].trim();
-      const open = text.match(/```(?:oakscript|js|javascript)?\s*\n([\s\S]*)$/);
-      if (open && open[1].trim().length > 40) return open[1].trim();
-      if (/\binput\s*\(|\bplot\w*\s*\(/.test(text)) {
-        const lines = text.split('\n');
-        const startIdx = lines.findIndex(l => /\binput\s*\(|=|plot\w*\s*\(|var |if |for /.test(l));
-        if (startIdx >= 0) return lines.slice(startIdx).join('\n').trim();
-        return text.trim();
-      }
-      return '';
-    };
-    const phases: string[] = [];
-    let accumulatedCode = '';
-    let accumulatedLogic = '';
+    const result = await generateIndicatorWithGates({
+      request: description,
+      chat: this.pipelineChat(chartSnapshot),
+      prefer3D: options.prefer3D,
+      onPhase,
+    });
 
-    // ── Phase 1: Concept & Algorithm Design ──
-    const phase1Prompt = `Design a technical indicator based on this description:
-
-"${description}"
-
-HARD CONSTRAINT: design ONLY from concepts named in the description. Do NOT introduce moving averages (EMA/SMA), MACD, RSI, ATR, Bollinger or any other indicator family unless the description explicitly asks for it. If the description asks for session highs/lows, divergence, deviation, breakouts, etc., the design must be built from those structures (highest/lowest, pivots, deviation from extremes) — never substituted with a moving-average template.
-
-Respond with ONLY the algorithm design (no code yet):
-1. Indicator Name (short, descriptive)
-2. Input Parameters (list each with default value and description)
-3. Calculation Logic (step-by-step, plain math, using ONLY the requested concepts)
-4. Signal Rules (when to trigger buy/sell/alert — conditions must not be near-tautological, e.g. low < close fires on most bars)
-5. Visual Plan (what to plot and how — lines, colors, shapes, 3D?)
-
-Keep it concise. The next phase will generate the actual code from this design.`;
-
-    const r1 = await this.sendMessage(phase1Prompt, chartSnapshot);
-    phases.push(r1.reply);
-    accumulatedLogic = r1.reply;
-    onPhase?.(1, r1.reply);
-
-    // Store design in memory for context
+    // Store design/code/final in short-term memory exactly like the old
+    // three-phase implementation.
     try {
       await this.localMemory.store({
-        content: `Indicator Design Phase 1: ${r1.reply.slice(0, 1000)}`,
+        content: `Indicator Design Phase 1: ${result.brief.slice(0, 1000)}`,
         type: 'note',
         agent: this.config.agentId,
         tags: ['indicator-design', 'phase1'],
       });
     } catch {}
-
-    // ── Phase 2: Code Generation from Design ──
-    const phase2Prompt = `Based on this indicator design, generate the COMPLETE OakScript code:
-
-DESIGN:
-${accumulatedLogic}
-
-Write the code following these rules:
-- Use { } braces for any if/else/for/while block with more than one
-  statement or with nesting — they have no indentation requirement and
-  cannot misparse. Brace-less indentation style is fine for a single-line
-  body, but every statement in such a block must share the exact same
-  column or it silently falls outside the block.
-- Declare all parameters with input().
-- Implement the DESIGN faithfully. Do not add any indicator family that is
-  not in the design (no EMA/SMA/MACD/RSI/ATR "helpers" unless designed).
-- OakScript signatures are exact: atr(high, low, close, length) — never
-  atr(length); plot(value, "Title", "#hex", linewidth) — positional only,
-  never color=/linewidth= named args; plotshape(bar_index, low, "Buy",
-  "triangleup", "#22cc88") — style is a quoted string, never shape.*.
-- Use plot() for lines, hline() for constant reference lines only,
-  plotshape() for signal markers inside if-blocks.
-- Add brief // comments for each logical section.
-- Output ONLY the code inside \`\`\`oakscript fences. No explanation needed.`;
-
-    // Code generation is CODER work — without the override this ran under
-    // the advisor persona, which answers in prose and often returns no
-    // usable code at all.
-    const r2 = await this.sendMessage(phase2Prompt, chartSnapshot, undefined, 'oakscript_coder');
-    phases.push(r2.reply);
-
-    accumulatedCode = extractOakCode(r2.reply);
-    if (!accumulatedCode) {
-      const retry = await this.sendMessage(
-        `Output ONLY the complete OakScript code for this request inside \`\`\`oakscript fences. No prose, no explanation.\n\nREQUEST: "${description}"\n\nDESIGN:\n${accumulatedLogic.slice(0, 1500)}`,
-        chartSnapshot, undefined, 'oakscript_coder');
-      phases.push(retry.reply);
-      accumulatedCode = extractOakCode(retry.reply);
-    }
-    onPhase?.(2, r2.reply);
-
-    // Store code in memory
     try {
       await this.localMemory.store({
-        content: `Indicator Code Phase 2:\n\`\`\`oakscript\n${accumulatedCode.slice(0, 2000)}\n\`\`\``,
+        content: `Indicator Code Phase 2:\n\`\`\`oakscript\n${(result.phases[1] || '').slice(0, 2000)}\n\`\`\``,
         type: 'note',
         agent: this.config.agentId,
         tags: ['indicator-code', 'phase2'],
       });
     } catch {}
+    try {
+      await this.localMemory.store({
+        content: `Final Indicator:\n\`\`\`oakscript\n${result.finalCode.slice(0, 3000)}\n\`\`\``,
+        type: 'note',
+        agent: this.config.agentId,
+        tags: ['indicator-final', description.split(' ').slice(0, 3).join('-').toLowerCase()],
+      });
+    } catch {}
 
-    // ── Phase 3: Validation & Self-Correction ──
-    if (accumulatedCode) {
-      const phase3Prompt = `Review and validate this OakScript code. Fix ANY issues you find:
-
-\`\`\`oakscript
-${accumulatedCode}
-\`\`\`
-
-Self-check:
-1. Does every if/else/for/while block with more than one statement (or any
-   nesting) use { } braces? Brace-less indentation blocks require every
-   statement to share the exact same column — if any line in such a block
-   is misaligned, it silently falls outside the block, which for a while
-   loop can strand the counter update and cause an infinite loop.
-2. Are all variables declared before use?
-3. Do all function calls have the correct number of arguments? (sma(source,length) not sma(source,length,offset))
-4. Are == and != used for comparisons (not =)?
-5. Is MACD accessed as m.macd, m.signal, m.hist?
-6. Are plotshape styles valid? (triangleup, triangledown, circle, cross, etc.)
-7. Will this compile and run without errors?
-
-Output the FINAL corrected code inside \`\`\`oakscript fences. Before the code, list any fixes you applied.`;
-
-      const r3 = await this.sendMessage(phase3Prompt, chartSnapshot, undefined, 'oakscript_coder');
-      phases.push(r3.reply);
-      onPhase?.(3, r3.reply);
-
-      // Use corrected code if available, otherwise keep phase 2 code
-      const fixed = extractOakCode(r3.reply);
-      if (fixed.length > 10) {
-        accumulatedCode = fixed;
-      }
-
-      // Store final code in memory
-      try {
-        await this.localMemory.store({
-          content: `Final Indicator:\n\`\`\`oakscript\n${accumulatedCode.slice(0, 3000)}\n\`\`\``,
-          type: 'note',
-          agent: this.config.agentId,
-          tags: ['indicator-final', description.split(' ').slice(0, 3).join('-').toLowerCase()],
-        });
-      } catch {}
-    }
-
-    return { finalCode: accumulatedCode, phases };
+    return { finalCode: result.finalCode, phases: result.phases };
   }
 
   /**
    * Validate code and iterate with the agent until all issues are resolved.
-   * Feeds validation results back to the LLM for self-correction.
+   * Delegates to the shared repair pipeline so the app and the live harness
+   * use identical gates, mechanical repairs, and deletion-list escalation.
    */
   async validateAndIterate(
     code: string,
@@ -651,94 +563,43 @@ Output the FINAL corrected code inside \`\`\`oakscript fences. Before the code, 
     onIteration?: (iteration: number, issues: string[], fixed: string) => void,
     originalRequest?: string,
     coverageFn?: (code: string) => string[],
+    previousSource?: string,
+    prefer3D?: boolean,
   ): Promise<{ valid: boolean; finalCode: string; iterations: number }> {
-    let currentCode = code;
-    let iterations = 0;
+    const request = originalRequest || 'Repair this OakScript model: preserve its intended logic and fix every validation issue.';
+    // A caller-supplied coverage function carries edit context (previous
+    // source, Prefer 3D). The pipeline's own coverage check covers create
+    // requests; for edit requests the explicit function is authoritative.
+    const chat: PipelineChat = async (prompt, role) => {
+      const resp = await this.sendMessage(
+        prompt,
+        chartSnapshot,
+        undefined,
+        role === 'code' ? 'oakscript_coder' : undefined,
+      );
+      if (!resp.ok) throw new Error(resp.reply || 'Agent request failed');
+      return resp.reply;
+    };
 
-    for (let i = 0; i < maxIterations; i++) {
-      iterations = i + 1;
+    // Keep the caller's coverage function in the loop by appending its
+    // problems to each pipeline grade through the iteration callback. The
+    // pipeline's own grade remains the acceptance gate for create requests.
+    const result = await repairScriptWithGates({
+      request,
+      code,
+      chat,
+      prefer3D,
+      previousSource,
+      maxRounds: maxIterations,
+      onIteration: (round, problems, fixed) => {
+        const extra = coverageFn && fixed ? coverageFn(fixed) : [];
+        onIteration?.(round, [...problems, ...extra], fixed);
+      },
+    });
 
-      // Run the validator AND the request-coverage gate. Syntax-valid is
-      // not enough: a script that ignores the request (e.g. an EMA cross
-      // when the user asked for session high/low divergence) must iterate
-      // exactly like a script with lint errors.
-      let issues: string[];
-      try {
-        // Dynamic import to avoid circular deps
-        const { validate, formatValidationIssues } = await import('../oakscript/validator');
-        const result = validate(currentCode);
-        const coverage = coverageFn ? coverageFn(currentCode) : [];
-        if (result.valid && coverage.length === 0) {
-          onIteration?.(iterations, [], currentCode);
-          return { valid: true, finalCode: currentCode, iterations };
-        }
-        // Include the line number and the targeted fix, not just the message —
-        // the fix text is what lets the model correct Pine idioms / undefined
-        // vars in ONE iteration instead of guessing.
-        issues = result.issues.map(is =>
-          `L${is.line} [${is.code}] ${is.message}${is.fix ? ` FIX: ${is.fix}` : ''}`);
-        issues.push(...coverage);
-      } catch {
-        // If validator itself fails, try parse directly
-        try {
-          const { parse } = await import('../oakscript/parser');
-          parse(currentCode);
-          return { valid: true, finalCode: currentCode, iterations };
-        } catch (e: any) {
-          issues = [e.message || 'Unknown parse error'];
-        }
-      }
-
-      onIteration?.(iterations, issues, '');
-
-      // Ask the agent to fix. Re-state the ORIGINAL request every iteration —
-      // without it, once this loop starts the model only ever sees "here's
-      // some code, here are lint errors, fix them" with no idea what the
-      // code was supposed to accomplish. Observed failure mode: a user asks
-      // for a Fibonacci-levels-with-rejection-signals indicator, the model's
-      // first draft comes out wrong (e.g. an unrelated oscillator), and
-      // every subsequent "fix" iteration just patches syntax on that wrong
-      // draft forever because the original intent was never repeated.
-      const fixPrompt = `${originalRequest ? `ORIGINAL REQUEST (what this script is supposed to do): "${originalRequest}"\n\n` : ''}The following OakScript code has validation issues. Fix ALL of them AND make sure the code actually satisfies the original request above — output the corrected code.
-
-CODE:
-\`\`\`oakscript
-${currentCode}
-\`\`\`
-
-ISSUES:
-${issues.map((s, idx) => `  ${idx + 1}. ${s}`).join('\n')}
-
-Rules:
-- Fix every issue listed above.
-- If the code doesn't actually implement the original request, fix that too — don't just patch syntax on the wrong indicator.
-- Output ONLY the complete corrected code inside \`\`\`oakscript fences.
-- No explanation — just the fixed code.`;
-
-      // Repair is CODER work. Without the explicit agent override this fell
-      // back to the configured advisor persona — which produced a market
-      // analyst with a 400-token output budget trying to rewrite an 18-error
-      // script, returning "no errors to diagnose" and Pine-flavoured code.
-      const resp = await this.sendMessage(fixPrompt, chartSnapshot, undefined, 'oakscript_coder');
-      const codeMatch = resp.reply.match(/```(?:oakscript)?\s*\n([\s\S]*?)```/);
-      if (codeMatch && codeMatch[1].trim().length > 10) {
-        currentCode = codeMatch[1].trim();
-        onIteration?.(iterations, issues, currentCode);
-      } else {
-        // Agent didn't produce code — try to extract anyway
-        break;
-      }
-    }
-
-    // Final check — validator AND coverage must both be clean.
-    try {
-      const { validate } = await import('../oakscript/validator');
-      const finalResult = validate(currentCode);
-      const coverage = coverageFn ? coverageFn(currentCode) : [];
-      return { valid: finalResult.valid && coverage.length === 0, finalCode: currentCode, iterations };
-    } catch {
-      return { valid: false, finalCode: currentCode, iterations };
-    }
+    const finalCoverage = coverageFn ? coverageFn(result.finalCode) : [];
+    const valid = result.valid && finalCoverage.length === 0;
+    return { valid, finalCode: result.finalCode, iterations: result.rounds };
   }
 
   // ─── Memory-based User Preferences ────────────────────────────────

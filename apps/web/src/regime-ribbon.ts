@@ -178,7 +178,11 @@ export const REGIME_SUGGESTIONS: Record<RegimeType, string> = {
   volatile: REGIME_SUGGESTION_LISTS.volatile[0],
 };
 
-export function pickSuggestion(result: RegimeResult, cycleIndex = 0): string {
+export function pickSuggestion(
+  result: RegimeResult,
+  cycleIndex = 0,
+  isApplied: (name: string) => boolean = () => false,
+): string | null {
   const list = REGIME_SUGGESTION_LISTS[result.regime];
   // Deterministic bucket from the live metrics — ADX strength within the
   // regime meaningfully changes which model fits, and it stops the button
@@ -188,7 +192,13 @@ export function pickSuggestion(result: RegimeResult, cycleIndex = 0): string {
     : result.regime === 'volatile'
       ? Math.floor(result.atrRatio * 2)
       : Math.floor(result.confidence * 4);
-  return list[Math.abs(metricBucket + cycleIndex) % list.length];
+  // Skip models already on the chart, so the button never offers a duplicate.
+  const start = Math.abs(metricBucket + cycleIndex);
+  for (let k = 0; k < list.length; k++) {
+    const name = list[(start + k) % list.length];
+    if (!isApplied(name)) return name;
+  }
+  return null;
 }
 
 export interface RegimeRibbonWidget {
@@ -200,9 +210,10 @@ export interface RegimeRibbonWidget {
    * "Suggest: X" button is a separate, always-shown-when-data-exists
    * feature, not gated by it. When result is null there's no regime to
    * suggest FROM either way, so the whole ribbon hides regardless of
-   * infoVisible.
+   * infoVisible. isApplied marks models already on the chart; they are never
+   * suggested.
    */
-  update(result: RegimeResult | null, onApply: (indicatorName: string) => void, infoVisible: boolean): void;
+  update(result: RegimeResult | null, onApply: (indicatorName: string) => void, infoVisible: boolean, isApplied?: (indicatorName: string) => boolean): void;
 }
 
 export function createRegimeRibbon(): RegimeRibbonWidget {
@@ -276,6 +287,7 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
   el.appendChild(cycleBtn);
 
   let currentOnApply: ((name: string) => void) | null = null;
+  let currentIsApplied: (name: string) => boolean = () => false;
   let currentSuggestion = '';
   let lastResult: RegimeResult | null = null;
   let cycleIndex = 0;
@@ -286,12 +298,28 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
   cycleBtn.addEventListener('click', () => {
     if (!lastResult) return;
     cycleIndex++;
-    currentSuggestion = pickSuggestion(lastResult, cycleIndex);
-    suggestBtn.textContent = `Suggest: ${currentSuggestion} →`;
+    renderSuggestion();
   });
 
-  function update(result: RegimeResult | null, onApply: (name: string) => void, infoVisible: boolean): void {
+  // Picks the next suggestion that is not already on the chart. When every
+  // model for this regime is applied, the button goes inert instead of
+  // offering a duplicate.
+  function renderSuggestion(): void {
+    if (!lastResult) return;
+    currentSuggestion = pickSuggestion(lastResult, cycleIndex, currentIsApplied) ?? '';
+    const available = currentSuggestion !== '';
+    suggestBtn.disabled = !available;
+    suggestBtn.style.opacity = available ? '1' : '0.45';
+    suggestBtn.style.cursor = available ? 'pointer' : 'default';
+    suggestBtn.textContent = available ? `Suggest: ${currentSuggestion} →` : 'Suggest: all on chart ✓';
+    suggestBtn.title = available
+      ? `Advisory only — click to apply this preset signal model. ↻ cycles ${REGIME_SUGGESTION_LISTS[lastResult.regime].length} ${lastResult.regime} models. Never applied automatically.`
+      : `Every suggested ${lastResult.regime} model is already on the chart. Remove one to suggest it again.`;
+  }
+
+  function update(result: RegimeResult | null, onApply: (name: string) => void, infoVisible: boolean, isApplied: (name: string) => boolean = () => false): void {
     currentOnApply = onApply;
+    currentIsApplied = isApplied;
     if (!result) { el.style.display = 'none'; return; }
     el.style.display = 'flex';
     infoGroup.style.display = infoVisible ? 'flex' : 'none';
@@ -303,9 +331,7 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
     confidenceEl.textContent = `${Math.round(result.confidence * 100)}% · ADX ${result.adx.toFixed(0)} · ATR×${result.atrRatio.toFixed(2)}`;
     if (result.regime !== lastRegime) { lastRegime = result.regime; cycleIndex = 0; }
     lastResult = result;
-    currentSuggestion = pickSuggestion(result, cycleIndex);
-    suggestBtn.textContent = `Suggest: ${currentSuggestion} →`;
-    suggestBtn.title = `Advisory only — click to apply this preset signal model. ↻ cycles ${REGIME_SUGGESTION_LISTS[result.regime].length} ${result.regime} models. Never applied automatically.`;
+    renderSuggestion();
   }
 
   return { el, update };

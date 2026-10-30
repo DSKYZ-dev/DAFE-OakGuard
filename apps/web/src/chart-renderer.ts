@@ -751,7 +751,8 @@ function drawImbalanceBar(ctx: CanvasRenderingContext2D, x: number, oy: number, 
   ctx.stroke();
 
   // Body — thicker when higher volume intensity
-  const bodyW = cW * (1 + intensity * 0.5);
+  // bodyW is a half-width: cap it so a heavy-volume body stays inside its bar pitch.
+  const bodyW = Math.min(hW * (1 + intensity * 0.5), cW * 0.64);
   const bodyGrad = ctx.createLinearGradient(x - bodyW, bTop, x + bodyW, bTop);
   const rgb = overrideRgb || (isBull ? bullRgb : bearRgb);
   bodyGrad.addColorStop(0, `rgba(${rgb}, 0.15)`);
@@ -1403,10 +1404,44 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
   // Baseline (price 0) clamped to the pane — anchor for area/histogram styles.
   const baselineY = Math.min(height, Math.max(0, priceToY(0, minP, pRange, height, view)));
 
+  // Detect any main-pane line series whose visible values live outside the
+  // price scale (e.g. a 0..100 dBm or 0..150 PSI series plotted without
+  // pane="separate") and map them onto a shared visible overlay band so they
+  // never render off-screen.
+  const nonPriceSeries = new Set<string>();
+  let auxMin = Infinity, auxMax = -Infinity;
+  for (const [name, data] of lineData) {
+    let visCount = 0, inPriceCount = 0;
+    for (const pt of data) {
+      if (!isFinite(pt.value) || isNaN(pt.value)) continue;
+      const idxInView = pt.idx - start;
+      if (idxInView < 0 || idxInView >= vLen) continue;
+      visCount++;
+      if (pt.value >= minP - pRange * 0.5 && pt.value <= maxP + pRange * 0.5) inPriceCount++;
+    }
+    if (visCount > 0 && inPriceCount / visCount < 0.5) {
+      nonPriceSeries.add(name);
+      for (const pt of data) {
+        if (!isFinite(pt.value) || isNaN(pt.value)) continue;
+        const idxInView = pt.idx - start;
+        if (idxInView < 0 || idxInView >= vLen) continue;
+        if (pt.value < auxMin) auxMin = pt.value;
+        if (pt.value > auxMax) auxMax = pt.value;
+      }
+    }
+  }
+  const auxSpan = auxMax > auxMin ? auxMax - auxMin : 1;
+  const auxToY = (v: number): number => {
+    if (auxMax === auxMin) return height * 0.5;
+    const frac = (v - auxMin) / auxSpan;
+    return height * 0.78 - frac * (height * 0.56);
+  };
+
   // Draw line series (per-bar color + render style)
   for (const [name, data] of lineData) {
     if (data.length < 1) continue;
     const st = lineStyles.get(name)!;
+    const useAux = nonPriceSeries.has(name);
 
     // Build visible points with per-bar colors.
     const pts: RichPoint[] = [];
@@ -1416,7 +1451,7 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
       const idxInView = pt.idx - start;
       if (idxInView < 0 || idxInView >= vLen) continue;
       const x = barX(idxInView, vLen, width, view.barSpacing, view.scrollX);
-      const y = priceToY(pt.value, minP, pRange, height, view);
+      const y = useAux ? auxToY(pt.value) : priceToY(pt.value, minP, pRange, height, view);
       pts.push({ x, y, value: pt.value, color: pt.color });
     }
     if (pts.length < 1) continue;
@@ -1653,6 +1688,7 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
   }
 
   // Draw shape markers
+  const drawnShapeLabels: Array<{ x0: number; x1: number; y: number }> = [];
   for (const p of shapePlots) {
     const idxInView = typeof p.barIdx === 'number' ? p.barIdx - start : typeof p.x === 'number' ? Math.round(p.x) - start : -1;
     if (idxInView < 0 || idxInView >= vLen) continue;
@@ -1766,15 +1802,23 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
         ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
       }
     }
-    // Draw text label alongside any shape that has a name
+    // Draw text label alongside any shape that has a name. A label that would
+    // stack on one already drawn on the same row is skipped; the marker still draws.
     if (p.text && p.text.length > 0 && style !== 'label') {
       const ly = style === 'triangledown' ? y - 8 : y + 18;
-      ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 9px "Inter", monospace';
-      ctx.shadowBlur = 5;
-      ctx.shadowColor = 'rgba(0,0,0,0.9)';
-      ctx.fillText(p.text, x - ctx.measureText(p.text).width / 2, ly);
-      ctx.shadowBlur = 0;
+      const halfW = ctx.measureText(p.text).width / 2;
+      const x0 = x - halfW;
+      const x1 = x + halfW;
+      const clashes = drawnShapeLabels.some(s => Math.abs(s.y - ly) < 10 && x0 < s.x1 + 4 && x1 + 4 > s.x0);
+      if (!clashes) {
+        drawnShapeLabels.push({ x0, x1, y: ly });
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowBlur = 5;
+        ctx.shadowColor = 'rgba(0,0,0,0.9)';
+        ctx.fillText(p.text, x0, ly);
+        ctx.shadowBlur = 0;
+      }
     }
     ctx.shadowBlur = 0;
   }

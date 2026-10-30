@@ -340,31 +340,42 @@ function drawFloorGrid(
 
   ctx.save();
   ctx.lineWidth = 1;
-  // Lines receding in depth (vertical-ish, along z)
+  // Batch all receding depth lines into a single path + shared gradient
   const cols = Math.min(28, vLen);
+  const a0 = project(x0, floorY, 0);
+  const b0 = project(x0, floorY, depth);
+  const colGrad = ctx.createLinearGradient(0, a0.y, 0, b0.y);
+  colGrad.addColorStop(0, 'rgba(180,140,255,0.18)');
+  colGrad.addColorStop(1, 'rgba(180,140,255,0.02)');
+  ctx.strokeStyle = colGrad;
+  ctx.beginPath();
   for (let i = 0; i <= cols; i++) {
     const t = i / cols;
     const fx = x0 + (x1 - x0) * t;
     const a = project(fx, floorY, 0);
     const b = project(fx, floorY, depth);
-    const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-    grad.addColorStop(0, 'rgba(180,140,255,0.18)');
-    grad.addColorStop(1, 'rgba(180,140,255,0.02)');
-    ctx.strokeStyle = grad;
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
   }
-  // Horizontal depth lines
+  ctx.stroke();
+
+  // Batch horizontal depth lines into a single path + shared gradient
   const rows = 6;
+  const rStart = project(x0, floorY, 0);
+  const rEnd = project(x1, floorY, 0);
+  const rowGrad = ctx.createLinearGradient(rStart.x, 0, rEnd.x, 0);
+  rowGrad.addColorStop(0, 'rgba(180,140,255,0.16)');
+  rowGrad.addColorStop(1, 'rgba(180,140,255,0.03)');
+  ctx.strokeStyle = rowGrad;
+  ctx.beginPath();
   for (let r = 0; r <= rows; r++) {
     const z = (r / rows) * depth;
     const a = project(x0, floorY, z);
     const b = project(x1, floorY, z);
-    const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
-    grad.addColorStop(0, 'rgba(180,140,255,0.16)');
-    grad.addColorStop(1, 'rgba(180,140,255,0.03)');
-    ctx.strokeStyle = grad;
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
   }
+  ctx.stroke();
   // Glow point where grid converges
   const converge = project(x0 + (x1 - x0) * 0.5, floorY, depth);
   const glow = ctx.createRadialGradient(converge.x, converge.y, 0, converge.x, converge.y, depth * 0.35);
@@ -595,9 +606,11 @@ function drawVolumeBlock(
         ctx.closePath(); ctx.fill();
         ctx.globalAlpha = 1;
       };
-      fillFace([bb, bt, brt, brb], 0.35, 0.75);
+      // In cabinet projection (depth recedes up-and-left), the back face
+      // [bb,bt,brt,brb] and inner right face [rb,rt,brt,brb] are occluded by
+      // the visible left-depth, top, and front faces. Skipping those two
+      // hidden faces cuts polygon fills by 40% with identical visuals.
       fillFace([fb, ft, bt, bb], 0.55, 0.82);
-      fillFace([rb, rt, brt, brb], 0.45, 0.78);
       if (Math.abs(bot - top) > 0.5) fillFace([ft, rt, brt, bt], 1.08, 0.85);
       fillFace([fb, ft, rt, rb], 1.0, 0.92);
       // Strong edge definition
@@ -630,7 +643,7 @@ function draw3DVolume(
 
   // Use the same width as the candle body so the volume block fully covers the front face.
   const candleBw = Math.max(1.2, bs * 0.72);
-  const bw = candleBw * (0.85 + (profileWidth / 100) * 0.6);
+  const bw = candleBw * Math.min(1, 0.85 + (profileWidth / 100) * 0.6);
   const colors = vpComputed?.colors;
 
   for (let i = vLen - 1; i >= 0; i--) {
@@ -646,8 +659,8 @@ function draw3DVolume(
     for (const lv of levels) {
       const y = p2y(lv.price);
       const ratio = Math.min(1, lv.volume / Math.max(pv.maxVol, 1));
-      if (ratio < 0.02) continue;
-      const dz = 0.18 * bs + ratio * BAR_DEPTH * bs * 3.2;
+      if (ratio < 0.05) continue;
+      const dz = Math.min(0.18 * bs + ratio * BAR_DEPTH * bs * 3.2, bs * 0.5);
       const buyRatio = lv.buyVol / Math.max(lv.volume, 0.001);
       const theme = resolveTheme();
       const baseCol = colors
@@ -820,7 +833,9 @@ export function draw3DScene(
   const bs = view.barSpacing;
   const bw = Math.max(1.2, bs * 0.72);
   const p2y = (p: number) => priceToY(p, minP, pRange, height, view);
-  const depth = BAR_DEPTH * bs;
+  // Depth is capped at half a bar: the cabinet shift moves the back face left,
+  // and a deeper candle would run into the bar before it.
+  const depth = Math.min(BAR_DEPTH * bs, bs * 0.5);
 
   // ── Adaptive bar-type dispatch ──
   // Line / area chart types are a continuous curve, not per-bar solids — draw
@@ -855,9 +870,9 @@ export function draw3DScene(
     // Atmospheric depth fade: bars further "back" (right, higher z) dim slightly
     const depthFade = 1 - (i / vLen) * 0.18;
 
-    // Stronger glow halo (engine-dependent)
-    ctx.shadowBlur = treatment.glow ? 14 : 4;
-    ctx.shadowColor = withAlpha(color, 0.45 * depthFade);
+    // Fast translucent halo pass instead of per-face Gaussian shadowBlur
+    // (ctx.shadowBlur ran 5 blur kernels per candle = ~750 blurs/frame).
+    ctx.shadowBlur = 0;
 
     // Wick: bold extruded line from low to high. Brick types carry no
     // meaningful wick (open==high or ==low after transform), so this
@@ -865,20 +880,24 @@ export function draw3DScene(
     if (!isBrick) {
       const wFront = project(x, highY, 0);
       const wBack = project(x, lowY, 0);
+      if (treatment.glow) {
+        ctx.strokeStyle = withAlpha(color, 0.22 * depthFade);
+        ctx.lineWidth = 7.0;
+        ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(wFront.x, wFront.y); ctx.lineTo(wBack.x, wBack.y); ctx.stroke();
+      }
       ctx.strokeStyle = withAlpha(color, 0.95 * depthFade);
-      ctx.lineWidth = 3.6;
+      ctx.lineWidth = 3.2;
       ctx.lineCap = 'round';
       ctx.beginPath(); ctx.moveTo(wFront.x, wFront.y); ctx.lineTo(wBack.x, wBack.y); ctx.stroke();
       ctx.lineCap = 'butt';
     }
 
     // Body as extruded pillar (hex color so face-shading works)
-    ctx.shadowBlur = treatment.glow ? 12 : 4;
     extrudedBox(ctx, x, bTop, bBot, bw, depth, color);
 
     // Wireframe overlay for Quantum/Neon Wireframe/Constellation engines
     if (treatment.wireframe) {
-      ctx.shadowBlur = 0;
       ctx.strokeStyle = withAlpha(color, 0.8);
       ctx.lineWidth = 1.2;
       const fb = project(x, bBot, 0);
@@ -900,7 +919,6 @@ export function draw3DScene(
     }
 
     // Thin black definition border on the right edge of the front face
-    ctx.shadowBlur = 0;
     ctx.strokeStyle = 'rgba(0,0,0,0.85)';
     ctx.lineWidth = 1.0;
     const fb = project(x, bBot, 0);
@@ -911,15 +929,13 @@ export function draw3DScene(
     ctx.moveTo(fbR.x, fbR.y); ctx.lineTo(ftR.x, ftR.y);
     ctx.stroke();
 
-    // Front-face specular sheen
-    const sheen = ctx.createLinearGradient(fb.x, fb.y, ft.x, ft.y);
-    sheen.addColorStop(0, withAlpha(color, 0));
-    sheen.addColorStop(0.5, 'rgba(255,255,255,0.26)');
-    sheen.addColorStop(1, withAlpha(color, 0));
-    ctx.fillStyle = sheen;
-    ctx.beginPath();
-    ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y);
-    ctx.lineTo(ftR.x, ftR.y); ctx.lineTo(fbR.x, fbR.y); ctx.closePath(); ctx.fill();
+    // Zero-allocation front-face specular sheen (mid-band highlight)
+    if (bH > 3) {
+      const mTop = ft.y + (fb.y - ft.y) * 0.28;
+      const mBot = ft.y + (fb.y - ft.y) * 0.68;
+      ctx.fillStyle = 'rgba(255,255,255,0.16)';
+      ctx.fillRect(ft.x, mTop, ftR.x - ft.x, mBot - mTop);
+    }
   }
   ctx.restore();
   }

@@ -346,35 +346,44 @@ plot3d(rsiSlow, "RSI Trend", "ribbon", "#22ccff", "separate", 1)`,
   },
   {
     name: 'Fibonacci Levels 3D',
-    description: 'Three straight Fibonacci retracement levels on cleanly separated depth planes (line3d + distinct z_levels), with reclaim/loss cone signals — the correct way to render level lines in 3D',
+    description: 'Four straight Fibonacci retracement levels on cleanly separated depth planes (line3d + 2D stepline twins), with reclaim/loss cone signals and latest-event label',
     category: '3D Visualizations',
-    source: `// Fibonacci Levels 3D — separated level planes + reclaim/loss cones
-// Each level uses "line3d" (exact straight segments) at a DISTINCT z_level
-// (0/1/2) so the lines stay clean and parallel instead of roping together.
-lookback = input(40, "Swing Lookback", 10, 200)
-markerSize = input(1.2, "Marker Size", 0.2, 3.0, 0.1)
+    source: `// Fibonacci Levels 3D — 23.6%, 38.2%, 50%, 61.8% levels in 2D + 3D
+lookback = input(80, "Swing Lookback", 10, 300, 1)
+markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1)
 
 swingHigh = highest(high, lookback)
 swingLow = lowest(low, lookback)
 rng = swingHigh - swingLow
 
-fib236 = swingLow + rng * 0.236
-fib382 = swingLow + rng * 0.382
-fib618 = swingLow + rng * 0.618
+fib236 = swingHigh - rng * 0.236
+fib382 = swingHigh - rng * 0.382
+fib50 = swingHigh - rng * 0.5
+fib618 = swingHigh - rng * 0.618
 
 buySig = crossover(close, fib618)
 sellSig = crossunder(close, fib382)
 
 if buySig {
-    plotshape_3d(bar_index, low, "Reclaim 61.8", "coneup", "#22cc88", markerSize, 0, "3d")
+    plotshape(bar_index, low, "Reclaim 61.8%", "triangleup", "#22cc88")
+    plotshape_3d(bar_index, low, "Reclaim 61.8%", "coneup", "#22cc88", markerSize, 3, "3d")
+    label3d(bar_index, fib618, "Reclaim 61.8%", "#22cc88", 0.9, 3, "3d")
 }
 if sellSig {
-    plotshape_3d(bar_index, high, "Lost 38.2", "conedown", "#ff4477", markerSize, 0, "3d")
+    plotshape(bar_index, high, "Lost 38.2%", "triangledown", "#ff4477")
+    plotshape_3d(bar_index, high, "Lost 38.2%", "conedown", "#ff4477", markerSize, 1, "3d")
+    label3d(bar_index, fib382, "Lost 38.2%", "#ff4477", 0.9, 1, "3d")
 }
 
-plot3d(fib236, "Fib 23.6", "line3d", "#00ccff", "3d", 0)
-plot3d(fib382, "Fib 38.2", "line3d", "#ffcc00", "3d", 1)
-plot3d(fib618, "Fib 61.8", "line3d", "#ff8800", "3d", 2)`,
+plot(fib236, "23.6%", "#00ccff", 1, "stepline")
+plot(fib382, "38.2%", "#ffcc00", 1, "stepline")
+plot(fib50, "50%", "#b48cff", 1, "stepline")
+plot(fib618, "61.8%", "#22cc88", 1, "stepline")
+
+plot3d(fib236, "Fib 23.6%", "line3d", "#00ccff", "3d", 0)
+plot3d(fib382, "Fib 38.2%", "line3d", "#ffcc00", "3d", 1)
+plot3d(fib50, "Fib 50%", "line3d", "#b48cff", "3d", 2)
+plot3d(fib618, "Fib 61.8%", "line3d", "#22cc88", "3d", 3)`,
   },
   {
     name: 'EMA Spread Line3D',
@@ -1073,14 +1082,21 @@ if prob >= 0.75 { reqPersist = persistence - 1 }
 if trending { reqPersist = persistence - 1 }
 if reqPersist < 1 { reqPersist = 1 }
 
+// Markers fire on the bar a signal is first confirmed, not on every bar it holds.
+var entryLongOn = false
+var entryShortOn = false
+longOn = sigAge >= reqPersist and signalNow == 1 and prob >= minProb and confluence >= minConf
+shortOn = sigAge >= reqPersist and signalNow == 0 - 1 and prob >= minProb and confluence >= minConf
 if showSignals {
-    if sigAge >= reqPersist and signalNow == 1 and prob >= minProb and confluence >= minConf {
+    if longOn and not entryLongOn {
         plotshape(bar_index, low, "LONG", "triangleup", "#00FF9F")
     }
-    if sigAge >= reqPersist and signalNow == 0 - 1 and prob >= minProb and confluence >= minConf {
+    if shortOn and not entryShortOn {
         plotshape(bar_index, high, "SHORT", "triangledown", "#FF006E")
     }
 }
+entryLongOn := longOn
+entryShortOn := shortOn
 
 // ─── 3D — 3 lenses on the evolved strategy's state ───────────────
 // Manifold: the composite signal's terrain — warps toward green peaks on
@@ -1276,14 +1292,6 @@ if showSignals and bar_index >= lookback {
     }
 }
 if sigNow != 0 { lastSig := sigNow }
-
-// Confluence dots (LDRA-style) when confidence is very high
-if confidence >= 65 and bar_index >= lookback {
-    if signal > 0
-        plotshape(bar_index, low - atrVal * 0.3, "BULL CONF", "circle", "#22cc88")
-    if signal < 0
-        plotshape(bar_index, high + atrVal * 0.3, "BEAR CONF", "circle", "#ff4477")
-}
 
 // ─── 3D Visualization — 3 lenses on the KNN classifier ─────────
 // Surface: the signal terrain — KNN vote margin as a flowing landscape.
@@ -1707,10 +1715,8 @@ if isAnomaly and wasMatch and showSig
 wasMatch := isMatch or isStrongMatch
 
 // ─── Match volatility tracker ────────────────────────────────────
-var volRing = oakring(10)
-volRing.push(bestSim)
-matchVol = volRing.stdev()
-matchAvg = volRing.avg()
+matchVol = stdev(bestSim, 10)
+matchAvg = sma(bestSim, 10)
 
 // ─── 2D plots ────────────────────────────────────────────────────
 mc = "#ff4477"
@@ -2049,13 +2055,16 @@ wasBalance := balSig
 // current level continuously; this flag calls out when the summit moves).
 var wasPocBin = -1
 if pocBin != wasPocBin {
-    if showSignals { plotshape(bar_index, pocPrice, "POC", "square", "#b48cff") }
+    if showSignals { plotshape(bar_index, close, "POC", "square", "#b48cff") }
+    label3d(bar_index, pocStrength * 100, "POC", "#ffd43b", 1.0, 0, "separate")
 }
 wasPocBin := pocBin
 
 // ─── Main chart + oscillator ──────────────────────────────────────
 plot(close, "Price", "#ffffff", 1)
-plot(pocPrice, "Point of Control", "#b48cff", 1)
+plot(pocPrice, "Point of Control", "#b48cff", 2, "stepline")
+plot(vaHighPrice, "Value Area High", "#22cc88", 1, "stepline")
+plot(vaLowPrice, "Value Area Low", "#ff4477", 1, "stepline")
 plot(pocStrength * 100, "POC Strength", "#b48cff", 2, "separate")
 plot(balanceScore * 100, "Balance", "#ffd43b", 1, "separate")
 hline(0, "rgba(255,255,255,0.08)", "separate")
@@ -2066,18 +2075,9 @@ hline(0, "rgba(255,255,255,0.08)", "separate")
 // value area (calm) or has broken out of it (extended).
 terrainCol = "#22cc88"
 if not insideVA { terrainCol := "#ff8800" }
-plot3d(pocStrength * 100, "Liquidity Terrain", "manifold", terrainCol, "separate")
-// Torus: ring size = value area WIDTH — tight rings during consolidation,
-// wide rings during expansion. A different question than POC strength.
-plot3d(vaWidthPct, "Value Area Rings", "torus", "#4488ff", "separate")
-// Scatter: per-bar volume balance cloud — a speckled texture of where
-// volume has been landing relative to the point of control.
-plot3d(balanceScore * 100, "Volume Balance Cloud", "scatter", "#ffd43b", "separate")
-// Trail: distance from POC as a percent of the rolling range — thickens
-// when price is extended away from the point of control, thins when
-// price is magnetized back toward it.
-distFromPOC = abs(close - pocPrice) / rng * 100
-plot3d(distFromPOC, "POC Distance", "trail", "#b48cff", "separate")
+plot3d(pocStrength * 100, "Liquidity Terrain", "manifold", terrainCol, "separate", 0)
+plot3d(vaWidthPct, "Value Area Surface", "surface", "#4488ff", "separate", 1)
+plot3d(balanceScore * 100, "POC Rail", "line3d", "#ffd43b", "separate", 2)
 
 // ─── Background tint ─────────────────────────────────────────────
 if not insideVA { bgcolor("rgba(255,136,0,0.04)") }
@@ -2288,20 +2288,27 @@ if cm < -0.1 {
 confluence = bullVotes - bearVotes
 
 // ─── Rocket / shield icon signals — extreme agreement only ─────────
-if bullVotes >= 3 {
+// Icons fire on the bar an agreement starts, not on every bar it holds.
+var prevBull = false
+var prevBear = false
+bullStart = bullVotes >= 3 and not prevBull
+bearStart = bearVotes >= 3 and not prevBear
+if bullStart {
     plotimage(bar_index, low, rocketIcon, 28, 28)
 }
-if bearVotes >= 3 {
+if bearStart {
     plotimage(bar_index, high, shieldIcon, 28, 28)
 }
+prevBull := bullVotes >= 3
+prevBear := bearVotes >= 3
 
 // ─── The SAME confluence, as a 3D billboard sprite (lower 3D pane) ──
 plot3d(confluence * 25 + 50, "Confluence Terrain", "surface", "#b48cff", "separate")
-if bullVotes >= 3 {
+if bullStart {
     plotimage_3d(bar_index, low, rocketIcon, 1.4, 0, "separate")
     label3d(bar_index, low, "MAX BULL", "#22cc88", 1, 1, "separate")
 }
-if bearVotes >= 3 {
+if bearStart {
     plotimage_3d(bar_index, high, shieldIcon, 1.4, 0, "separate")
     label3d(bar_index, high, "MAX BEAR", "#ff4477", 1, 1, "separate")
 }
@@ -2677,6 +2684,38 @@ plot(sessionHigh, "Session High", "#ff4477", 1, "stepline")
 plot(sessionLow, "Session Low", "#22cc88", 1, "stepline")
 plot3d(sessionRange, "Range Ridgeline", "ridgeline", "#b48cff", "separate")
 plot3d(rangeVsAvg * 50, "Momentum Trail", "trail", "#4cc9f0", "separate")`,
+  },
+  {
+    name: 'Wind Velocity Vector 3D',
+    description: '3D wind-vector field: pitch/yaw/roll cones on each gust, a velocity ribbon and tail trail in the 3D pane, plus two small charts (wind speed against the gust threshold, and tail length). Bar motion drives the vector direction.',
+    category: '3D Visualizations',
+    source: `// Wind Velocity Vector 3D — bar motion becomes a wind vector: 3D field + two small charts
+wx = input(1.0, "Wind X", -5.0, 5.0, 0.1)
+wy = input(0.5, "Wind Y", -5.0, 5.0, 0.1)
+wz = input(0.2, "Wind Z", -5.0, 5.0, 0.1)
+baseKnots = input(15.0, "Base Knots", 1.0, 60.0, 0.5)
+gustKnots = input(22.0, "Gust Knots", 5.0, 60.0, 0.5)
+markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1)
+vx = wx + (close - open)
+vy = wy + (high - low)
+vz = wz + (close - close[1])
+mag = sqrt(vx * vx + vy * vy + vz * vz) + 0.0001
+windSpeed = baseKnots + mag * 4.0
+tailLen = windSpeed * 0.35
+pitch = (vy / mag) * 45.0
+yaw = (vx / mag) * 60.0
+roll = (vz / mag) * 30.0
+gust = crossover(windSpeed, gustKnots)
+if gust {
+    plotshape(bar_index, low, "Gust", "triangleup", "#ff8800")
+    plotshape_3d(bar_index, windSpeed, "Vector", "coneup", "#ff8800", markerSize, 0, "separate", pitch, yaw, roll)
+    label3d(bar_index, windSpeed, "GUST", "#ff8800", 0.9, 0, "separate")
+}
+plot(windSpeed, "Wind Speed", "#38d0ff", 2, "separate")
+hline(gustKnots, "#ff8800", "separate")
+plot(tailLen, "Tail Length", "#ff8800", 1, "separate")
+plot3d(windSpeed, "Wind Velocity", "ribbon", "#38d0ff", "separate", 0)
+plot3d(tailLen, "Vector Tail", "trail", "#ff8800", "separate", 1)`,
   },
 ];
 

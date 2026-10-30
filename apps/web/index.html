@@ -12,6 +12,13 @@
       font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
       user-select: none;
     }
+    /* One dark scrollbar for every window, matching the chart palette. */
+    *::-webkit-scrollbar { width: 6px; height: 6px; }
+    *::-webkit-scrollbar-track { background: #07070f; }
+    *::-webkit-scrollbar-thumb { background: rgba(34,204,136,0.4); border-radius: 6px; }
+    *::-webkit-scrollbar-thumb:hover { background: rgba(34,204,136,0.6); }
+    *::-webkit-scrollbar-button { display: none; }
+    *::-webkit-scrollbar-corner { background: #07070f; }
     #chart-container { position: fixed; inset: 0; display: flex; flex-direction: column; }
     #chart-area { position: relative; flex: 1; min-height: 0; }
     #chart-splitter { height: 8px; background: rgba(180,140,255,0.12); cursor: row-resize; flex-shrink: 0; display:flex; align-items:center; justify-content:center; position:relative; }
@@ -27,7 +34,7 @@
     #secondary-canvas:active { cursor: grabbing; }
 
     #draw-rail {
-      position: fixed; left: 12px; top: 50%;
+      position: fixed; left: 12px; top: 50%; /* screen edge; Trading sits to its right (see header-band.ts) */
       transform: translateY(-50%); z-index: 100;
       display: flex; flex-direction: column; gap: 4px;
       background: rgba(12, 12, 28, 0.88);
@@ -141,8 +148,6 @@
     #symbol-input:focus { border-color: rgba(180,140,255,0.5); }
     #symbol-dropdown { bottom: 100%; margin-bottom: 2px; }
     #symbol-dropdown .sym-item:hover { background: rgba(0,204,255,0.08) !important; }
-    #symbol-dropdown::-webkit-scrollbar { width: 3px; }
-    #symbol-dropdown::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
     #load-data-btn:hover { background: rgba(0,204,255,0.2); }
     #data-status {
       font-size: 10px; color: rgba(255,255,255,0.3);
@@ -176,9 +181,15 @@
       box-shadow: 0 0 calc(18px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(45% * var(--glow-vis)), transparent) !important;
     }
     /* Every dashboard/panel converts to the theme color at the chosen
-       brightness: trading, news, settings, visual editor, regime ribbon. */
+       brightness: trading, news, settings, visual editor, regime ribbon,
+       OakScript editor, dashboard widget, active signal models, model inputs,
+       and all editor sub-windows/modals. */
     body.glow-sync #trading-panel, body.glow-sync #news-box, body.glow-sync #visual-editor-panel,
-    body.glow-sync #settings-panel, body.glow-sync #vp-settings-panel, body.glow-sync #widgets-menu {
+    body.glow-sync #settings-panel, body.glow-sync #vp-settings-panel, body.glow-sync #widgets-menu,
+    body.glow-sync #oakscript-editor, body.glow-sync #dafe-dashboard, body.glow-sync #indicator-list,
+    body.glow-sync #age-inputs-panel, body.glow-sync #oakscript-docs, body.glow-sync #oakscript-images,
+    body.glow-sync #oakscript-backtest, body.glow-sync #oakscript-strategy-lab, body.glow-sync #oakscript-ml-lab,
+    body.glow-sync #oakscript-alerts, body.glow-sync .dafe-glow-window {
       border-color: color-mix(in srgb, var(--dafe-glow) 55%, transparent) !important;
       box-shadow: 0 0 calc(20px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(30% * var(--glow-vis)), transparent), 0 12px 40px rgba(0,0,0,0.5) !important;
     }
@@ -256,8 +267,6 @@
       display: flex; flex-direction: column; gap: 10px;
       min-height: 180px; max-height: 300px;
     }
-    .advisor-messages::-webkit-scrollbar { width: 4px; }
-    .advisor-messages::-webkit-scrollbar-thumb { background: rgba(180,140,255,0.2); border-radius: 10px; }
 
     .advisor-msg {
       max-width: 88%; padding: 9px 12px;
@@ -385,7 +394,7 @@
 
     /* ─── Trading Panel ─────────────────────────────────────── */
     #trading-panel {
-      position: fixed; top: 80px; left: 24px;
+      position: fixed; top: 38px; left: 72px; /* right of the draw-tool rail, below the header bar (see header-band.ts) */
       z-index: 9997; width: 240px; min-width: 220px; min-height: 120px;
       max-width: 480px; max-height: 85vh;
       resize: both; overflow: auto;
@@ -630,8 +639,6 @@
       padding: 16px; overflow-y: auto; display: flex;
       flex-direction: column; gap: 14px;
     }
-    #settings-body::-webkit-scrollbar { width: 4px; }
-    #settings-body::-webkit-scrollbar-thumb { background: rgba(180,140,255,0.2); border-radius: 10px; }
     /* Every settings section gets the Provider API Keys treatment:
        gradient-tinted card, cyan title, themed focus states. Under
        body.glow-sync these convert to the interface glow color. */
@@ -756,7 +763,7 @@
 
     /* ─── News Box ──────────────────────────────────────────── */
     #news-box {
-      position: fixed; top: 12px; right: 12px;
+      position: fixed; top: 38px; right: 12px;
       z-index: 9995; width: 320px; max-height: 300px;
       border: 1px solid rgba(0,204,255,0.15);
       border-radius: 12px;
@@ -781,8 +788,6 @@
     #news-header button:hover { color: #fff; }
     #news-body { overflow-y: auto; max-height: 260px; min-height: 40px; }
     #news-list { font-size: 11px; color: rgba(255,255,255,0.5); }
-    #news-body::-webkit-scrollbar { width: 3px; }
-    #news-body::-webkit-scrollbar-thumb { background: rgba(0,204,255,0.15); border-radius: 10px; }
     .news-item {
       padding: 7px 10px; border-bottom: 1px solid rgba(0,204,255,0.04);
       cursor: pointer; transition: background 0.1s;
@@ -893,7 +898,7 @@
           </div>
         </div>
         <div class="pk-card">
-          <label>Massive API Key <input type="password" id="set-massive-key" placeholder="Enter API key"></label>
+          <label>API Key <input type="password" id="set-massive-key" placeholder="Enter API key"></label>
           <label>SerpAPI Key <input type="password" id="set-serp-key" placeholder="Enter API key"></label>
         </div>
       </div>
@@ -919,7 +924,7 @@
         <div class="pk-head">
           <div>
             <div class="pk-title">Universal Data Providers</div>
-            <div class="pk-sub"><b id="dp-count">0</b> configured · one adapter converts every feed to internal bars</div>
+            <div class="pk-sub">one adapter converts every feed to internal bars</div>
           </div>
           <button id="dp-refresh" class="pk-refresh" title="Refresh providers">⟳</button>
         </div>
@@ -950,7 +955,7 @@
         <div class="pk-head">
           <div>
             <div class="pk-title">Provider API Keys</div>
-            <div class="pk-sub"><b id="pk-count">0</b> connected · keys encrypted on this machine</div>
+            <div class="pk-sub">keys encrypted on this machine</div>
           </div>
           <button id="pk-refresh" class="pk-refresh" title="Refresh providers">⟳</button>
         </div>
@@ -1037,8 +1042,6 @@
           <span>Auto-select best model (off = use my choice above)</span>
         </label>
         <button id="set-switch-model" class="settings-action-btn" style="margin-top:6px;">🔄 Switch Model Now (hot reload)</button>
-        <button id="set-open-oakguard" class="settings-action-btn" style="margin-top:6px;">⬢ OAKGUARD — Self-Improving Verification Playbook</button>
-        <div style="color:rgba(255,255,255,0.3);font-size:9px;line-height:1.4;">OakGuard: the fixed model proposes validation rules; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus). Promoted rules then enforce live in the editor validator.</div>
         <div id="set-switch-status" style="color:rgba(255,184,0,0.7);font-size:9px;margin-top:2px;display:none;"></div>
         <label>Advisor Voice
           <select id="set-voice">
@@ -1107,6 +1110,8 @@
       <div class="settings-section">
         <div class="settings-section-title">Signal Analysis Models</div>
         <button id="set-open-editor" class="settings-action-btn">Open OakScript Editor</button>
+        <button id="set-open-oakguard" class="settings-action-btn" style="margin-top:6px;">⬢ OAKGUARD — Self-Improving Verification Playbook</button>
+        <div style="color:rgba(255,255,255,0.3);font-size:9px;margin-top:4px;line-height:1.4;">OakGuard: the fixed model proposes validation rules; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus). Promoted rules then enforce live in the editor validator.</div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Audit Trail</div>
