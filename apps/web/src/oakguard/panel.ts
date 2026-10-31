@@ -199,7 +199,7 @@ function renderChips(): void {
   if (!chips || !manifest) return;
   const rules = activeRules(state).length;
   chips.replaceChildren(
-    chip(`PLAYBOOK v${state.version}`),
+    chip('PLAYBOOK'),
     chip(`${rules} ACTIVE RULE${rules === 1 ? '' : 'S'}`),
     chip(`CORPUS ${manifest.corpusCount} SCRIPTS`),
     chip(`FINGERPRINT ${manifest.manifestHash}`),

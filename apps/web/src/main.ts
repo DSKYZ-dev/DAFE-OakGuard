@@ -38,7 +38,7 @@ import {
   initBridge,
   agentDiagnoseErrors, agentGenerateIndicatorPhased,
   agentBrainstormIndicator, agentAnalyzeMetrics,
-  extractCodeBlocks, applyAgentCode, validateCurrentCode,
+  extractCodeBlocks, applyAgentCode, validateCurrentCode, setPermissionMode,
 } from './trade-advisor';
 import type { ChartSnapshot, IndicatorMetrics } from './trade-advisor/visual-adapter';
 import { prefetchModelProfile, setModelContextOverride } from './trade-advisor/token-optimizer';
@@ -2303,9 +2303,6 @@ document.addEventListener('DOMContentLoaded', () => {
     },
   });
 
-  // TEMP verification hook for the Accept / Test Run browser check (removed after).
-  if ((import.meta as any).env?.DEV) (window as any).__dafeBridgeDebug = { applyAgentCode };
-
   // Wire the "send errors to advisor" button in the editor
   setSendErrorsCallback((errors: string[], source: string) => {
     if (advisorStreaming) return;
@@ -2402,6 +2399,9 @@ document.addEventListener('DOMContentLoaded', () => {
       await validateCurrentCode((result: string) => {
         appendChat('agent', result);
       });
+    } else if (action === 'auto-accept') {
+      const box = document.getElementById('os-auto-accept') as HTMLInputElement | null;
+      setPermissionMode(box?.checked ? 'auto-accept' : 'ask');
     }
   });
 
