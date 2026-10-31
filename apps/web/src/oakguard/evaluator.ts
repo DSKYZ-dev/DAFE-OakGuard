@@ -52,15 +52,14 @@ export interface SeedProof {
   plotCount: number;
 }
 
-export function proveSeedFailure(): SeedProof {
-  const baseline = validate(SEED_SCRIPT);
-  const bars = syntheticBars(120);
+/** Finite-value ratio of one named plot across 120 synthetic bars (execution evidence). */
+export function finitePlotRatio(source: string, plotName: string): { ratio: number; points: number; plotCount: number } {
   let finite = 0, total = 0, plotCount = 0;
   try {
-    const result = executeScript(parse(SEED_SCRIPT), bars, new Map());
+    const result = executeScript(parse(source), syntheticBars(120), new Map());
     plotCount = result.plots.length;
     for (const p of result.plots) {
-      if (p.name !== 'SMA') continue;
+      if (p.name !== plotName) continue;
       if (Array.isArray(p.series)) {
         for (const v of p.series) { total++; if (Number.isFinite(v)) finite++; }
       } else if (typeof p.value === 'number') {
@@ -68,12 +67,26 @@ export function proveSeedFailure(): SeedProof {
       }
     }
   } catch { /* execution failure is itself evidence */ }
+  return { ratio: total > 0 ? finite / total : 0, points: total, plotCount };
+}
+
+export function proveSeedFailure(): SeedProof {
+  const baseline = validate(SEED_SCRIPT);
+  const probe = finitePlotRatio(SEED_SCRIPT, 'SMA');
   return {
     baselineValid: baseline.valid,
     baselineIssueCodes: baseline.issues.map(i => i.code),
-    finiteRatio: total > 0 ? finite / total : 0,
-    plotCount,
+    finiteRatio: probe.ratio,
+    plotCount: probe.plotCount,
   };
+}
+
+// The corpus is frozen, so its execution probe is identical for every
+// candidate. Computing it once keeps a full OakGuard run to a few seconds.
+let baselineExecProbe: number | null = null;
+function baselineExecErrorCount(): number {
+  if (baselineExecProbe === null) baselineExecProbe = countExecErrors(null);
+  return baselineExecProbe;
 }
 
 function countExecErrors(runRule: RuleSpec | null): number {

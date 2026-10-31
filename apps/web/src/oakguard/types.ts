@@ -1,7 +1,7 @@
 /**
- * OakGuard — constrained self-improvement for the OakScript playbook.
+ * OakGuard — a constrained verification playbook for OakScript.
  *
- * A fixed LLM proposes DECLARATIVE rule specs (never arbitrary code).
+ * Candidate rules are DECLARATIVE specs (never arbitrary code); a live model may propose them later.
  * An independent evaluator scores each candidate against a frozen corpus
  * of known-good scripts and generated mutants. Candidates that pass every
  * gate are promoted into the active playbook; rejected candidates are

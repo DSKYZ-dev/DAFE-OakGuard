@@ -370,6 +370,62 @@ export function runAllInstances(barData: {
     }
     circuitState.set(id, state);
   }
+  refreshPreview(barData, imageAssets);
+}
+
+// ─── Isolated preview (TODO Step 1) ─────────────────────────────────
+// A proposed script can be drawn on the chart without touching any accepted
+// instance. A preview never creates or edits an instance, sends no alerts,
+// emits no live signals (so the paper auto-trader cannot act on it), and
+// never trips the circuit breaker. Only accepting the proposal makes it real.
+export interface BarArrays {
+  close: number[]; open: number[]; high: number[];
+  low: number[]; volume: number[]; time: number[];
+}
+
+export interface PreviewRun {
+  source: string;
+  plots: OakPlot[];
+  errors: string[];
+  durationMs: number;
+}
+
+let previewRun: PreviewRun | null = null;
+// A preview that ran past SLOW_EXECUTION_MS stops re-running on every data
+// refresh (the same render-loop guard as instances); Test Run still re-runs it.
+let previewSlow = false;
+
+function executePreview(source: string, barData: BarArrays, imageAssets?: Map<string, string>): PreviewRun {
+  const startedAt = performance.now();
+  try {
+    const result = executeScript(parse(source), {
+      close: barData.close, open: barData.open, high: barData.high,
+      low: barData.low, volume: barData.volume, time: barData.time,
+      count: barData.close.length,
+    }, new Map<string, any>(), undefined, imageAssets);
+    return { source, plots: result.plots, errors: result.errors, durationMs: performance.now() - startedAt };
+  } catch (e: any) {
+    const msg = e instanceof ParseError ? e.message : String(e?.message ?? e);
+    return { source, plots: [], errors: [msg], durationMs: performance.now() - startedAt };
+  }
+}
+
+/** Set (or, with null, clear) the isolated preview. Runs immediately. */
+export function setPreviewSource(source: string | null, barData: BarArrays, imageAssets?: Map<string, string>): void {
+  if (source === null) { previewRun = null; previewSlow = false; return; }
+  previewRun = executePreview(source, barData, imageAssets);
+  previewSlow = previewRun.durationMs > SLOW_EXECUTION_MS;
+}
+
+/** Keep the preview in step with new bars. Skipped while the preview is slow. */
+function refreshPreview(barData: BarArrays, imageAssets?: Map<string, string>): void {
+  if (!previewRun || previewSlow) return;
+  previewRun = executePreview(previewRun.source, barData, imageAssets);
+  previewSlow = previewRun.durationMs > SLOW_EXECUTION_MS;
+}
+
+export function getPreviewRun(): PreviewRun | null {
+  return previewRun;
 }
 
 export function getCombinedPlots(): { main: OakPlot[]; sep: OakPlot[]; plot3d: any[] } {
@@ -389,15 +445,25 @@ export function getCombinedPlots(): { main: OakPlot[]; sep: OakPlot[]; plot3d: a
       }
     }
   }
+  if (previewRun) {
+    for (const p of previewRun.plots) {
+      if (p.type === 'plot3d') plot3d.push(p);
+      else if (p.pane === 'separate') sep.push(p);
+      else main.push(p);
+    }
+  }
   return { main, sep, plot3d };
 }
 
+/** True when something should be drawn: an enabled accepted instance or the preview. */
 export function hasActiveIndicators(): boolean {
-  return getActiveInstances().some(i => i.enabled);
+  return getActiveInstances().some(i => i.enabled) || previewRun !== null;
 }
 
 export function clearAll(): void {
   instances = new Map();
   instanceOrder = [];
   nextId = 1;
+  previewRun = null;
+  previewSlow = false;
 }

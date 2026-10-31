@@ -78,7 +78,7 @@ import {
   runAllInstances, getCombinedPlots, hasActiveIndicators,
   setInstanceOverrides, setInstanceEnabled, updateInstanceSource,
   setInstanceDashboardVisible, setInstanceAutoTradeArmed, getInstance,
-  isIndicatorNameActive, type IndicatorInstance,
+  isIndicatorNameActive, setPreviewSource, getPreviewRun, type IndicatorInstance,
 } from './indicator-manager';
 import { setMlRedrawCallback } from './ml-client';
 import { mountOakGuardLauncher, openOakGuard } from './oakguard/panel';
@@ -763,11 +763,52 @@ function hasPane3DActive(): boolean {
   return hasActiveIndicators() && getCombinedPlots().plot3d.some(p => (p as any).pane === '3d');
 }
 
+// The isolated preview (a proposed script under review) is drawn beside the
+// accepted indicators, never instead of them. The badge keeps that state
+// visible, so the user always knows what is applied and what is only shown.
+let previewBadge: HTMLDivElement | null = null;
+function syncPreviewBadge(): void {
+  const run = getPreviewRun();
+  if (!run) {
+    previewBadge?.remove();
+    previewBadge = null;
+    return;
+  }
+  if (!previewBadge) {
+    previewBadge = document.createElement('div');
+    previewBadge.id = 'oakscript-preview-badge';
+    Object.assign(previewBadge.style, {
+      position: 'fixed', top: `${WINDOW_TOP_MIN + 6}px`, left: '50%', transform: 'translateX(-50%)',
+      zIndex: '160', padding: '4px 12px', borderRadius: '999px', pointerEvents: 'none',
+      fontSize: '10.5px', fontWeight: '600', letterSpacing: '0.04em', whiteSpace: 'nowrap',
+      background: 'rgba(8, 8, 20, 0.9)', boxShadow: '0 0 14px rgba(45, 255, 179, 0.25)',
+    });
+    document.body.appendChild(previewBadge);
+  }
+  const error = run.errors[0];
+  const tone = error ? '#ff4477' : 'var(--dafe-glow, #2dffb3)';
+  previewBadge.style.border = `1px solid ${tone}`;
+  previewBadge.style.color = tone;
+  previewBadge.textContent = error
+    ? `PREVIEW · ${error.slice(0, 90)} · not applied`
+    : 'PREVIEW · not applied to your indicator';
+}
+
+// Keeps the cached plot layers and the badge in step with the preview.
+function afterPreviewChange(): void {
+  oakPathKey = '';
+  oakPathCache = null;
+  mark3DSceneDirty();
+  syncPreviewBadge();
+  updateUI();
+}
+
 /** Re-run the scripts on the live bar array. Unlike runAllIndicators() this skips
  *  the sidebar rebuild, so it is cheap enough for the tick timer. */
 function refreshLiveIndicators(): void {
   if (!hasActiveIndicators()) return;
   runAllInstances(getBarData(), imageAssetsCache);
+  syncPreviewBadge();
   oakPathKey = '';
   oakPathCache = null;
   mark3DSceneDirty();
@@ -776,6 +817,7 @@ function refreshLiveIndicators(): void {
 
 function runAllIndicators(): void {
   runAllInstances(getBarData(), imageAssetsCache);
+  syncPreviewBadge();
   oakScriptErrors = [];
   for (const inst of getActiveInstances()) {
     oakScriptErrors.push(...inst.errors);
@@ -1418,7 +1460,7 @@ function buildIndicatorList() {
 
   const ogBtn = document.createElement('button');
   ogBtn.textContent = '⬢ OakGuard';
-  ogBtn.title = 'OakGuard: Self-Improving Verification Playbook (Probation → Duel → Promotion / Emeritus)';
+  ogBtn.title = 'OakGuard: Evidence-Gated Verification Playbook (Probation → Duel → Promotion / Emeritus)';
   Object.assign(ogBtn.style, {
     padding: '1px 6px', fontSize: '8.5px', fontWeight: '700',
     border: '1px solid rgba(45,255,179,0.4)', borderRadius: '4px',
@@ -2250,7 +2292,19 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       return errs;
     },
+    onTestScript: (source: string) => {
+      setPreviewSource(source, getBarData(), imageAssetsCache);
+      afterPreviewChange();
+    },
+    onClearPreview: () => {
+      if (!getPreviewRun()) return;
+      setPreviewSource(null, getBarData());
+      afterPreviewChange();
+    },
   });
+
+  // TEMP verification hook for the Accept / Test Run browser check (removed after).
+  if ((import.meta as any).env?.DEV) (window as any).__dafeBridgeDebug = { applyAgentCode };
 
   // Wire the "send errors to advisor" button in the editor
   setSendErrorsCallback((errors: string[], source: string) => {
@@ -4099,8 +4153,6 @@ function frame(now: number) {
   // otherwise one bad render (e.g. NaN/Infinity from a buggy indicator
   // reaching the 3D builders) permanently freezes the canvas with no
   // visible error, which looks exactly like a browser crash to the user.
-  // OakGuard Observatory is a fullscreen takeover — don't render the chart behind it.
-  if ((window as any).__dafeOakGuardOpen) { requestAnimationFrame(frame); return; }
   const interacting = liveTicksEnabled || mouseDown || (now - lastActivityAt) < 1500;
   // Full rate while interacting/live; 30fps for idle 3D scenes (orbit
   // inertia/atmosphere stay smooth); 20fps (10fps low tier) for idle 2D.

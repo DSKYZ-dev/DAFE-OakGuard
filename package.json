@@ -20,7 +20,7 @@
     "verify": "npx tsx tools/verify/focused-test.ts",
     "verify:stress": "npx tsx tools/verify/bar-stress.ts",
     "verify:backtest": "npx tsx tools/verify/backtest-stress.ts",
-    "verify:oakguard": "npx tsx tools/verify/oakguard-test.ts",
+    "verify:oakguard": "npx tsx tools/verify/oakguard-test.ts && npx tsx tools/verify/oakguard-report-test.ts",
     "verify:tricks": "npx tsx tools/verify/perf-tricks-test.ts 5000",
     "verify:pipeline": "npx tsx tools/verify/generation-pipeline-test.ts",
     "verify:extreme": "npx tsx tools/verify/extreme-limit-test.ts",

@@ -1088,7 +1088,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   const oakguardBtn = document.createElement('button');
   oakguardBtn.textContent = '⬢ OakGuard';
-  oakguardBtn.title = 'OakGuard: Self-Improving Verification Playbook — the fixed model proposes validation rules; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus).';
+  oakguardBtn.title = 'OakGuard: Evidence-Gated Verification Playbook — candidate rules come from a hand-written catalogue today; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus).';
   Object.assign(oakguardBtn.style, btnStyle('#2dffb3', 'rgba(45,255,179,0.10)'));
   oakguardBtn.onclick = () => {
     document.getElementById('set-open-oakguard')?.click();

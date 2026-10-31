@@ -27,6 +27,10 @@ export interface OakScriptBridgeConfig {
   getEditorSource: () => string;
   setEditorSource: (source: string) => void;
   getErrors: () => string[];
+  /** Draw a proposed script on the chart as an isolated preview. Never changes an accepted indicator. */
+  onTestScript: (source: string) => void;
+  /** Remove the isolated preview, if one is showing. */
+  onClearPreview: () => void;
 }
 
 let agent: TradeAdvisorAgent | null = null;
@@ -238,7 +242,7 @@ function showPermissionPanel(edit: AgentEditRequest): void {
 
   const testBtn = document.createElement('button');
   testBtn.textContent = '▶ Test Run';
-  testBtn.title = 'Run this code to see the new visualization';
+  testBtn.title = 'Preview this code on the chart. Your indicator stays unchanged until you Accept.';
   Object.assign(testBtn.style, {
     padding: '5px 12px',
     border: '1px solid rgba(255, 184, 0, 0.5)',
@@ -251,9 +255,8 @@ function showPermissionPanel(edit: AgentEditRequest): void {
   });
   testBtn.onclick = () => {
     if (config) {
-      config.setEditorSource(edit.proposedCode);
-      config.onRunScript(edit.proposedCode);
-      testBtn.textContent = '✓ Tested';
+      config.onTestScript(edit.proposedCode);
+      testBtn.textContent = '✓ Previewing';
       testBtn.style.color = '#22cc88';
       testBtn.style.borderColor = 'rgba(34, 204, 136, 0.5)';
       testBtn.style.background = 'rgba(34, 204, 136, 0.15)';
@@ -298,8 +301,12 @@ function showPermissionPanel(edit: AgentEditRequest): void {
   btnRow.appendChild(testBtn);
   btnRow.appendChild(acceptBtn);
   btnRow.appendChild(rejectBtn);
+  const previewNote = document.createElement('div');
+  previewNote.textContent = 'Previewing on the chart. Your indicator is unchanged until you Accept.';
+  Object.assign(previewNote.style, { color: '#FFB800', fontSize: '10px' });
   permissionPanel.appendChild(label);
   permissionPanel.appendChild(desc);
+  permissionPanel.appendChild(previewNote);
   permissionPanel.appendChild(btnRow);
 
   // Insert at top of editor panel for visibility
@@ -352,6 +359,7 @@ export function acceptEdit(editId: string): void {
   edit.proposedCode = clean;
   config.setEditorSource(clean);
   config.onRunScript(clean);
+  config.onClearPreview();
 
   if (permissionPanel) {
     permissionPanel.remove();
@@ -383,13 +391,9 @@ export function acceptEdit(editId: string): void {
  * Reject an agent edit — discard it.
  */
 export function rejectEdit(editId: string): void {
-  const edit = pendingEdits.find(e => e.id === editId);
-
-  // Restore the original code if available
-  if (edit?.originalCode && config) {
-    config.setEditorSource(edit.originalCode);
-    config.onRunScript(edit.originalCode);
-  }
+  // The proposal was only previewed, so declining just removes the preview.
+  // The accepted indicator was never changed and is left as it is.
+  config?.onClearPreview();
 
   pendingEdits = pendingEdits.filter(e => e.id !== editId);
 
@@ -425,10 +429,9 @@ export function applyAgentCode(
   if (permissionMode === 'auto-accept') {
     acceptEdit(edit.id);
   } else {
-    // Immediately run a live preview on the chart so the user sees the new
-    // 2D/3D visuals right away, while keeping the Accept/Decline bar active.
-    config.setEditorSource(normalized);
-    config.onRunScript(normalized);
+    // Preview the proposal on the chart right away so the new 2D/3D visuals
+    // show, while the accepted indicator stays untouched until Accept.
+    config.onTestScript(normalized);
     showPermissionPanel(edit);
   }
 }

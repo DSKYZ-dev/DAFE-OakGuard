@@ -137,7 +137,7 @@ export function evaluateRuleOnSource(rule: RuleSpec, source: string): RuleIssue[
   return issues;
 }
 
-/** The candidate catalogue — what the (fixed) agent proposes in the demo. Specs only. */
+/** The candidate catalogue — hand-written candidate rules that the demo loads. Specs only. */
 export const CANDIDATE_CATALOGUE: RuleSpec[] = [
   {
     id: 'cand-length-v1',
@@ -147,7 +147,7 @@ export const CANDIDATE_CATALOGUE: RuleSpec[] = [
     severity: 'error',
     description: 'Every length/window argument of a series builtin must be a positive-integer literal.',
     rationale: 'Seed failure sma(close, 0) executed to an all-NaN series while the baseline validator reported the script valid. RSI/EMA with non-positive or fractional lengths produce garbage or intermittent NaNs.',
-    proposedBy: 'oakguard-agent (fixed model, candidate catalogue #1)',
+    proposedBy: 'hand-written candidate catalogue #1',
   },
   {
     id: 'cand-dotted-naive-v1',
@@ -157,7 +157,7 @@ export const CANDIDATE_CATALOGUE: RuleSpec[] = [
     severity: 'error',
     description: 'Flag every dotted call that is not in the builtin registry.',
     rationale: 'Dotted typos (array.pushh, m.macdd-style calls) silently return 0/null because the validator skips dotted names. This naive form has no object-method allowlist.',
-    proposedBy: 'oakguard-agent (fixed model, candidate catalogue #2)',
+    proposedBy: 'hand-written candidate catalogue #2',
   },
   {
     id: 'cand-dotted-refined-v1',
@@ -167,7 +167,7 @@ export const CANDIDATE_CATALOGUE: RuleSpec[] = [
     severity: 'error',
     description: 'Flag dotted calls outside the registry, allowing known OakRing/Matrix/handle object methods.',
     rationale: 'Refinement of the naive candidate: runtime objects (OakRing, Matrix, table handles) expose methods that are not registry builtins and must not be flagged.',
-    proposedBy: 'oakguard-agent (fixed model, candidate catalogue #3)',
+    proposedBy: 'hand-written candidate catalogue #3',
     allowObjectMethods: true,
   },
 ];

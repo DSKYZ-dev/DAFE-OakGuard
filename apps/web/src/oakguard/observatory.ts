@@ -1,7 +1,7 @@
 /**
  * OakGuard Observatory — "The Crucible".
  *
- * A dedicated Three.js scene where the self-improvement loop is visible.
+ * A dedicated Three.js scene where the rule-promotion loop is visible.
  * Every dynamic channel binds to a real evaluator number:
  *   core rings   = promoted rules (labelled by issue code)
  *   mutant swarm = generated mutants (caught collapse at the shield,
