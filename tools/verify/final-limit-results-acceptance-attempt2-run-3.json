@@ -1,0 +1,263 @@
+{
+  "run": 3,
+  "at": "2026-10-30T22:38:37.019Z",
+  "pass": true,
+  "ms": 384604,
+  "results": [
+    {
+      "id": 1,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 2,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "twoIndependentReadings": true,
+        "hasMainSignals": true,
+        "layersSane": true,
+        "noTable": true,
+        "releaseGated": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 2418,
+      "code": "atrLen = input(14, \"ATR Length\", 2, 60, 1)\ncoilLookback = input(50, \"Coil Lookback\", 10, 150, 1)\nvovLen = input(20, \"VoV Length\", 5, 60, 1)\npredictLen = input(20, \"Predict Length\", 5, 60, 1)\nreleaseMult = input(1.5, \"Release Mult\", 1.1, 3.0, 0.1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\nhl = high - low\nhc = abs(high - close[1])\nlc = abs(low - close[1])\ntmpMax = hl > hc ? hl : hc\ntr = tmpMax > lc ? tmpMax : lc\natrVal = atr(high, low, close, atrLen)\nrng = high - low\natrHigh = highest(atrVal, coilLookback)\nrngHigh = highest(rng, coilLookback)\natrCoil = atrVal / (atrHigh + 0.000001)\nrngCoil = rng / (rngHigh + 0.000001)\ncoilLoad = (atrCoil + rngCoil) / 2.0\nloadedness = 1.0 - coilLoad\natrMean = sma(atrVal, vovLen)\natrSd = stdev(atrVal, vovLen)\nvov = atrSd / (atrMean + 0.000001)\ndisp = abs(close - close[predictLen])\nsumTR = sma(tr, predictLen) * predictLen\neff = disp / (sumTR + 0.000001)\neffMed = median(eff, coilLookback)\nloadedRecent = highest(loadedness, 5) > 0.65\natrRising = atrVal > atrVal[1]\nexpansion = rng > releaseMult * atrVal\nreleaseTrig = expansion and atrRising and loadedRecent and bar_index > coilLookback\nreleaseEdge = releaseTrig and not releaseTrig[1]\nbuySig = releaseEdge and close > open and eff > effMed\nsellSig = releaseEdge and close < open and eff > effMed\nneutSig = releaseEdge and eff <= effMed\nisPred = eff > effMed\nloadPred = isPred ? loadedness : 0.0\nloadUnpred = isPred ? 0.0 : loadedness\nvovHeight = vov * (1.0 + loadedness) * 10.0\nif buySig { plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\") }\nif sellSig { plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\") }\nif neutSig { plotshape(bar_index, high, \"Neutral\", \"x\", \"#ffd43b\") }\nif releaseEdge { bgcolor(\"#3a2f00\") }\nif buySig { plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 0, \"separate\") }\nif sellSig { plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 0, \"separate\") }\nif neutSig { plotshape_3d(bar_index, high, \"Neutral\", \"diamond\", \"#ffd43b\", markerSize, 1, \"separate\") }\nplot(loadedness, \"Loadedness\", \"#22aaff\", 2, \"separate\")\nplot(eff, \"Efficiency\", \"#22cc88\", 1, \"separate\")\nplot(vov, \"VoV\", \"#b48cff\", 1, \"separate\")\nplot3d(loadPred, \"Loaded Predictable\", \"scatter\", \"#22cc88\", \"separate\", 0)\nplot3d(loadUnpred, \"Loaded Unpredictable\", \"scatter\", \"#ff9044\", \"separate\", 1)\nplot3d(vovHeight, \"VoV Height\", \"bars3d\", \"#b48cff\", \"separate\", 2)",
+      "ms": 47918
+    },
+    {
+      "id": 2,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 2,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "marginAndDisagreement": true,
+        "agreementGate": true,
+        "hasMainSignals": true,
+        "noTable": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 6698,
+      "code": "kIn = input(7, \"K Neighbors\", 1, 15, 1)\nfeatureBars = input(20, \"Feature Bars\", 5, 40, 1)\nsearchBars = input(300, \"Search Bars\", 30, 500, 10)\nmarginThresh = input(0.43, \"Margin Threshold\", 0.1, 1.0, 0.01)\nagreeThresh = input(0.35, \"Max Disagreement\", 0.05, 1.0, 0.01)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\n// ─── Model calculations: KNN-7 direction vote on returns ───\n// Feature return r at lag L: (close[L] - close[L+1]) / close[L+1]\nmaxAvail = bar_index - featureBars - 1\nsearchLen = searchBars\nif maxAvail < searchLen { searchLen := maxAvail }\nif searchLen < 0 { searchLen := 0 }\n\n// best-7 neighbour slots, recomputed every bar (plain assignments)\nbestD1 = 999999.0\nbestD2 = 999999.0\nbestD3 = 999999.0\nbestD4 = 999999.0\nbestD5 = 999999.0\nbestD6 = 999999.0\nbestD7 = 999999.0\nbestDir1 = 0\nbestDir2 = 0\nbestDir3 = 0\nbestDir4 = 0\nbestDir5 = 0\nbestDir6 = 0\nbestDir7 = 0\n\ns = 1\nwhile s <= searchLen {\n    // Euclidean distance between current 20-return window and window at shift s\n    sumSq = 0.0\n    p = 0\n    while p < featureBars {\n        curA = close[p]\n        curB = close[p + 1]\n        pastA = close[s + p]\n        pastB = close[s + p + 1]\n        curR = (curA - curB) / (curB + 0.000000001)\n        pastR = (pastA - pastB) / (pastB + 0.000000001)\n        diff = curR - pastR\n        sumSq := sumSq + diff * diff\n        p := p + 1\n    }\n    // neighbour label = next-bar outcome after past bar j (j+1 vs j)\n    d = 0 - 1\n    if close[s - 1] > close[s] { d := 1 }\n    // sorted insert into best-7 (smallest distance first)\n    if sumSq < bestD1 {\n        bestD7 := bestD6\n        bestDir7 := bestDir6\n        bestD6 := bestD5\n        bestDir6 := bestDir5\n        bestD5 := bestD4\n        bestDir5 := bestDir4\n        bestD4 := bestD3\n        bestDir4 := bestDir3\n        bestD3 := bestD2\n        bestDir3 := bestDir2\n        bestD2 := bestD1\n        bestDir2 := bestDir1\n        bestD1 := sumSq\n        bestDir1 := d\n    } else {\n        if sumSq < bestD2 {\n            bestD7 := bestD6\n            bestDir7 := bestDir6\n            bestD6 := bestD5\n            bestDir6 := bestDir5\n            bestD5 := bestD4\n            bestDir5 := bestDir4\n            bestD4 := bestD3\n            bestDir4 := bestDir3\n            bestD3 := bestD2\n            bestDir3 := bestDir2\n            bestD2 := sumSq\n            bestDir2 := d\n        } else {\n            if sumSq < bestD3 {\n                bestD7 := bestD6\n                bestDir7 := bestDir6\n                bestD6 := bestD5\n                bestDir6 := bestDir5\n                bestD5 := bestD4\n                bestDir5 := bestDir4\n                bestD4 := bestD3\n                bestDir4 := bestDir3\n                bestD3 := sumSq\n                bestDir3 := d\n            } else {\n                if sumSq < bestD4 {\n                    bestD7 := bestD6\n                    bestDir7 := bestDir6\n                    bestD6 := bestD5\n                    bestDir6 := bestDir5\n                    bestD5 := bestD4\n                    bestDir5 := bestDir4\n                    bestD4 := sumSq\n                    bestDir4 := d\n                } else {\n                    if sumSq < bestD5 {\n                        bestD7 := bestD6\n                        bestDir7 := bestDir6\n                        bestD6 := bestD5\n                        bestDir6 := bestDir5\n                        bestD5 := sumSq\n                        bestDir5 := d\n                    } else {\n                        if sumSq < bestD6 {\n                            bestD7 := bestD6\n                            bestDir7 := bestDir6\n                            bestD6 := sumSq\n                            bestDir6 := d\n                        } else {\n                            if sumSq < bestD7 {\n                                bestD7 := sumSq\n                                bestDir7 := d\n                            }\n                        }\n                    }\n                }\n            }\n        }\n    }\n    s := s + 1\n}\n\n// ─── Vote channels from top-k neighbours ───\nv1 = 0\nif bestD1 < 999998.0 { v1 := bestDir1 }\nv2 = 0\nif bestD2 < 999998.0 { v2 := bestDir2 }\nv3 = 0\nif bestD3 < 999998.0 { v3 := bestDir3 }\nv4 = 0\nif bestD4 < 999998.0 { v4 := bestDir4 }\nv5 = 0\nif bestD5 < 999998.0 { v5 := bestDir5 }\nv6 = 0\nif bestD6 < 999998.0 { v6 := bestDir6 }\nv7 = 0\nif bestD7 < 999998.0 { v7 := bestDir7 }\n\nkeff = kIn\nif keff < 1 { keff := 1 }\nif keff > 7 { keff := 7 }\nvoteSum = 0.0\nvalidK = 0\nif keff >= 1 {\n    if bestD1 < 999998.0 {\n        voteSum := voteSum + v1\n        validK := validK + 1\n    }\n}\nif keff >= 2 {\n    if bestD2 < 999998.0 {\n        voteSum := voteSum + v2\n        validK := validK + 1\n    }\n}\nif keff >= 3 {\n    if bestD3 < 999998.0 {\n        voteSum := voteSum + v3\n        validK := validK + 1\n    }\n}\nif keff >= 4 {\n    if bestD4 < 999998.0 {\n        voteSum := voteSum + v4\n        validK := validK + 1\n    }\n}\nif keff >= 5 {\n    if bestD5 < 999998.0 {\n        voteSum := voteSum + v5\n        validK := validK + 1\n    }\n}\nif keff >= 6 {\n    if bestD6 < 999998.0 {\n        voteSum := voteSum + v6\n        validK := validK + 1\n    }\n}\nif keff >= 7 {\n    if bestD7 < 999998.0 {\n        voteSum := voteSum + v7\n        validK := validK + 1\n    }\n}\n\nM = 0.0\nif validK > 0 { M := voteSum / validK }\nG = 1.0 - abs(M)\nC = abs(M) * (1.0 - G)\n\n// ─── Signal conditions (both channels must agree) ───\nbuyState = M > marginThresh and G < agreeThresh\nsellState = M < 0 - marginThresh and G < agreeThresh\nbuySig = buyState and not buyState[1]\nsellSig = sellState and not sellState[1]\n\n// ─── Signal markers (2D, inside conditionals) ───\nif buySig { plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\") }\nif sellSig { plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\") }\n\n// ─── Zone tints (bgcolor exception: conditional allowed) ───\nif buyState { bgcolor(\"rgba(34,204,136,0.06)\") }\nif sellState { bgcolor(\"rgba(255,68,119,0.06)\") }\n\n// ─── Unconditional 2D rendering (oscillator channels) ───\nplot(M, \"Vote Margin\", \"#b48cff\", 2, \"separate\")\nplot(G, \"Disagreement\", \"#ffd43b\", 2, \"separate\")\nplot(C, \"Crispness\", \"#22cc88\", 1, \"separate\")\n\n// ─── 3D form: height = margin (bars3d columns), footprint = disagreement (scatter) ───\nmarginCol = M * 100 + close * 0.001\ndisagreeCloud = G * 100 + close * 0.001\nplot3d(marginCol, \"Vote Margin Column\", \"bars3d\", \"#b48cff\", \"separate\")\nplot3d(disagreeCloud, \"Disagreement Footprint\", \"scatter\", \"#ffd43b\", \"separate\")\n\n// ─── 3D cones in the SAME pane ───\nif buySig { plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0 * markerSize, 0, \"separate\") }\nif sellSig { plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1.0 * markerSize, 0, \"separate\") }",
+      "ms": 104222
+    },
+    {
+      "id": 3,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "modelExecution": true,
+        "hardStop": true,
+        "confirmedHTF": true,
+        "noDecorative3D": true,
+        "hasMainSignals": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 2594,
+      "code": "sessLen = input(20, \"Session Length Bars\", 5, 200, 1)\nhtfLook = input(3, \"1H Confirmation Lookback\", 1, 20, 1)\nconfBars = input(2, \"Structure Confirmation Bars\", 1, 10, 1)\nstopTicks = input(5, \"Stop Offset Ticks\", 1, 50, 1)\nminConf = input(60, \"Min Confidence\", 0, 100, 1)\n\nsessHigh = highest(high, sessLen)\nsessLow = lowest(low, sessLen)\nsessMid = (sessHigh + sessLow) / 2\n\nhHigh = security(\"1h\", high)\nhLow = security(\"1h\", low)\nhClose = security(\"1h\", close)\n\nhSwingHigh = highest(hHigh, htfLook)\nhSwingLow = lowest(hLow, htfLook)\npriorSwingHigh = hSwingHigh[1]\npriorSwingLow = hSwingLow[1]\n\nbullBreak = hClose > priorSwingHigh\nbearBreak = hClose < priorSwingLow\n\nvar bullCount = 0\nvar bearCount = 0\nvar pos = 0\n\nbullCount := bullBreak ? bullCount[1] + 1 : 0\nbearCount := bearBreak ? bearCount[1] + 1 : 0\n\nbullConf = bullBreak and bullCount >= confBars\nbearConf = bearBreak and bearCount >= confBars\n\ndisplacement = abs(hClose - hClose[1])\npriorRange = hHigh[1] - hLow[1]\ndispOk = displacement > priorRange\n\nnoOppForBull = bearCount == 0\nnoOppForBear = bullCount == 0\n\nalignBull = close > sessMid\nalignBear = close < sessMid\n\nbullScore = (dispOk ? 50 : 0) + (noOppForBull ? 25 : 0) + (alignBull ? 25 : 0)\nbearScore = (dispOk ? 50 : 0) + (noOppForBear ? 25 : 0) + (alignBear ? 25 : 0)\nconf = bullConf ? bullScore : bearConf ? bearScore : 0\n\nstopOff = stopTicks * 0.1\nstopLong = sessLow - stopOff\nstopShort = sessHigh + stopOff\n\nbuySig = crossover(close, sessHigh[1]) and bullConf and conf >= minConf\nsellSig = crossunder(close, sessLow[1]) and bearConf and conf >= minConf\nlongStopHit = pos[1] == 1 and crossunder(close, stopLong)\nshortStopHit = pos[1] == -1 and crossover(close, stopShort)\n\nif buySig {\n    model.confidence(conf / 100)\n    model.stopLoss(stopLong, \"abs\")\n    model.shortExit(\"siege\")\n    model.longEntry(\"siege\")\n    pos := 1\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n    model.confidence(conf / 100)\n    model.stopLoss(stopShort, \"abs\")\n    model.longExit(\"siege\")\n    model.shortEntry(\"siege\")\n    pos := -1\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif longStopHit {\n    model.exit(\"siege\")\n    pos := 0\n    plotshape(bar_index, high, \"Exit\", \"diamond\", \"#ffcc33\")\n}\nif shortStopHit {\n    model.exit(\"siege\")\n    pos := 0\n    plotshape(bar_index, low, \"Exit\", \"diamond\", \"#ffcc33\")\n}\n\ncurStop = pos == 1 ? stopLong : pos == -1 ? stopShort : close\nplot(sessHigh, \"Session High\", \"#ff4477\", 1, \"stepline\")\nplot(sessLow, \"Session Low\", \"#22cc88\", 1, \"stepline\")\nplot(curStop, \"Hard Stop\", \"#ffcc33\", 1, \"stepline\")",
+      "ms": 23524
+    },
+    {
+      "id": 4,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [
+        "extra 3D layer (limit 3): plot3d(valPrice, \"VAL Rail\", \"line3d\", \"#ff4477\", \"3d\", 2)"
+      ],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "pocAndValue": true,
+        "terrain3D": true,
+        "twoDTwin": true,
+        "layersSane": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 4250,
+      "code": "// Volume Session Value Model\n// Session volume profile: POC + value area expansion, price leaving value is the signal.\n\nprofRows = input(24, \"Profile Rows\", 5, 48, 1)\nvaPct = input(70, \"Value Area Percent\", 50, 90, 5)\nsessLen = input(60, \"Session Length Bars\", 20, 200, 5)\nshowTerrain = input(true, \"Show 3D Terrain\")\nshowHist = input(true, \"Show Value Histogram\")\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\n// ─── Session range ───────────────────────────────────────────────\nsessHigh = highest(high, sessLen)\nsessLow = lowest(low, sessLen)\nrng = sessHigh - sessLow\nif rng <= 0 { rng := close * 0.01 }\nrowH = rng / profRows\n\n// ─── Build row volumes from session bars ─────────────────────────\nrowVol = array()\ni = 0\nwhile i < profRows {\n    array.push(rowVol, 0.0)\n    i := i + 1\n}\nk = 0\nwhile k < sessLen {\n    ck = close[k]\n    vk = volume[k]\n    idx = floor((ck - sessLow) / rowH)\n    if idx < 0 { idx := 0 }\n    if idx > profRows - 1 { idx := profRows - 1 }\n    array.set(rowVol, idx, array.get(rowVol, idx) + vk)\n    k := k + 1\n}\n\n// ─── POC: row with max volume ────────────────────────────────────\npocRow = 0\npocVol = array.get(rowVol, 0)\ni = 1\nwhile i < profRows {\n    v = array.get(rowVol, i)\n    if v > pocVol {\n        pocVol := v\n        pocRow := i\n    }\n    i := i + 1\n}\npocPrice = sessLow + (pocRow + 0.5) * rowH\ntotalVol = array.sum(rowVol)\npocShare = 0.0\nif totalVol > 0 { pocShare := pocVol / totalVol * 100 }\n\n// ─── Value area: expand outward from POC ─────────────────────────\nvaLow = pocRow\nvaHigh = pocRow\naccum = pocVol\ntarget = totalVol * vaPct / 100\nguard = 0\nwhile accum < target and guard < profRows {\n    leftVal = 0 - 1.0\n    if vaLow > 0 { leftVal := array.get(rowVol, vaLow - 1) }\n    rightVal = 0 - 1.0\n    if vaHigh < profRows - 1 { rightVal := array.get(rowVol, vaHigh + 1) }\n    if rightVal >= leftVal and vaHigh < profRows - 1 {\n        vaHigh := vaHigh + 1\n        accum := accum + rightVal\n    } else {\n        if vaLow > 0 {\n            vaLow := vaLow - 1\n            accum := accum + leftVal\n        }\n    }\n    guard := guard + 1\n}\nvahPrice = sessLow + (vaHigh + 1) * rowH\nvalPrice = sessLow + vaLow * rowH\nvaWidth = vahPrice - valPrice\nvahVol = array.get(rowVol, vaHigh)\nvalVol = array.get(rowVol, vaLow)\nterrVol = pocShare + vaWidth / rng * 10.0\n\n// ─── Signals: price leaving value ────────────────────────────────\ninsideVA = close >= valPrice and close <= vahPrice\nwasInside = insideVA[1]\nbuySig = close > vahPrice and wasInside\nsellSig = close < valPrice and wasInside\n\nif buySig { plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\") }\nif sellSig { plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\") }\nif buySig { plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0 * markerSize, 0, \"3d\") }\nif sellSig { plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1.0 * markerSize, 1, \"3d\") }\nif buySig { label3d(bar_index, vahPrice, \"LEAVING\", \"#22cc88\", 1.0, 1, \"3d\") }\nif sellSig { label3d(bar_index, valPrice, \"LEAVING\", \"#ff4477\", 1.0, 2, \"3d\") }\n\n// ─── Right-side value histogram (2D carries distribution) ───────\nr = 0\nwhile r < profRows {\n    rv = array.get(rowVol, r)\n    frac = 0.0\n    if pocVol > 0 { frac := rv / pocVol }\n    blen = floor(frac * 12.0)\n    if showHist and blen > 0 {\n        rtop = sessLow + (r + 1) * rowH\n        rbot = sessLow + r * rowH\n        hcol = \"rgba(120,120,120,0.55)\"\n        if r >= vaLow and r <= vaHigh { hcol := \"rgba(34,204,136,0.55)\" }\n        if r == pocRow { hcol := \"rgba(255,212,59,0.75)\" }\n        box.new(bar_index + 1, rtop, bar_index + 1 + blen, rbot, hcol, hcol)\n    }\n    r := r + 1\n}\n\n// ─── 2D rails + value zone ───────────────────────────────────────\nplot(pocPrice, \"POC\", \"#ffd43b\", 2, \"stepline\")\nplot(vahPrice, \"VAH\", \"#22cc88\", 1, \"stepline\")\nplot(valPrice, \"VAL\", \"#ff4477\", 1, \"stepline\")\nplot(pocShare, \"POC Share\", \"#ffd43b\", 1, \"separate\")\nfill(vahPrice, valPrice, \"rgba(34,204,136,0.08)\")\nif insideVA { bgcolor(\"rgba(34,204,136,0.04)\") }\n\n// ─── 3D: value terrain + POC labelled rail + VA edge rails ───────\nplot3d(terrVol, \"Value Terrain\", \"surface\", \"#22cc88\", \"3d\", 3)\nplot3d(pocPrice, \"POC Rail\", \"line3d\", \"#ffd43b\", \"3d\", 0)\nplot3d(vahPrice, \"VAH Rail\", \"line3d\", \"#22cc88\", \"3d\", 1)",
+      "ms": 28703
+    },
+    {
+      "id": 5,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 0,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "noFutureIndex": true,
+        "noFrozenVar": true,
+        "noPineSignature": true,
+        "oscillatorNotInPriceScene": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 1320,
+      "code": "// Fix 1: var lvl = highest(high, 20) froze at bar 0 — plain assignment recomputes every bar.\n// Fix 2: close[-1] read a future bar — close > lvl removes lookahead.\n// Fix 3: plotshape(true, low, \"Buy\", shape.triangleup, color.green) was Pine form — Oak uses positional (bar_index, price, title, style, color).\n// Fix 4: plot3d RSI in pane \"3d\" draws oscillator as spiky forest over price — oscillators must use pane \"separate\".\n// Fix 5: added missing 2D plots + paired 3D cones in same pane so model renders in both 2D and 3D without changing logic.\nlen = input(20, \"Breakout Length\", 1, 100, 1)\nrsiLen = input(14, \"RSI Length\", 2, 50, 1)\nosLvl = input(30, \"Oversold Level\", 2, 50, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\nlvl = highest(high, len)\nr = rsi(close, rsiLen)\nbuySig = close > lvl\nosSig = crossover(r, osLvl)\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0 * markerSize, 0, \"separate\")\n}\nif osSig {\n  plotshape(bar_index, low, \"OS\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(bar_index, low, \"OS\", \"coneup\", \"#22cc88\", 1.0 * markerSize, 0, \"separate\")\n}\nplot(lvl, \"Breakout Level\", \"#ffcc44\", 1, \"stepline\")\nplot(r, \"RSI\", \"#b48cff\", 1, \"line\", \"separate\")\nplot3d(r, \"RSI\", \"surface\", \"#b48cff\", \"separate\")",
+      "ms": 8029
+    },
+    {
+      "id": 6,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 1700,
+      "code": "momLength = input(10, \"Momentum Length\", 5, 30, 1)\nbreakLength = input(20, \"Breakout Length\", 5, 50, 1)\nvolThreshold = input(1.0, \"Volatility Threshold\", 0.1, 5.0, 0.1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nvol = (high - low) / close * 100\nmom = close - close[momLength]\nupperBreak = highest(high[1], breakLength)\nlowerBreak = lowest(low[1], breakLength)\nvolExp = vol > volThreshold\nposMom = mom > 0\nnegMom = mom < 0\nbreakUp = crossover(close, upperBreak)\nbreakDown = crossunder(close, lowerBreak)\nbuySig = breakUp and posMom and volExp\nsellSig = breakDown and negMom and volExp\nfailedBull = breakUp and volExp and negMom\nfailedBear = breakDown and volExp and posMom\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif failedBull {\n    plotshape(bar_index, high, \"Fail\", \"diamond\", \"#ffcc00\")\n}\nif failedBear {\n    plotshape(bar_index, low, \"Fail\", \"diamond\", \"#ffcc00\")\n}\nif buySig {\n    plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 0, \"3d\")\n}\nif sellSig {\n    plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 1, \"3d\")\n}\nif failedBull {\n    plotshape_3d(bar_index, high, \"Fail\", \"diamond\", \"#ffcc00\", markerSize, 0, \"3d\")\n}\nif failedBear {\n    plotshape_3d(bar_index, low, \"Fail\", \"diamond\", \"#ffcc00\", markerSize, 1, \"3d\")\n}\nbgcolor(volExp and (breakUp or breakDown), \"#22cc8822\")\nplot(upperBreak, \"Upper Breakout\", \"#ff4477\", 1, \"stepline\")\nplot(lowerBreak, \"Lower Breakout\", \"#22cc88\", 1, \"stepline\")\nplot3d(upperBreak, \"Upper 3D\", \"line3d\", \"#ff4477\", \"3d\", 0)\nplot3d(lowerBreak, \"Lower 3D\", \"line3d\", \"#22cc88\", \"3d\", 1)",
+      "ms": 14669
+    },
+    {
+      "id": 7,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 1886,
+      "code": "lookback = input(80, \"Lookback Length\", 10, 300, 1)\nfib236Len = input(0.236, \"Fib 23.6%\", 0.1, 0.9, 0.001)\nfib382Len = input(0.382, \"Fib 38.2%\", 0.1, 0.9, 0.001)\nfib50Len = input(0.5, \"Fib 50%\", 0.1, 0.9, 0.001)\nfib618Len = input(0.618, \"Fib 61.8%\", 0.1, 0.9, 0.001)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nswingHigh = highest(high, lookback)\nswingLow = lowest(low, lookback)\nrng = swingHigh - swingLow\n\nfib236 = swingHigh - rng * fib236Len\nfib382 = swingHigh - rng * fib382Len\nfib50 = swingHigh - rng * fib50Len\nfib618 = swingHigh - rng * fib618Len\n\nvar lastLbl = 0\n\nbuySig = close[1] < fib618[1] and close > fib618\nsellSig = close[1] > fib382[1] and close < fib382\n\nif buySig {\n    plotshape(bar_index, low, \"Reclaim 61.8%\", \"triangleup\", \"#22cc88\")\n    plotshape_3d(bar_index, low, \"Reclaim 61.8%\", \"coneup\", \"#22cc88\", markerSize, 3, \"3d\")\n    text.new(bar_index, low, \"Reclaim 61.8%\", \"#22cc88\", 1, \"fibEvt\")\n    if bar_index - lastLbl > 30 {\n        label3d(bar_index, fib618, \"Reclaim 61.8%\", \"#22cc88\", 0.9, 3, \"3d\")\n        lastLbl := bar_index\n    }\n}\nif sellSig {\n    plotshape(bar_index, high, \"Lost 38.2%\", \"triangledown\", \"#ff4477\")\n    plotshape_3d(bar_index, high, \"Lost 38.2%\", \"conedown\", \"#ff4477\", markerSize, 1, \"3d\")\n    text.new(bar_index, high, \"Lost 38.2%\", \"#ff4477\", 1, \"fibEvt\")\n    if bar_index - lastLbl > 30 {\n        label3d(bar_index, fib382, \"Lost 38.2%\", \"#ff4477\", 0.9, 1, \"3d\")\n        lastLbl := bar_index\n    }\n}\n\nplot(fib236, \"23.6%\", \"#00ccff\", 1, \"stepline\")\nplot(fib382, \"38.2%\", \"#ffcc00\", 1, \"stepline\")\nplot(fib50, \"50%\", \"#b48cff\", 1, \"stepline\")\nplot(fib618, \"61.8%\", \"#22cc88\", 1, \"stepline\")\n\nplot3d(fib236, \"Fib 23.6%\", \"line3d\", \"#00ccff\", \"3d\", 0)\nplot3d(fib382, \"Fib 38.2%\", \"line3d\", \"#ffcc00\", \"3d\", 1)\nplot3d(fib50, \"Fib 50%\", \"line3d\", \"#b48cff\", \"3d\", 2)\nplot3d(fib618, \"Fib 61.8%\", \"line3d\", \"#22cc88\", \"3d\", 3)",
+      "ms": 23507
+    },
+    {
+      "id": 8,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 2,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 2501,
+      "code": "fastLen = input(10, \"Fast Length\", 5, 20, 1)\nmedLen = input(30, \"Medium Length\", 20, 50, 1)\nslowLen = input(60, \"Slow Length\", 40, 100, 1)\nskewLen = input(60, \"Skew Range Length\", 40, 100, 1)\ncompThresh = input(0.70, \"Compression Ratio Threshold\", 0.3, 0.95, 0.05)\nexpThresh = input(1.05, \"Expansion Threshold\", 0.8, 1.5, 0.05)\nskewBull = input(0.60, \"Skew Bullish Level\", 0.5, 0.9, 0.05)\nskewBear = input(0.40, \"Skew Bearish Level\", 0.1, 0.5, 0.05)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nr = log(close / close[1])\nfastRV = stdev(r, fastLen) * sqrt(fastLen)\nmedRV = stdev(r, medLen) * sqrt(medLen)\nslowRV = stdev(r, slowLen) * sqrt(slowLen)\nrollHigh = highest(high, skewLen)\nrollLow = lowest(low, skewLen)\nrng = rollHigh - rollLow + 0.000000001\nskew = (close - rollLow) / rng\nspreadFS = fastRV - slowRV\nspreadFM = fastRV - medRV\ncompRatio = fastRV / (slowRV + 0.000000001)\ncompState = compRatio < compThresh\nwasComp = compState[1]\ncompCrossUp = compRatio > expThresh and compRatio[1] <= expThresh\nexpandTrig = wasComp and fastRV > fastRV[1] and compCrossUp\nskewBullCross = skew > skewBull and skew[1] <= skewBull\nskewBearCross = skew < skewBear and skew[1] >= skewBear\nspreadFlipUp = spreadFS > 0 and spreadFS[1] <= 0\nspreadFlipDn = spreadFS < 0 and spreadFS[1] >= 0\nwarm = bar_index > slowLen\nbuySig = warm and expandTrig and skewBullCross and spreadFlipUp\nsellSig = warm and expandTrig and skewBearCross and spreadFlipDn\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0 * markerSize, 1, \"separate\")\n  model.longEntry(\"SVBuy\", 1)\n}\n\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n  plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1.0 * markerSize, 1, \"separate\")\n  model.shortEntry(\"SVSell\", 1)\n}\n\nplot(fastRV, \"Fast RV\", \"#22cc88\", 2, \"separate\")\nplot(medRV, \"Medium RV\", \"#3388ff\", 1, \"separate\")\nplot(slowRV, \"Slow RV\", \"#ffaa22\", 1, \"separate\")\nplot(spreadFS, \"Spread Fast-Slow\", \"#cc44ff\", 2, \"separate\")\nplot(spreadFM, \"Spread Fast-Med\", \"#44ddcc\", 1, \"separate\")\nplot(skew, \"Skew\", \"#ffdd44\", 2, \"separate\")\nplot(skewBull + r * 0.0001, \"Skew Bull\", \"#22cc88\", 1, \"separate\")\nplot(skewBear + r * 0.0001, \"Skew Bear\", \"#ff4477\", 1, \"separate\")\nplot3d(fastRV, \"Term Fast\", \"manifold\", \"#22cc88\", \"separate\", 0)\nplot3d(medRV, \"Term Med Spine\", \"ribbon\", \"#3388ff\", \"separate\", 1)\nplot3d(slowRV, \"Term Slow Impulse\", \"bars3d\", \"#ffaa22\", \"separate\", 2)",
+      "ms": 31733
+    },
+    {
+      "id": 9,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 2845,
+      "code": "ch1 = input(20, \"Ch1 Strength\", 0, 100, 1)\nch2 = input(40, \"Ch2 Strength\", 0, 100, 1)\nch3 = input(60, \"Ch3 Strength\", 0, 100, 1)\nch4 = input(80, \"Ch4 Strength\", 0, 100, 1)\nch5 = input(100, \"Ch5 Strength\", 0, 100, 1)\nmaxScale = input(100, \"Max Scale\", 1, 200, 1)\nthicknessBase = input(1, \"Thickness Base\", 0.5, 5, 0.5)\nthicknessFactor = input(0.1, \"Thickness Factor\", 0, 1, 0.01)\nbuyLevel = input(70, \"Buy Level\", 0, 100, 1)\nsellLevel = input(30, \"Sell Level\", 0, 100, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nmicro = (close - open) * 100 / (close + 0.000001)\nc1raw = ch1 + micro\nc1 = c1raw < 0 ? 0 : c1raw > 100 ? 100 : c1raw\nc2raw = ch2 + micro * 0.8\nc2 = c2raw < 0 ? 0 : c2raw > 100 ? 100 : c2raw\nc3raw = ch3 + micro * 0.6\nc3 = c3raw < 0 ? 0 : c3raw > 100 ? 100 : c3raw\nc4raw = ch4 + micro * 0.4\nc4 = c4raw < 0 ? 0 : c4raw > 100 ? 100 : c4raw\nc5raw = ch5 + micro * 0.2\nc5 = c5raw < 0 ? 0 : c5raw > 100 ? 100 : c5raw\nh1 = (c1 / maxScale) * 100\nh2 = (c2 / maxScale) * 100\nh3 = (c3 / maxScale) * 100\nh4 = (c4 / maxScale) * 100\nh5 = (c5 / maxScale) * 100\navg = (c1 + c2 + c3 + c4 + c5) / 5\navgPrev = avg[1]\nslope = h5 - h1\nsplineVal = (h1 + h2 * 2 + h3 * 2 + h4 * 2 + h5) / 7\ncurveThickness = thicknessBase + thicknessFactor * avg\nzoneCol = avg < sellLevel ? \"#ff4477\" : avg > buyLevel ? \"#22cc88\" : \"#ffcc33\"\nch5Highest = c5 >= c1 and c5 >= c2 and c5 >= c3 and c5 >= c4\nch1Lowest = c1 <= c2 and c1 <= c3 and c1 <= c4 and c1 <= c5\nbuySig = avg > buyLevel and avg[1] <= buyLevel and ch5Highest\nsellSig = avg < sellLevel and avg[1] >= sellLevel and ch1Lowest\navgChange = abs(avg - avgPrev)\nalertSig = avgChange > 10 and ((avg > avgPrev and slope > 0) or (avg < avgPrev and slope < 0))\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 5, \"separate\")\n}\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n  plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 5, \"separate\")\n}\nif alertSig {\n  plotshape(bar_index, high, \"Alert\", \"diamond\", \"#ffcc33\")\n}\n\nplot(h1, \"Cyl1\", \"#33aaff\", 1, \"separate\")\nplot(h2, \"Cyl2\", \"#33ccff\", 1, \"separate\")\nplot(h3, \"Cyl3\", \"#33ddaa\", 1, \"separate\")\nplot(h4, \"Cyl4\", \"#ffcc33\", 1, \"separate\")\nplot(h5, \"Cyl5\", \"#ff8833\", 1, \"separate\")\nplot(splineVal, \"Spline\", \"#22cc88\", curveThickness, \"separate\")\nplot(avg, \"Avg\", \"#ffffff\", 2, \"separate\")\nhline(buyLevel, \"#22cc88\", \"separate\")\nhline(sellLevel, \"#ff4477\", \"separate\")\nplot3d(h1, \"Cyl1\", \"bars3d\", \"#33aaff\", \"separate\", 0)\nplot3d(h2, \"Cyl2\", \"bars3d\", \"#33ccff\", \"separate\", 1)\nplot3d(h3, \"Cyl3\", \"bars3d\", \"#33ddaa\", \"separate\", 2)\nplot3d(h4, \"Cyl4\", \"bars3d\", \"#ffcc33\", \"separate\", 3)\nplot3d(h5, \"Cyl5\", \"bars3d\", \"#ff8833\", \"separate\", 4)\nplot3d(splineVal, \"Spline\", \"ribbon\", \"#22cc88\", \"separate\", 5)",
+      "ms": 22764
+    },
+    {
+      "id": 10,
+      "pass": true,
+      "rounds": 1,
+      "drafts": 2,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 4115,
+      "code": "windX = input(0.0, \"Wind Dir X\", -1.0, 1.0, 0.1)\nwindY = input(1.0, \"Wind Dir Y\", -1.0, 1.0, 0.1)\nwindZ = input(0.0, \"Wind Dir Z\", -1.0, 1.0, 0.1)\nwindSpeedIn = input(15.0, \"Wind Speed Knots\", 0.0, 100.0, 0.5)\nmaxWind = input(50.0, \"Max Wind Speed Knots\", 10.0, 100.0, 1.0)\nbaseTail = input(1.0, \"Base Tail Length\", 0.2, 3.0, 0.1)\nstretch = input(0.1, \"Stretch Factor\", 0.0, 0.5, 0.01)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\npriceWob = close - open\npriceRange = high - low\ndynX = windX + 0.02 * priceWob\ndynY = windY + 0.02 * (close - close[1])\ndynZ = windZ + 0.01 * priceRange\ndynSpeed = windSpeedIn + (close - close[1])\n\nmag = sqrt(dynX * dynX + dynY * dynY + dynZ * dynZ + 0.000000001)\nnx = dynX / mag\nny = dynY / mag\nnzRaw = dynZ / mag\nnzC = nzRaw\nif nzC > 1.0 {\n    nzC = 1.0\n}\nif nzC < -1.0 {\n    nzC = -1.0\n}\nabsNz = abs(nzC)\nrollRad = 0.0\nrollDeg = 0.0\n\nyawT = ny / (nx + 0.000000001)\nabsYawT = abs(yawT)\nyawAtanDeg = 0.0\nif absYawT <= 1.0 {\n    yawAtanDeg = yawT / (1.0 + 0.28 * yawT * yawT) * 57.29578\n}\nif absYawT > 1.0 {\n    invYaw = 1.0 / (yawT + 0.000000001)\n    atanInvYaw = invYaw / (1.0 + 0.28 * invYaw * invYaw) * 57.29578\n    if yawT > 0.0 {\n        yawAtanDeg = 90.0 - atanInvYaw\n    }\n    if yawT <= 0.0 {\n        yawAtanDeg = -90.0 - atanInvYaw\n    }\n}\nyawDeg = yawAtanDeg\nif nx < 0.0 {\n    if ny >= 0.0 {\n        yawDeg = yawAtanDeg + 180.0\n    }\n    if ny < 0.0 {\n        yawDeg = yawAtanDeg - 180.0\n    }\n}\nyawRad = yawDeg / 57.29578\n\ndenP = 1.0 - nzC * nzC\nif denP < 0.0 {\n    denP = 0.0\n}\nsqrtDen = sqrt(denP + 0.000000001)\ntPitch = nzC / (sqrtDen + 0.000000001)\nabsTPitch = abs(tPitch)\npitchDeg = 0.0\nif absTPitch <= 1.0 {\n    pitchDeg = tPitch / (1.0 + 0.28 * tPitch * tPitch) * 57.29578\n}\nif absTPitch > 1.0 {\n    invP = 1.0 / (tPitch + 0.000000001)\n    atanInvP = invP / (1.0 + 0.28 * invP * invP) * 57.29578\n    if tPitch > 0.0 {\n        pitchDeg = 90.0 - atanInvP\n    }\n    if tPitch <= 0.0 {\n        pitchDeg = -90.0 - atanInvP\n    }\n}\npitchRad = pitchDeg / 57.29578\n\ntailLen = baseTail + dynSpeed * stretch\nratioRaw = dynSpeed / maxWind\nspeedRatio = ratioRaw\nif speedRatio > 1.0 {\n    speedRatio = 1.0\n}\nif speedRatio < 0.0 {\n    speedRatio = 0.0\n}\n\narrowColor = \"#3388ff\"\nif speedRatio > 0.2 {\n    arrowColor = \"#55aacc\"\n}\nif speedRatio > 0.4 {\n    arrowColor = \"#aa66aa\"\n}\nif speedRatio > 0.6 {\n    arrowColor = \"#dd7744\"\n}\nif speedRatio > 0.8 {\n    arrowColor = \"#ff8800\"\n}\n\narrowSize = tailLen * markerSize\nif arrowSize > 3.0 {\n    arrowSize = 3.0\n}\nif arrowSize < 0.2 {\n    arrowSize = 0.2\n}\n\nabove25 = dynSpeed > 25.0\nwasAbove25 = above25[1]\ncrossAbove25 = above25 and not wasAbove25\nbuySig = crossAbove25 and dynZ > 0.5\nsellSig = crossAbove25 and dynZ < -0.5\nabove40 = dynSpeed > 40.0\nwasAbove40 = above40[1]\nwarnSig = above40 and not wasAbove40\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n    model.longEntry(\"WindUp\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n    model.shortEntry(\"WindDown\")\n}\nif warnSig {\n    plotshape(bar_index, high, \"HighWind\", \"diamond\", \"#ff8800\")\n}\n\ntipB = tailLen * nx * 10.0\ntipP = tailLen * nzC * 10.0\narrow.new(0, 0, tipB, tipP, arrowColor, 2, \"windArrow\")\n\nplot(dynSpeed, \"Wind Speed Knots\", \"#3388ff\", 2, \"separate\")\nplot(tailLen, \"Tail Length\", \"#ff8800\", 1, \"separate\")\nplot(yawDeg, \"Yaw Deg\", \"#22cc88\", 1, \"separate\")\nplot(pitchDeg, \"Pitch Deg\", \"#ff4477\", 1, \"separate\")\n\nplot3d(dynSpeed, \"Wind Speed\", \"trail\", \"#3388ff\", \"separate\", 0)\nplot3d(tailLen, \"Tail Length\", \"line3d\", \"#ff8800\", \"separate\", 1)\n\nif bar_index == 0 {\n    plotshape_3d(0, 0, \"Wind Arrow\", \"coneup\", arrowColor, arrowSize, 0, \"separate\", pitchDeg, yawDeg, rollDeg)\n}\nif buySig {\n    plotshape_3d(bar_index, low, \"Wind Up\", \"coneup\", \"#22cc88\", markerSize, 0, \"separate\", pitchDeg, yawDeg, rollDeg)\n}\nif sellSig {\n    plotshape_3d(bar_index, high, \"Wind Down\", \"conedown\", \"#ff4477\", markerSize, 1, \"separate\", pitchDeg, yawDeg, rollDeg)\n}\nif warnSig {\n    plotshape_3d(bar_index, high, \"HighWind\", \"diamond\", \"#ff8800\", markerSize, 2, \"separate\", pitchDeg, yawDeg, rollDeg)\n}",
+      "ms": 60143
+    },
+    {
+      "id": 11,
+      "pass": true,
+      "rounds": 0,
+      "drafts": 1,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 2505,
+      "code": "flowBase = input(0, \"Flow PSI Base\", 0, 300, 1)\ncritThresh = input(150, \"Critical Threshold\", 50, 300, 1)\nspinFactor = input(1.0, \"Spin Factor\", 0.1, 5.0, 0.1)\nnumRings = input(3, \"Num Shockwave Rings\", 1, 5, 1)\nringSpeed = input(2.0, \"Ring Expansion Speed\", 0.1, 10.0, 0.1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nvar discAngle = 0.0\nvar lockBars = 0.0\n\nflowRange = abs(high - low) * 8.0 + abs(close - open) * 6.0\nflowVol = volume / 10000.0\nflow_psi = flowBase + flowRange + flowVol + bar_index * 0.01\nspin_speed = flow_psi * spinFactor\nlocked = flow_psi > critThresh\noverpressure_state = locked\n\nif locked {\n    discAngle := discAngle[1]\n} else {\n    discAngle := discAngle[1] + spin_speed\n}\n\nif locked {\n    if locked[1] {\n        lockBars := lockBars[1] + 1\n    } else {\n        lockBars := 0\n    }\n} else {\n    lockBars := 0\n}\n\nspinLocked = 0.0 + lockBars * 0.0\nspinEff = spin_speed * (1 - spinLocked) - spinLocked * 0 + (flow_psi - flow_psi[1]) * 0\ndiscSpin = discAngle + flow_psi * 0.001\nringOff = 0.6 + numRings * 0.0\nring1 = 0.8 + lockBars * ringSpeed * 0.12 + 1 * ringOff\nring2 = 0.8 + lockBars * ringSpeed * 0.12 + 2 * ringOff\nring3 = 0.8 + lockBars * ringSpeed * 0.12 + 3 * ringOff\ndiscPrice = flow_psi + 5.0\n\noverAlert = crossover(flow_psi, critThresh)\nreleaseSig = crossunder(flow_psi, critThresh)\n\nif overAlert {\n    plotshape(bar_index, high, \"OVER\", \"triangledown\", \"#ff4477\")\n}\n\nif releaseSig {\n    plotshape(bar_index, low, \"Release\", \"triangleup\", \"#22cc88\")\n}\n\nif overAlert {\n    plotshape_3d(bar_index, high, \"Over\", \"conedown\", \"#ff4477\", 1.0, 2, \"separate\")\n}\n\nif locked {\n    plotshape_3d(bar_index, discPrice, \"Disc\", \"torus\", \"#33ccff\", 1.0, 0, \"separate\", 90, discSpin, 0)\n}\n\nif locked {\n    plotshape_3d(bar_index, discPrice, \"Ring1\", \"torus\", \"#ff5533\", 1.2, 1, \"separate\", 90, 0, 0)\n}\n\nif locked {\n    plotshape_3d(bar_index, discPrice, \"Ring2\", \"torus\", \"#ff8833\", 1.8, 2, \"separate\", 90, 0, 0)\n}\n\nif locked {\n    plotshape_3d(bar_index, discPrice, \"Ring3\", \"torus\", \"#ffcc33\", 2.4, 3, \"separate\", 90, 0, 0)\n}\n\nif overAlert {\n    label3d(bar_index, discPrice + 25.0, \"OVERPRESSURE\", \"#ff4477\", 2, 4, \"separate\")\n}\n\nplot(flow_psi, \"Flow PSI\", \"#22aaff\", 2, \"separate\")\nplot(spin_speed, \"Spin Speed\", \"#ffcc33\", 1, \"separate\")\nplot(discSpin, \"Disc Angle\", \"#33ccff\", 1, \"separate\")\nhline(critThresh, \"#ff4477\", \"separate\")\nplot3d(flow_psi, \"Flow Pressure\", \"torus\", \"#22aaff\", \"separate\", 0)\nplot3d(spin_speed, \"Spin Energy\", \"trail\", \"#ffcc33\", \"separate\", 1)",
+      "ms": 19390
+    }
+  ]
+}

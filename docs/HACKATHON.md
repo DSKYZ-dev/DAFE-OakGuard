@@ -13,8 +13,9 @@ DAFE Charts (the terminal below) pre-exists. Everything in this list was
 built during the event window (Oct 27 – Nov 4, 2026):
 
 1. **DAFE OakGuard** (`apps/web/src/oakguard/`, `tools/verify/oakguard-test.ts`) —
-   a constrained self-improving verification engine: a fixed LLM proposes
-   *declarative* validation rules; an independent evaluator (frozen corpus,
+   a constrained verification engine: candidate *declarative* validation rules
+   come from a hand-written catalogue today (a live model as proposer is the next
+   step); an independent evaluator (frozen corpus,
    visible + held-out mutants) promotes only what passes every gate;
    rejections are preserved in an Emeritus archive with counterexamples.
    Promoted rules enforce live in the real OakScript validator.
@@ -22,10 +23,14 @@ built during the event window (Oct 27 – Nov 4, 2026):
    improvement loop is visible: Playbook Core (one ring per promoted rule),
    mutant swarm, pipeline stages, Emeritus shards. Every visual encodes a
    real evaluator number.
-3. **Request-Coverage gate** (`trade-advisor/request-coverage.ts`) — the
+3. **Request-Coverage gate + shared generation pipeline**
+   (`trade-advisor/request-coverage.ts`, `generation-pipeline.ts`) — the
    semantic check the syntax validator cannot be: unrequested indicator
    families, explicit user negations, tautological signals, and
-   Prefer-3D enforcement now iterate in the coder auto-fix loop.
+   Prefer-3D enforcement. The same gate now backs a shared pipeline used by
+   the app and the live test harness: gated concept brief (`USES:` /
+   `EXCLUDES:`), built-in exemplar injection, best-of-2 drafts, deterministic
+   table/3D/layer repair, and deletion-list escalation in the fix loop.
 4. **Universal market-data adapter** (`backend/main.py` DATA_PROVIDERS,
    Settings → Universal Data Providers) — any provider (Polygon, Alpaca,
    Twelve Data, custom REST) converted to one internal bar feed.
@@ -34,6 +39,20 @@ built during the event window (Oct 27 – Nov 4, 2026):
    a Visual Editor module, unified interface-glow theming + brightness.
 6. **Meta Model API provider preset** — Trade Advisor and OakScript Coder
    can run Muse Spark / Muse Wonder natively alongside local models.
+7. **Signal engines that read in both views** (`tools/verify/signal-engine-audit.ts`,
+   `apps/web/src/plot-twins.ts`) — all 42 library engines are validated, executed and
+   classified headlessly (`npm run verify:signals`: 42 OK, 0 WARN, 0 FAIL). A 3D layer or
+   marker that a script draws only in 3D gets a 2D twin, so the same engine reads in both
+   views. New **Wind Velocity Vector 3D**: gust cones with pitch/yaw/roll, a velocity ribbon,
+   a tail trail, and two small charts with live readouts. Windows lay out below the header
+   bar on first load.
+8. **Backtest honesty certificate and forming-bar checks** (`apps/web/src/oakguard/honesty.ts`,
+   `tools/verify/honesty-test.ts`). Every backtest result shows a certificate for the procedure
+   behind it: no lookahead on replay, fills at the next open, costs, a reserved out-of-sample
+   period, and no selection on it. Live signals on the forming bar are checked the same way, and
+   four shipped indicators were gated to fire only on closed bars. The certificate certifies the
+   procedure, not the returns. The coverage gate also checks that each indicator a request names
+   is computed (`tools/verify/intent-mutants-test.ts`: 6 of 6 caught).
 
 ## One-liner
 
@@ -106,25 +125,34 @@ so no credential ever reaches the browser.
    seed failure: the baseline validator calls `sma(close, 0)` *valid*; the
    execution proof shows 0% finite values. The escaped mutant pulses the
    Playbook Core red.
-2. **The improvement loop (0:35–1:50)** — Propose candidates → Probation runs
+2. **The improvement loop (0:35–1:50)** — candidate rules → probation runs
    the mutant swarm → the length rule passes every gate and the Core **gains
    a labelled ring** (`PLAYBOOK v2`); the naive dotted rule false-positives
    on shipped OakRing code and is archived in **Emeritus** with its
    counterexample.
-3. **It matters after the demo (1:50–2:30)** — Step 6 scans the live library
-   with the promoted playbook; then ask the editor agent for *"session
-   highs/lows with divergence signals"* — the request-coverage gate keeps it
-   honest, the indicator lands on the chart (CCI Manifold dashboard +
-   main-chart signals), and `npm run verify:oakguard` shows the headless
-   receipt.
-4. **Close (2:30–3:00)** — "A fixed model that improves its own verification
-   playbook — and proves every promotion." Settings → Universal Data
-   Providers + Meta Model API preset as the final frame.
+3. **It matters in the editor (1:40–2:05)** — ask the editor agent, live, for *"an RSI
+   breakout with a 3D breakout level."* The coverage gate checks that RSI is actually
+   computed, and the Prefer-3D repair restores the 3D layer if the model drops it. The
+   indicator lands on the chart, and `npm run verify:intent` shows the headless receipt.
+4. **The honest backtest (2:05–2:35)** — run the same EMA cross on 500 bars: the
+   certificate says FAIL, because the out-of-sample period has too few trades to vouch
+   for. Run it on 2,000 bars: PASS, with fills at the entry bar's open and a reserved
+   holdout. Say it plainly: it certifies the procedure, not the returns.
+5. **Close (2:35–3:00)** — "Candidate rules, from a catalogue today and a model next, are only as good as the referee.
+   This one records every promotion and rejection, and it certifies procedure, not
+   profit." End on the Settings → Meta Model API preset: the Meta frame is part of
+   Stage One.
+
+Presenter notes: say "candidate rules," not "the model proposed them" — the catalogue
+supplies candidates today, and the live proposer is the next step. Never show an equity
+curve or a P&L figure as a result. Record a backup take, because a live model call can
+be slow.
 
 ## 60-second version
 
-Crucible seed failure → propose → probation swarm → ring ignites, one rule
-to Emeritus → live scan → one editor-agent indicator → headless receipt.
+Crucible seed failure → candidates → probation swarm → ring ignites, one rule to
+Emeritus → editor agent builds a requested indicator → honest backtest certificate
+(FAIL on thin data, PASS on enough) → headless receipts.
 
 ## How it was built
 
@@ -155,4 +183,6 @@ numbers and the uncomfortable ones.
 - [ ] Meta Model API key tested (Settings → Provider API Keys → Meta), credits claimed
 - [ ] Third-party licences checked (GGUF model, Three.js, Capacitor, fonts)
 - [ ] API keys tested on the demo machine, then rotated afterwards
-- [ ] `npm run lint && npm test && npm run verify:oakguard && npm run build` green
+- [x] `npm run lint && npm test && npm run verify:oakguard && npm run verify:pipeline && npm run build` green
+- [x] Live generation acceptance: `npx tsx tools/verify/final-limit-run.ts acceptance --set all --repeat 10 --fail-fast`
+      — **10/10 consecutive runs, 11 of 11 prompts in each (110/110)**, on Meta `muse-spark-1.3`, commit `b64e0e7` (`tools/verify/final-limit-results-acceptance-attempt6-summary.json`)

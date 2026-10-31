@@ -1,0 +1,91 @@
+{
+  "label": "acceptance",
+  "set": "all",
+  "at": "2026-10-31T03:47:49.264Z",
+  "modelNote": "live Meta / muse-spark-1.3 via configured backend roles",
+  "repeat": 10,
+  "runsCompleted": 10,
+  "allPassRuns": 10,
+  "currentStreak": 10,
+  "bestStreak": 10,
+  "perPrompt": [
+    {
+      "id": 1,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 2,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 3,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 4,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 5,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 6,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 7,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 8,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 9,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 10,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    },
+    {
+      "id": 11,
+      "passes": 10,
+      "runs": 10,
+      "failures": 0
+    }
+  ],
+  "runPasses": [
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true,
+    true
+  ]
+}
