@@ -266,6 +266,26 @@ plot(r, "RSI", "#b48cff", 1, "line")`;
       const yawGrade = gradeCode(yawScript, 'Build a wind velocity vector 3D indicator with yaw arrows.', { prefer3D: true });
       check('2p. A script that uses atan2 is not flagged as an unknown function', !yawGrade.errors.some(e => /UNKNOWN_FUNCTION/.test(e)), yawGrade.errors);
     }
+    {
+      // 2q–2t. Acceptance attempt 5, run 5, prompt 11: a marker on the separate pane inside a 3d
+      // scene renders nowhere, and a marker keyed on a state paints every bar the state holds.
+      const markerRequest = 'Build a ring indicator that marks overflow with 3D discs and rings.';
+      const paneCode = 'plot3d(close, "Price", "line3d", "#ffffff", "3d")\nst = close > close[5]\nif st and not st[1] {\n  label3d(bar_index, close, "Flip", "#22cc88", 1.0, 0, "separate")\n}';
+      const paneFixed = repairMechanicalViolations(paneCode, markerRequest, { prefer3D: true });
+      check('2q. A marker on the separate pane moves to the 3d scene the other layers use',
+        paneFixed.code.includes('label3d(bar_index, close, "Flip", "#22cc88", 1.0, 0, "3d")') && !paneFixed.code.includes('"separate"'), paneFixed.removed);
+      const stateCode = 'overFlag = close > sma(close, 10)\nif overFlag {\n  plotshape_3d(bar_index, close, "Locked", "torus", "#ff4477", 1.0, 0, "3d")\n} else {\n  plotshape_3d(bar_index, close, "Disc", "torus", "#22cc88", 1.0, 0, "3d")\n}\nplot3d(close, "Price", "line3d", "#ffffff", "3d")';
+      const stateBefore = probeSignalClustering(stateCode);
+      check('2r. Markers keyed on a state are flagged as clusters before repair', stateBefore.length > 0, stateBefore);
+      const untouched = repairMechanicalViolations(stateCode, markerRequest, { prefer3D: true });
+      check('2s. Without a cluster finding, markers keyed on a state are left alone', untouched.code === stateCode, untouched.removed);
+      const edged = repairMechanicalViolations(stateCode, markerRequest, { prefer3D: true, eventMarkers: true });
+      const edgedErrors = validate(edged.code).issues.filter(i => i.severity === 'error');
+      const edgedClusters = probeSignalClustering(edged.code);
+      check('2t. Markers keyed on a state fire on its edges: rising for if, falling for else',
+        edged.code.includes('if overFlag and not overFlag[1] {') && edged.code.includes('if not overFlag and overFlag[1] {') && edgedClusters.length === 0 && edgedErrors.length === 0,
+        { clusters: edgedClusters, errors: edgedErrors.map(i => i.message) });
+    }
     check('3a. Default max 3D layers = 3', max3DLayersForRequest(stdReq) === 3);
     check('3b. Fibonacci max 3D layers = 4', max3DLayersForRequest(fibReq) === 4);
     check('3c. 5-channel cylinder array max 3D layers = 6', max3DLayersForRequest(fiveChReq) === 6);

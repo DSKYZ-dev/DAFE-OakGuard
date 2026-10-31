@@ -217,7 +217,8 @@ interface MechanicalResult {
 /** Apply mechanical repairs, keeping them only when the result is no worse. */
 function applyMechanical(code: string, request: string, opts: GradeOptions): MechanicalResult {
   const before = gradeCode(code, request, opts);
-  const repaired = repairMechanicalViolations(code, request, { prefer3D: opts.prefer3D });
+  const clustered = before.problems.some(p => /repeats on back-to-back bars|fires on \d+% of bars/.test(p));
+  const repaired = repairMechanicalViolations(code, request, { prefer3D: opts.prefer3D, eventMarkers: clustered });
   if (repaired.removed.length === 0) return { code, removed: [], grade: before };
   const after = gradeCode(repaired.code, request, opts);
   if (gradeScore(after) > gradeScore(before)) {
@@ -479,7 +480,7 @@ Rules:
  *  or until the round budget is exhausted. Returns the best-scoring version,
  *  never a regression from the input. */
 export async function repairScriptWithGates(opts: RepairOptions): Promise<RepairResult> {
-  const maxRounds = opts.maxRounds ?? 3;
+  const maxRounds = opts.maxRounds ?? 5;
   const gradeOpts: GradeOptions = {
     prefer3D: opts.prefer3D,
     previousSource: opts.previousSource,
@@ -661,7 +662,7 @@ export async function generateIndicatorWithGates(opts: GenerateOptions): Promise
     code: chosenCode,
     chat: opts.chat,
     prefer3D: opts.prefer3D,
-    maxRounds: opts.maxRounds ?? 3,
+    maxRounds: opts.maxRounds ?? 5,
     onStatus: opts.onStatus,
     onIteration: opts.onIteration,
   });
@@ -727,7 +728,7 @@ Rules:
     chat: opts.chat,
     prefer3D: opts.prefer3D,
     previousSource: opts.source,
-    maxRounds: opts.maxRounds ?? 3,
+    maxRounds: opts.maxRounds ?? 5,
     onStatus: opts.onStatus,
     onIteration: opts.onIteration,
   });

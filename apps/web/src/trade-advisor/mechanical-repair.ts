@@ -208,10 +208,83 @@ export function addMissing3DTwin(code: string): MechanicalRepairResult {
   };
 }
 
+const MARKER_LINE = /^(?:plotshape|plotshape_3d|label3d)\s*\(.*\)$/;
+
+/** Index of the brace that closes the block opened at `open`, skipping string literals. */
+function closingBrace(code: string, open: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < code.length; i++) {
+    const ch = code[i];
+    if (ch === '"') inString = !inString;
+    else if (inString) continue;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** A block body that is nothing but complete marker calls. */
+function isMarkerOnlyBody(body: string): boolean {
+  const statements = body.split('\n').map(l => l.trim()).filter(Boolean);
+  return statements.length > 0 && statements.every(s => MARKER_LINE.test(s) && isCompleteCallLine(s));
+}
+
+/** A marker on the "separate" pane inside a scene that uses "3d" renders nowhere, because the
+ *  3d takeover hides the lower pane. Move those markers to the scene the other layers use. */
+export function alignMarkerPanes(code: string): MechanicalRepairResult {
+  const layerPanes = callArgs(code, 'plot3d').map(c => c.args[4]);
+  if (!layerPanes.includes('"3d"') || layerPanes.includes('"separate"')) return { code, removed: [] };
+  let moved = 0;
+  const fixed = code.replace(/\b(plotshape_3d|label3d)\s*\(([^)]*)\)/g, (whole, fn: string, inner: string) => {
+    if (!inner.includes('"separate"')) return whole;
+    moved++;
+    return `${fn}(${inner.replace(/"separate"/g, '"3d"')})`;
+  });
+  return moved === 0
+    ? { code, removed: [] }
+    : { code: fixed, removed: [`moved ${moved} marker(s) from the "separate" pane to "3d", the pane of the 3D scene`] };
+}
+
+/** A marker keyed on a state fires on every bar the state holds, which paints clusters. Key the
+ *  markers on the state's edges instead: `if X` fires when X turns on, and an `else` of markers
+ *  fires when X turns off. Only blocks made of marker calls are rewritten, and X itself is left
+ *  alone, so the rest of the script keeps its meaning. */
+export function markerBlocksToEvents(code: string): MechanicalRepairResult {
+  const removed: string[] = [];
+  let out = code;
+  for (const head of [...code.matchAll(/\bif\s+([A-Za-z_]\w*)\s*\{/g)].reverse()) {
+    const start = head.index ?? 0;
+    const name = head[1];
+    const open = start + head[0].length - 1;
+    const close = closingBrace(code, open);
+    if (close < 0) continue;
+    const rising = code.slice(open + 1, close);
+    if (!isMarkerOnlyBody(rising)) continue;
+    const after = code.slice(close + 1);
+    const elseHead = /^\s*else\s*\{/.exec(after);
+    if (!elseHead && /^\s*else\b/.test(after)) continue; // an `else if` chain would change meaning
+    let end = close;
+    let replacement = `if ${name} and not ${name}[1] {${rising}}`;
+    if (elseHead) {
+      const elseOpen = close + 1 + elseHead[0].length - 1;
+      const elseClose = closingBrace(code, elseOpen);
+      if (elseClose < 0) continue;
+      const falling = code.slice(elseOpen + 1, elseClose);
+      if (!isMarkerOnlyBody(falling)) continue;
+      end = elseClose;
+      replacement += `\nif not ${name} and ${name}[1] {${falling}}`;
+    }
+    out = out.slice(0, start) + replacement + out.slice(end + 1);
+    removed.unshift(`keyed the markers on "${name}" to its edges, so they fire when it turns on (or off), not on every bar it holds`);
+  }
+  return removed.length === 0 ? { code, removed: [] } : { code: out, removed };
+}
+
 export function repairMechanicalViolations(
   code: string,
   request: string,
-  opts: { prefer3D?: boolean } = {},
+  opts: { prefer3D?: boolean; eventMarkers?: boolean } = {},
 ): MechanicalRepairResult {
   let result: MechanicalRepairResult = { code, removed: [] };
 
@@ -250,6 +323,13 @@ export function repairMechanicalViolations(
       const capped = cap3DLayers(result.code, maxLayers);
       if (capped.removed.length > 0) result = merge(result, capped);
     }
+  }
+
+  const aligned = alignMarkerPanes(result.code);
+  if (aligned.removed.length > 0) result = merge(result, aligned);
+  if (opts.eventMarkers) {
+    const events = markerBlocksToEvents(result.code);
+    if (events.removed.length > 0) result = merge(result, events);
   }
 
   return result;
