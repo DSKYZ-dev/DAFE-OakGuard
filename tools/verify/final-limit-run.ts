@@ -272,7 +272,7 @@ interface Summary {
   allPassRuns: number;
   currentStreak: number;
   bestStreak: number;
-  perPrompt: Array<{ id: number; passes: number; runs: number; failures: number }>;
+  perPrompt: Array<{ id: number; passes: number; runs: number; notRun: number; failures: number }>;
   runPasses: boolean[];
 }
 
@@ -298,8 +298,11 @@ function summarize(labelName: string, runs: RunRecord[]): Summary {
     currentStreak: current,
     bestStreak: best,
     perPrompt: PROMPT_SET.map(spec => {
+      // Score only runs where this prompt executed. Under --fail-fast later
+      // prompts never run, and counting them as failures misreports the suite.
+      const executed = runs.filter(r => r.results.some(x => x.id === spec.id)).length;
       const passes = runs.filter(r => r.results.find(x => x.id === spec.id)?.pass).length;
-      return { id: spec.id, passes, runs: runs.length, failures: runs.length - passes };
+      return { id: spec.id, passes, runs: executed, notRun: runs.length - executed, failures: executed - passes };
     }),
     runPasses: runs.map(r => r.pass),
   };
