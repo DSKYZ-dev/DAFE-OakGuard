@@ -1313,6 +1313,7 @@ correlation(a, b, length)
       content: `Math functions:
   abs(x)    min(a,b)  max(a,b)  floor(x)  ceil(x)  round(x)
   sqrt(x)   log(x)    log10(x)  exp(x)    sin(x)    cos(x)    tan(x)
+  asin(x)   acos(x)   atan(x)   atan2(y, x)   inverse trig, in radians
   pow(base, exponent)   sign(x)   avg(a, b, ...)
 
 Type conversion:

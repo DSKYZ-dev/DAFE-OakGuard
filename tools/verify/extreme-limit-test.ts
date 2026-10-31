@@ -247,6 +247,25 @@ plot(r, "RSI", "#b48cff", 1, "line")`;
       check('2l. An oscillator as the main series twins into the separate pane',
         oscMain.code.includes('plot3d(r, "RSI 3D", "line3d", "#b48cff", "separate", 0)'), oscMain.removed);
     }
+    {
+      // 2n–2p. Inverse trig is an OakScript builtin. Acceptance attempt 4, run 6, prompt 10: the
+      // model wrote atan2 for a wind vector's yaw and pitch, the validator flagged it, and the fix
+      // loop could not remove it. Angles are in radians.
+      const angleScript = 'a = atan2(1, 1) * 4\nb = asin(1) * 2\nc = acos(0) * 2\nd = atan(1) * 4\nplot(a, "Atan2", "#ffffff")\nplot(b, "Asin", "#ffffff")\nplot(c, "Acos", "#ffffff")\nplot(d, "Atan", "#ffffff")';
+      const angleIssues = validate(angleScript).issues.filter(i => i.code === 'UNKNOWN_FUNCTION');
+      check('2n. atan2, atan, asin and acos are OakScript builtins', angleIssues.length === 0, angleIssues.map(i => i.message));
+      const angleRun = executeScript(parse(angleScript), syntheticBars(120), new Map());
+      const lastOf = (name: string): number => {
+        const p: any = angleRun.plots.find(q => q.name === name);
+        const v = Array.isArray(p?.series) ? p.series[p.series.length - 1] : p?.value;
+        return typeof v === 'number' ? v : NaN;
+      };
+      const angles = ['Atan2', 'Asin', 'Acos', 'Atan'].map(lastOf);
+      check('2o. Inverse trig returns radians (each product above equals pi)', angles.every(v => Math.abs(v - Math.PI) < 1e-9), angles);
+      const yawScript = 'dx = close - close[1]\ndy = high - low\nyawRad = atan2(dy, dx + 0.000000001)\nyawDeg = yawRad * 57.29578\nplot3d(yawDeg, "Yaw", "line3d", "#2266ff", "separate")';
+      const yawGrade = gradeCode(yawScript, 'Build a wind velocity vector 3D indicator with yaw arrows.', { prefer3D: true });
+      check('2p. A script that uses atan2 is not flagged as an unknown function', !yawGrade.errors.some(e => /UNKNOWN_FUNCTION/.test(e)), yawGrade.errors);
+    }
     check('3a. Default max 3D layers = 3', max3DLayersForRequest(stdReq) === 3);
     check('3b. Fibonacci max 3D layers = 4', max3DLayersForRequest(fibReq) === 4);
     check('3c. 5-channel cylinder array max 3D layers = 6', max3DLayersForRequest(fiveChReq) === 6);

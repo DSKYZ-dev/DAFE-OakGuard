@@ -1759,6 +1759,10 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       case 'sin': return Math.sin(args[0] as number);
       case 'cos': return Math.cos(args[0] as number);
       case 'tan': return Math.tan(args[0] as number);
+      case 'asin': return Math.asin(args[0] as number);
+      case 'acos': return Math.acos(args[0] as number);
+      case 'atan': return Math.atan(args[0] as number);
+      case 'atan2': return Math.atan2(args[0] as number, args[1] as number);
       case 'pow': return Math.pow(args[0] as number, args[1] as number);
       case 'sign': return Math.sign(args[0] as number);
       case 'log10': return Math.log10(args[0] as number);
