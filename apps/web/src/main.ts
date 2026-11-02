@@ -1505,7 +1505,7 @@ function buildIndicatorList() {
 
   const ogBtn = document.createElement('button');
   ogBtn.textContent = '⬢ OakGuard';
-  ogBtn.title = 'OakGuard: Evidence-Gated Verification Playbook (Probation → Duel → Promotion / Emeritus)';
+  ogBtn.title = 'OakGuard: Muse Wonder writes rules for bugs the validator missed; an independent referee decides which go live.';
   Object.assign(ogBtn.style, {
     padding: '1px 6px', fontSize: '8.5px', fontWeight: '700',
     border: '1px solid rgba(45,255,179,0.4)', borderRadius: '4px',
@@ -2397,10 +2397,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const vResult = validate(src.value);
             if (!vResult.valid) {
               const vErrs = formatValidationIssues(vResult.issues);
-              appendChat('agent', `Validation found issues — sending to advisor:\n${vErrs}`);
+              appendChat('agent', `Validation found issues — sending to the coder:\n${vErrs}`);
+              const issueLines = vResult.issues
+                .filter(i => i.severity === 'error')
+                .map(i => `L${i.line} [${i.code}] ${i.message}${i.fix ? ` FIX: ${i.fix}` : ''}`);
               await agentDiagnoseErrors((reply: string) => {
                 appendChat('agent', reply.slice(0, 200));
-              });
+              }, issueLines);
               return;
             }
           } catch {}

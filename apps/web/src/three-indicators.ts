@@ -215,7 +215,8 @@ function init(): void {
   canvas.width = w; canvas.height = h;
   _renderTime = performance.now();
 
-  _renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  // preserveDrawingBuffer lets the Muse Spark visual check read the 3D scene back.
+  _renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
   _renderer.setSize(w, h, false);
   _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   _renderer.toneMapping = THREE.ACESFilmicToneMapping;

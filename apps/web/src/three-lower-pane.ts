@@ -313,7 +313,7 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     return { renderer: _renderer, scene: _scene, camera: _camera, canvas: c };
   }
   try {
-    _renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true });
+    _renderer = new THREE.WebGLRenderer({ canvas: c, alpha: false, antialias: true, preserveDrawingBuffer: true });
     const pw0 = c.parentElement?.clientWidth || 1200;
     _renderer.setSize(pw0, h, false);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));

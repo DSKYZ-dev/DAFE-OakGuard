@@ -58,3 +58,35 @@ jobs:
 
       - name: Run the verification harness
         run: npm test
+
+  oakguard:
+    name: OakGuard referee, proposer replay and honesty checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Referee, catalogue loop and report
+        run: npm run verify:oakguard
+
+      - name: Recorded Muse Wonder run, referee self-test, oracles, engine fixes
+        run: npm run verify:proposer
+
+      - name: Backtest honesty certificate
+        run: npm run verify:honesty
+
+      - name: Request intent mutants
+        run: npm run verify:intent
+
+      - name: Generation pipeline contract
+        run: npm run verify:pipeline
+
+      - name: Signal engine audit (42 shipped indicators)
+        run: npm run verify:signals

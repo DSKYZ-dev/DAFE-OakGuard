@@ -1,169 +1,140 @@
 <div align="center">
 
-# DAFE Charts
+# DAFE OakGuard
 
-**An offline-first AI trading terminal — real-time charts, a purpose-built indicator
-language that renders in 2D _and_ 3D, and a trade advisor that runs on your own GPU.**
+**Muse Wonder writes the rules. A referee it cannot see decides which ones go live.**
 
-![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?logo=typescript&logoColor=white)
-![Vite](https://img.shields.io/badge/Vite-6-646cff?logo=vite&logoColor=white)
-![Three.js](https://img.shields.io/badge/Three.js-0.185-000000?logo=three.js&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white)
-![Capacitor](https://img.shields.io/badge/Capacitor-8-119eff?logo=capacitor&logoColor=white)
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776ab?logo=python&logoColor=white)
+Verification for AI-written trading code, built on the DAFE Charts terminal during the
+Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026).
+
+[![CI](https://github.com/DSKYZ-dev/DAFE-OakGuard/actions/workflows/ci.yml/badge.svg)](https://github.com/DSKYZ-dev/DAFE-OakGuard/actions/workflows/ci.yml)
+![Muse Wonder](https://img.shields.io/badge/Muse%20Wonder-rule%20proposer-2dffb3)
+![Muse Spark 1.3](https://img.shields.io/badge/Muse%20Spark%201.3-coder%20%C2%B7%20advisor%20%C2%B7%20vision-7fd6ff)
+![Muse Voice Transcribe](https://img.shields.io/badge/Muse%20Voice%20Transcribe-push--to--talk-ffd166)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 </div>
 
-![DAFE Charts desktop terminal — chart, trading panel, OakScript editor and advisor](docs/media/desktop-terminal.png)
+![The Crucible: Muse Wonder's rules promoted into the playbook, with the referee's scores and the cost of each call](docs/media/oakguard-crucible.jpg)
 
-<p align="center">
-  <img src="docs/media/mobile-chart.jpg" width="30%" alt="Mobile app — candlestick chart with buy and exit signals" />
-  <img src="docs/media/mobile-signals.jpg" width="30%" alt="Mobile app — line chart with signal markers" />
-</p>
+## The problem
 
-## New in this submission: DAFE OakGuard
+Ask an AI for a trading indicator and it will write one that compiles, passes the validator, and
+is quietly wrong. A breakout compared with `highest(high, 20)`, which includes the current bar,
+can never fire. A length of `0` computes nothing. A misspelled builtin returns zero. The chart
+looks fine and nobody notices until they have trusted the signal.
 
-Built during the Meta Global AI Developer Hackathon (Oct 27 – Nov 4, 2026). The trading terminal below is the pre-existing base. [docs/HACKATHON.md](docs/HACKATHON.md) lists exactly what was built during the event.
+Checkers catch the bugs someone thought of. OakGuard learns the ones nobody wrote a check for,
+and proves each new check before it goes live.
 
-OakGuard is a verification layer for the indicator code an AI writes. The app runs on Meta's `muse-spark-1.3` for both its editor and its trade assistant. Candidate validation rules come from a hand-written catalogue for now; a live model as proposer is the next step. An independent, deterministic referee accepts a rule only if it catches the planted bugs and wrongly flags none of the known-good scripts, and it records every decision with its evidence. It also certifies the procedure behind every backtest: no lookahead, fills at the open of the entry bar, costs charged, a reserved out-of-sample period. It certifies the procedure, not the returns.
+## How it works
 
-Verify the claims with three headless commands (no API keys needed):
+1. **Find an escape.** Runtime oracles run a script on four synthetic markets (2,400 bars) and
+   prove it broken: an output that is never finite, a signal that never fires. The baseline
+   validator accepted it.
+2. **Muse Wonder proposes a rule.** It sees the script and the evidence and answers with one
+   rule in a fixed rule language, as schema-constrained JSON. Data, never code.
+3. **A referee it cannot see decides.** The rule is scored against broken variants of the same
+   bug (a third of them held out from the model) and 46 known-good scripts: the shipped library
+   plus contrast scripts that sit right next to each bug class.
+4. **Rejected rules come back with evidence.** The reason, the visible variants missed and the
+   false-positive line go back to the model, which may revise. Held-out variants are reported
+   as a count only.
+5. **Promoted rules enforce everywhere.** They run inside the validator used by the editor, the
+   agent's fix loop and the backtest pre-flight, for every script from then on.
 
-```powershell
-npm run verify:oakguard   # rule promotion and rejection, with counterexamples
-npm run verify:honesty    # backtest certificate and forming-bar controls
-npm run verify:intent     # every indicator a request names must be computed
-```
+Every exchange is recorded with its model, prompt hash, tokens and cost. A replay re-grades the
+recorded text with today's referee; verdicts are never replayed.
 
-The live Meta run is `npx tsx tools/verify/final-limit-run.ts acceptance --set all --repeat 10 --fail-fast` (needs the backend and a Meta key). Its per-run records are in `tools/verify/`. Latest result: 10 of 10 runs, 11 of 11 prompts in each, on commit `b64e0e7` (`tools/verify/final-limit-results-acceptance-attempt6-summary.json`).
-
-## What this is
-
-DAFE Charts is a desktop-class charting and market-analysis terminal that runs
-on your own machine. It loads live market data, renders it twelve different ways,
-lets you write your own indicators in a language built for this engine, and puts
-an AI trade advisor next to the chart — on a local model when you have the
-hardware, or on any hosted model when you don't.
-
-Nothing phones home. There is no sign-in, no telemetry and no server you have to
-trust with your keys: the only outbound calls are the market-data and search
-providers you pick.
-
-## Highlights
+## Results
 
 | | |
 |---|---|
-| **Own your stack** | Charts, indicators, backtests, ML models and the AI advisor all run locally. Model weights are yours; keys are encrypted at rest on your disk. |
-| **A real indicator language** | OakScript is not Pine. A lexer → parser → validator → interpreter pipeline with arrays, circular buffers (`OakRing`) and matrices (`Matrix`) — every script is validated before it touches your chart. |
-| **Indicators become 3D scenes** | `plot3d()` compiles the same series into 15 visual styles across four rendering surfaces: a Three.js main-scene takeover, a Three.js lower pane, the isometric canvas, and 2D canvas twins when 3D is off. |
-| **An advisor that sees your chart** | The Trade Advisor is given the visible bars, indicators and volume profile on every turn. It can search the web, read the news, speak its answer, and write OakScript for you. |
-| **Bring any model** | Local llama.cpp with automatic per-machine sizing, Ollama (local or cloud), or hosted OpenAI-compatible and Anthropic endpoints. Keys never reach the browser — every completion is proxied by the backend. |
-| **Verified, not vibes** | A ten-script verification harness plus published math, backtest and adapter audit reports in [`docs/reports/`](docs/reports/). |
+| Rules Muse Wonder wrote for the three escape classes | **3 of 3 promoted**, first round, $0.12 in total ([recorded run](apps/web/src/oakguard/recorded-run.json)) |
+| Broken variants caught by those rules | **174 of 174**, including **58 of 58 held out** from the model |
+| False alarms on the 46 known-good scripts | **0** |
+| Flawed rules the referee must reject (too narrow, too broad, wrong family, malformed) | **9 of 9 rejected** (`npm run verify:proposer`) |
+| Muse Spark first drafts that pass the validator | **22 of 32** ([learning curve](docs/reports/LEARNING_CURVE.md)); 20 before the lexer fix below |
+| Silent defects in those drafts, and learned-rule false alarms on them | **0** and **0** |
+| Live editor acceptance on Muse Spark 1.3 | **110 of 110** prompts across 10 consecutive runs; **11 of 11** re-run after the engine fixes, with every role on Meta |
 
-## Feature tour
+**Bugs OakGuard found in our own engine.** The runtime oracles flagged shipped scripts whose
+signals could never fire. The causes were real interpreter bugs, now fixed: every `crossover()`
+call with variable arguments shared one cached result, and `sma()`/`ema()` stayed NaN forever
+after a single leading NaN, so the Stochastic Helix `%D` line had been dead. Measuring Muse Spark's
+drafts also showed that 5 of 32 failed only because the lexer could not read `1e-9`.
 
-**Charting**
-- 12 bar types — candlestick, Heikin-Ashi, Renko, range, volume, tick, Kagi, footprint, line, area, dollar and imbalance bars — plus timeframes from 1m to 1w.
-- Volume profile with per-level iso-bar voxels, value area and delta, in 2D and as a 3D heat map.
-- Drawing toolkit (horizontal line, trend/ray, rectangle, Fibonacci, channel, text), 6 built-in themes, customisable hotkeys, and a live tick engine that animates the forming bar.
-- Performance modes (Low → Ultra) that scale shadows, gradients and particles to your GPU.
+## Meta models in the product
 
-**OakScript**
-- Write indicators in the built-in editor; run them as an overlay, a lower pane, or a full 3D scene (`pane="3d"`).
-- 30+ standard functions, 15 `plot3d` styles, drawing objects (lines, boxes, polylines, circles, arrows, tables, fills, Fibonacci/Gann overlays, images).
-- The AI coder writes OakScript too: ask for an indicator in plain language, watch it validate, test it, then accept it.
-- In-app language reference (`docs.ts`) and a retrieval endpoint that keeps the model honest about syntax.
+| Model | Role | Where |
+|---|---|---|
+| **Muse Wonder** (`muse-wonder-1.0`) | Writes OakGuard rules from runtime evidence and revises them on counterexamples (structured output) | `apps/web/src/oakguard/proposer.ts` |
+| **Muse Spark 1.3** | OakScript coder (the editor agent) and trade advisor | `apps/web/src/trade-advisor/` |
+| **Muse Spark 1.3**, image input | 👁 Look: reads the rendered chart and lists what it can and cannot see from the request | `apps/web/src/visual-check.ts` |
+| **Muse Voice Transcribe** | 🎤 Push-to-talk in the editor, biased toward trading vocabulary | `apps/web/src/meta-voice.ts` |
 
-**AI Trade Advisor**
-- Local llama.cpp with GGUF introspection and per-machine sizing (context, GPU layers, batch, threads).
-- Ollama local and Ollama Cloud, OpenCode, OpenRouter, OpenAI, Anthropic, OrcaRouter, NVIDIA NIM, and any custom OpenAI-compatible endpoint.
-- Chart context injection, web search (keyless DuckDuckGo or SerpAPI), news and Fed-event feed, voice in (speech recognition) and out (gTTS), conversation memory, and a token optimiser.
-- An ML lab on the backend: train and predict with classical models (gradient boosting, MLP, logistic, tabular Q-learning) or, optionally, torch-backed LSTM/DQN.
+Keys stay on your machine: the backend holds them encrypted and proxies every call
+(`/api/meta/structured`, `/api/meta/transcribe`).
 
-**Data**
-- Yahoo Finance (free) or Massive/Polygon (paid), with a **hybrid** mode that blends sparse paid anchors with frequent free corrections and a correction-anchored synthetic engine.
-- 95 built-in symbols plus any Yahoo ticker; market-hours awareness across equities, futures, forex, crypto and foreign sessions; synthetic fallback when every provider is down (clearly labelled).
-- An optional standalone WebSocket relay (`relay/`) that broadcasts 10-second OHLCV ticks — Binance for crypto, Polygon/Massive for futures — deployable to Render.
+## Try it
 
-**Mobile**
-- A Capacitor Android app that reuses the same TypeScript core, with its own provider-key screen and a native HTTP bridge.
+**In a browser, no install:** the judge build replays the recorded Muse Wonder run and
+re-grades it with the referee in your browser.
+`https://dskyz-dev.github.io/DAFE-OakGuard/?oakguard=1&backend=none`
 
-## Quick start
-
-Prerequisites: **Node.js 18+**, **Python 3.10+**, and Windows for the one-click launchers (the pieces run anywhere).
+**Headless, no API key (about a minute):**
 
 ```bash
-npm install                                    # frontend + shared packages
-pip install -r backend/requirements.txt        # FastAPI backend
-
-# optional: local LLM — drop a .gguf file into models/ and install llama.cpp
-# (CUDA build recommended; the app measures VRAM and sizes the model itself)
+npm install
+npm run verify:proposer   # recorded Muse Wonder run re-graded, referee self-test, oracles, engine fixes
+npm run verify:oakguard   # the full loop, offline, plus the report
+npm run verify:honesty    # backtest procedure certificate
 ```
 
-Then either double-click **`start.bat`** (starts LLM → backend → frontend and opens the browser), or run the pieces yourself:
+**Live, with a Meta Model API key:**
 
 ```bash
-npm run backend     # http://127.0.0.1:8788
-npm run dev         # http://127.0.0.1:5173
+pip install -r backend/requirements.txt
+npm run backend           # http://127.0.0.1:8788, then Settings → Provider API Keys → Meta
+npm run dev               # http://127.0.0.1:5173/?oakguard=1 → Reset playbook → ▶ Run live
+npx tsx tools/verify/oakguard-live.ts          # the same loop from the command line, recorded
+npx tsx tools/verify/learning-curve.ts mine    # 32 fresh Muse Spark drafts, then: curve
 ```
 
-Launch flags: `start.bat -no-llm` (charting only, fastest), `start.bat -vision` (image mode, needs an mmproj file), `start.bat -reset` (kill everything and clear caches).
+## What is new
 
-**No GPU?** Skip the local model entirely. Open **Settings → Provider API Keys**, paste a key for any hosted provider, and point the Trade Advisor and OakScript Coder at it — the keys are encrypted on the backend and never exposed to the page.
+The terminal underneath (charts, the OakScript language, the advisor UI) existed before the
+event. [HACKATHON_CONTRIBUTIONS.md](HACKATHON_CONTRIBUTIONS.md) lists what was built during it, and
+the baseline is tagged `pre-hackathon-baseline` (pushed to GitHub on 2026-09-03), so
+`git diff --stat pre-hackathon-baseline main` shows every change.
 
-## Repository layout
+## Limits
 
-```
-dafe-charts/
-├── apps/
-│   ├── web/            # desktop web app: charting, OakScript, advisor, trading, backtest
-│   │   └── src/        # renderers · bar engines · oakscript/ · trade-advisor/ · data-stream/
-│   └── mobile/         # Capacitor Android app sharing the same core (+ android/ project)
-├── backend/            # FastAPI server: market data, chat routing, vault, ML lab, model manager
-├── packages/types/     # shared TypeScript types
-├── relay/              # optional WebSocket tick relay (crypto + futures) for deployment
-├── site/               # product / download page for the mobile app
-├── docs/               # guides, architecture, design notes, audit reports, screenshots
-├── tools/              # verification harness + provider probes
-├── scripts/            # Windows debug / deploy / archive helpers
-├── models/             # .gguf model files (gitignored) — see models/README.md
-└── start.bat           # one-click launcher
-```
+- The rule language has three families. A bug that no family can express is found by the
+  oracles but cannot be learned yet; each new family is the next step.
+- "No false alarms" means none on the 46-script corpus, not on every script anyone could write.
+- The oracles run synthetic markets. A legitimately rare signal could look dead there.
+- With the hardened coder prompt, Muse Spark's first drafts rarely contained a silent defect in
+  our sample; most of its mistakes are caught by the validator. The playbook's measured value on
+  those drafts is precision (no false alarms), and its generalisation is measured on held-out
+  variants.
+- The backtest certificate certifies the procedure, not the returns. Nothing here is financial
+  advice.
 
 ## Documentation
 
-| Document | Contents |
+| | |
 |---|---|
-| [docs/SETUP.md](docs/SETUP.md) | Install, LLM setup, configuration, troubleshooting |
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Every screen and feature, explained |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the system fits together, module by module |
-| [docs/HACKATHON.md](docs/HACKATHON.md) | The pitch, the demo script, what's novel, what's next |
-| [docs/design/](docs/design/) | Design notes, including the visual-compiler proposal |
-| [docs/reports/](docs/reports/) | Math, backtest and adapter audit reports |
-| [docs/development/](docs/development/) | Live progress log, TODO, session handoff notes |
-| [tools/](tools/) | Verification harness and provider probes |
-
-## Verification
-
-```bash
-npm run lint          # tsc --noEmit across the workspace
-npm run build         # production builds for web + mobile
-npm test              # OakScript verification harness (mega-test)
-npm run verify:stress # 12 bar types × 6 timeframes, 5k bars, deterministic volume
-```
-
-The harness executes real OakScript through the same lexer, parser, validator and
-interpreter the app uses, against synthetic bars with known properties — extreme
-prices, zero volume, NaNs and rapid timeframe changes included. The full run
-currently asserts **2,171,421 checks across eight suites with zero failures**.
-Results and the audit reports that came out of it live in
-[docs/reports/](docs/reports/).
+| [HACKATHON_CONTRIBUTIONS.md](HACKATHON_CONTRIBUTIONS.md) | What was built during the event, and how to verify it |
+| [docs/HACKATHON.md](docs/HACKATHON.md) | Pitch, demo script, judge FAQ |
+| [docs/SUBMISSION.md](docs/SUBMISSION.md) | Text for the submission form |
+| [docs/reports/LEARNING_CURVE.md](docs/reports/LEARNING_CURVE.md) | Muse Spark first drafts, measured |
+| [docs/TERMINAL.md](docs/TERMINAL.md) | The DAFE Charts terminal underneath (pre-existing) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/SETUP.md](docs/SETUP.md) · [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Architecture, setup, user guide |
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
 
-> DAFE Charts is analysis software, not financial advice. Market data may be
-> delayed, incomplete or synthetic (the status bar always says which). Nothing
-> here is a recommendation to buy or sell any instrument.
+> DAFE Charts is analysis software, not financial advice. Market data may be delayed, incomplete
+> or synthetic (the status bar always says which).

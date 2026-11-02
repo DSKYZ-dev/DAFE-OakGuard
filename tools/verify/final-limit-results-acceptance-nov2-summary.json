@@ -1,0 +1,111 @@
+{
+  "label": "acceptance-nov2",
+  "set": "all",
+  "at": "2026-11-02T01:57:13.429Z",
+  "modelNote": "coder meta/muse-spark-1.3 (saved) · advisor meta/muse-spark-1.3 (saved)",
+  "roles": {
+    "coder": {
+      "provider": "meta",
+      "model": "muse-spark-1.3",
+      "source": "saved"
+    },
+    "advisor": {
+      "provider": "meta",
+      "model": "muse-spark-1.3",
+      "source": "saved"
+    }
+  },
+  "savedRoles": {
+    "llm_coder_provider": "meta",
+    "llm_coder_model": "muse-spark-1.3",
+    "llm_provider": "meta",
+    "llm_trade_advisor_model": "muse-spark-1.3"
+  },
+  "repeat": 1,
+  "runsCompleted": 1,
+  "allPassRuns": 1,
+  "currentStreak": 1,
+  "bestStreak": 1,
+  "perPrompt": [
+    {
+      "id": 1,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 2,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 3,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 4,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 5,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 6,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 7,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 8,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 9,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 10,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    },
+    {
+      "id": 11,
+      "passes": 1,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 0
+    }
+  ],
+  "runPasses": [
+    true
+  ]
+}

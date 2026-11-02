@@ -121,7 +121,7 @@ function buildWindow(): void {
   ensureStyles();
   manifest = corpusManifest();
 
-  win = node('div', 'position:fixed;z-index:220;display:none;flex-direction:column;background:rgba(8,8,20,0.95);border:1px solid rgba(180,140,255,0.15);border-radius:10px;backdrop-filter:blur(12px);box-shadow:0 8px 40px rgba(0,0,0,0.6);overflow:hidden;color:rgba(255,255,255,0.75);font-size:11px;');
+  win = node('div', 'position:fixed;z-index:10000;display:none;flex-direction:column;background:rgba(8,8,20,0.95);border:1px solid rgba(180,140,255,0.15);border-radius:10px;backdrop-filter:blur(12px);box-shadow:0 8px 40px rgba(0,0,0,0.6);overflow:hidden;color:rgba(255,255,255,0.75);font-size:11px;');
   win.id = 'oakguard-window';
   win.className = 'dafe-glow-window';
 

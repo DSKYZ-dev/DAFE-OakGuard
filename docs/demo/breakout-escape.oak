@@ -1,0 +1,12 @@
+// 20-bar channel breakout
+len = input(20, "Lookback", 5, 100, 1)
+upper = highest(high, len)
+lower = lowest(low, len)
+if crossover(close, upper) {
+  plotshape(bar_index, low, "Breakout", "triangleup", "#22cc88")
+}
+if crossunder(close, lower) {
+  plotshape(bar_index, high, "Breakdown", "triangledown", "#ff4477")
+}
+plot(upper, "Upper", "#22aaff", 1, "stepline")
+plot(lower, "Lower", "#ff8844", 1, "stepline")

@@ -17,6 +17,12 @@ import { addStoryboardEntry } from '../storyboard';
 import { MAX_BACKTEST_BARS, fetchBacktestBars, barsToRuntimeBarData } from '../backtest/data';
 import type { BacktestConfig, BacktestResult, StopLossMode, TakeProfitMode } from '../backtest/types';
 import { backtestCertificate } from '../oakguard/honesty';
+import { PushToTalk } from '../meta-voice';
+import { visualCheck } from '../visual-check';
+import { newBadge } from '../new-badge';
+
+/** The last request sent to the agent, for the visual check. */
+let lastAgentRequest = '';
 import type { BaseBar } from '@dafe/types';
 import { renderEquityCurve } from '../backtest/chart';
 import {
@@ -1089,8 +1095,9 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   const oakguardBtn = document.createElement('button');
   oakguardBtn.textContent = '⬢ OakGuard';
-  oakguardBtn.title = 'OakGuard: Evidence-Gated Verification Playbook — candidate rules come from a hand-written catalogue today; an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus).';
+  oakguardBtn.title = 'OakGuard: Muse Wonder writes a rule for each bug the validator missed; an independent referee keeps only rules that catch every broken variant (held-out ones included) without a false alarm.';
   Object.assign(oakguardBtn.style, btnStyle('#2dffb3', 'rgba(45,255,179,0.10)'));
+  oakguardBtn.appendChild(newBadge());
   oakguardBtn.onclick = () => {
     document.getElementById('set-open-oakguard')?.click();
   };
@@ -1316,6 +1323,37 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     }).catch(() => {});
   };
   chatTools.appendChild(copyLogBtn);
+
+  // Muse Spark looks at the rendered chart and says whether it shows what was asked.
+  const lookBtn = document.createElement('button');
+  lookBtn.textContent = '👁 Look';
+  lookBtn.title = 'Visual check: Muse Spark looks at the rendered chart and lists what it can and cannot see from your last request.';
+  Object.assign(lookBtn.style, {
+    padding: '1px 5px', border: '1px solid rgba(127,214,255,0.25)',
+    borderRadius: '3px', background: 'transparent',
+    color: 'rgba(127,214,255,0.8)', cursor: 'pointer', fontSize: '8px',
+  });
+  lookBtn.onclick = async () => {
+    const request = lastAgentRequest || 'the indicator script that is applied to this chart: its plotted lines, markers and 3D layers';
+    lookBtn.disabled = true;
+    lookBtn.textContent = '👁 …';
+    const v = await visualCheck(request, textarea?.value ?? '');
+    lookBtn.disabled = false;
+    lookBtn.textContent = '👁 Look';
+    if (!v.ok) {
+      appendAgentChatMsg('agent', `Visual check: ${v.detail}`);
+      return;
+    }
+    appendAgentChatMsg('agent', `👁 Muse Spark ${v.matches ? '✓ matches the request' : '✕ does not match yet'}: ${v.summary}`);
+    if (v.seen.length) appendAgentChatMsg('agent', `Sees: ${v.seen.join(', ')}`);
+    if (v.missing.length) appendAgentChatMsg('agent', `Missing: ${v.missing.join(', ')}`);
+    if (v.problems.length) appendAgentChatMsg('agent', `Problems: ${v.problems.join('; ')}`);
+    appendAgentChatMsg('agent', `${v.model} · ${((v.latencyMs ?? 0) / 1000).toFixed(1)} s · $${(v.costUsd ?? 0).toFixed(4)}`);
+  };
+  chatTools.appendChild(lookBtn);
+  const voiceTag = newBadge();
+  voiceTag.title = 'New during the Meta hackathon: 🎤 speak a request (Muse Voice Transcribe) and 👁 Look (Muse Spark checks the rendered chart).';
+  chatTitle.appendChild(voiceTag);
   chatHeader.appendChild(chatTitle);
   chatHeader.appendChild(chatTools);
   agentChat.appendChild(chatHeader);
@@ -1341,6 +1379,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
       const msg = chatInput.value.trim();
       chatInput.value = '';
       appendAgentChatMsg('user', msg);
+      lastAgentRequest = msg;
       if (agentChatCallback) agentChatCallback(msg);
     }
   };
@@ -1358,10 +1397,60 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     if (!msg) return;
     chatInput.value = '';
     appendAgentChatMsg('user', msg);
+    lastAgentRequest = msg;
     if (agentChatCallback) agentChatCallback(msg);
   };
 
+  // Push-to-talk through Muse Voice Transcribe: speak the indicator you want.
+  const ptt = new PushToTalk();
+  const chatMic = document.createElement('button');
+  chatMic.textContent = '🎤';
+  chatMic.title = 'Speak your request (Muse Voice Transcribe). Click to start, click again to send.';
+  Object.assign(chatMic.style, {
+    padding: '3px 7px', border: '1px solid rgba(180, 140, 255, 0.2)',
+    borderRadius: '4px', background: 'rgba(180, 140, 255, 0.08)',
+    color: '#b48cff', cursor: 'pointer', fontSize: '11px', minWidth: '30px',
+  });
+  let micTimer = 0;
+  const resetMic = (): void => {
+    window.clearInterval(micTimer);
+    chatMic.textContent = '🎤';
+    chatMic.style.color = '#b48cff';
+    chatMic.style.borderColor = 'rgba(180, 140, 255, 0.2)';
+    chatMic.disabled = false;
+  };
+  chatMic.onclick = async () => {
+    if (!ptt.active) {
+      try {
+        await ptt.start();
+      } catch {
+        appendAgentChatMsg('agent', 'Microphone access was refused, so voice input is off.');
+        return;
+      }
+      chatMic.style.color = '#ff4477';
+      chatMic.style.borderColor = 'rgba(255, 68, 119, 0.6)';
+      const tick = (): void => { chatMic.textContent = `■ ${Math.floor((Date.now() - ptt.startedAt) / 1000)}s`; };
+      tick();
+      micTimer = window.setInterval(tick, 250);
+      return;
+    }
+    window.clearInterval(micTimer);
+    chatMic.textContent = '…';
+    chatMic.disabled = true;
+    const result = await ptt.stop();
+    resetMic();
+    if (!result.ok || !result.text) {
+      appendAgentChatMsg('agent', `Voice: ${result.detail || 'nothing was heard.'}`);
+      return;
+    }
+    appendAgentChatMsg('user', `🎤 ${result.text}`);
+    appendAgentChatMsg('agent', `Muse Voice Transcribe · ${((result.audioMs ?? 0) / 1000).toFixed(1)} s of audio in ${((result.latencyMs ?? 0) / 1000).toFixed(1)} s`);
+    lastAgentRequest = result.text;
+    if (agentChatCallback) agentChatCallback(result.text);
+  };
+
   chatRow.appendChild(chatInput);
+  chatRow.appendChild(chatMic);
   chatRow.appendChild(chatSend);
   agentChat.appendChild(chatRow);
 
@@ -2451,6 +2540,7 @@ function renderBacktest(): void {
     head.textContent = cert.honest ? 'Honesty certificate: procedure checks PASS' : 'Honesty certificate: procedure checks FAIL';
     head.style.fontWeight = '700';
     head.style.color = cert.honest ? 'rgba(45,255,179,0.95)' : 'rgba(255,120,120,0.95)';
+    head.appendChild(newBadge());
     box.appendChild(head);
     for (const c of cert.checks) {
       const row = document.createElement('div');

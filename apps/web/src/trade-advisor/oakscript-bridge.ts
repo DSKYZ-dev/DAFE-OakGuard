@@ -692,11 +692,15 @@ export async function agentBrainstormIndicator(
  */
 export async function agentDiagnoseErrors(
   onUpdate?: (reply: string) => void,
+  validationErrors: string[] = [],
 ): Promise<void> {
   if (!agent || !config) return;
 
   const currentSource = config.getEditorSource();
-  const errors = config.getErrors();
+  // Validator issues (including OakGuard playbook rules) count as errors to
+  // fix. Fix used to pass only runtime errors here, so a script that ran but
+  // failed validation was reported as "running clean" and never repaired.
+  const errors = [...config.getErrors(), ...validationErrors];
   const snapshot = config.getSnapshot() || undefined;
 
   if (errors.length === 0) {

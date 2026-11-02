@@ -1,5 +1,14 @@
 # DAFE Charts + OakGuard — Complete Partner Handoff
 
+> **Current status (Nov 2, 2026) — read this first; it supersedes older sections below.**
+> - Track switched to **Startup** (it explicitly allows building on an existing codebase).
+> - OakGuard's candidates now come from **Muse Wonder live** (`proposer.ts`, `/api/meta/structured`), graded by the referee. Recorded run: 3/3 promoted, 174/174 variants (58/58 held out), 0/46 false alarms, $0.12 (`apps/web/src/oakguard/recorded-run.json`). The hand-written catalogue remains only as the offline test path.
+> - New: runtime oracles, contrast corpus (46 known-good scripts), `self-inclusive-window` rule family, referee self-test (9/9 flawed rules rejected), learning curve on 32 Muse Spark drafts (`docs/reports/LEARNING_CURVE.md`), Muse Voice Transcribe push-to-talk, Muse Spark 👁 Look, judge mode (`?backend=none`), CI job and GitHub Pages deploy.
+> - Engine fixes found by OakGuard: `crossover()` cache collision, NaN-poisoned `sma()`/`ema()`, scientific notation in the lexer, 🔧 Fix ignoring validator-only errors.
+> - All roles on Meta: coder and advisor `muse-spark-1.3`, proposer `muse-wonder-1.0`. Acceptance re-run after the fixes: 11/11 (`tools/verify/final-limit-results-acceptance-nov2-*`).
+> - Provenance: `pre-hackathon` branch and `pre-hackathon-baseline` tag (pushed to GitHub 2026-09-03); see `HACKATHON_CONTRIBUTIONS.md`.
+> - Demo script and judge FAQ: `docs/HACKATHON.md`. Form copy: `docs/SUBMISSION.md`.
+
 **Purpose of this document:** give a partner (or a fresh AI session) full context to finish
 this project without re-deriving anything. It covers what exists, what was built during the
 hackathon, what is verified, what is broken/known-limited, what remains, and what comes after.
@@ -50,7 +59,7 @@ hackathon, what is verified, what is broken/known-limited, what remains, and wha
   rule specs (never code)**; an independent evaluator (frozen 42-script corpus, visible +
   held-out mutants, execution probes) promotes only what passes every gate; rejections are
   preserved in an **Emeritus** archive with counterexamples. Promoted rules enforce live in
-  the real validator (`validator.ts`) for every future script. Candidates come from a hand-written catalogue today; a live model as proposer is the next step.
+  the real validator (`validator.ts`) for every future script. Candidates come from Muse Wonder (live, or a recorded run re-graded by the referee); the hand-written catalogue is the offline test path.
 - **Backtest honesty certificate** (`apps/web/src/oakguard/honesty.ts`): every backtest result carries a certificate that checks the procedure behind it. The signals do not change when later bars are removed (no lookahead). Entries fill at the open of the entry bar, not the signal close. Commission and slippage are charged. A later period is reserved for out-of-sample results, with at least 20 trades in it, and parameters are never chosen on it. It certifies the procedure, not the returns, so it says nothing about whether a strategy makes money.
 - **Forming-bar check:** a signal on the bar still forming in live trading must not depend on the price that bar will close at. `barstate.isconfirmed` is now real, and four shipped indicators fire live signals only on closed bars (Stochastic, Bollinger Bands, Pivot Constellation, Fibonacci Levels 3D). History is unchanged.
 - **Intent checks:** the request-coverage gate requires each indicator a request names (RSI, EMA, MACD, ATR, Stochastic, VWAP) to be computed. Mutation tests remove each one from a working script; the gate catches all six and reports none of the intact scripts.
@@ -270,9 +279,9 @@ ones included, and wrongly flags none of 42 known-good scripts; rejected rules a
 counterexamples. The same checks certify the procedure behind every backtest: no lookahead, fills
 at the next open, costs charged, and a reserved out-of-sample period. Each claim can be checked
 headlessly (`npm run verify:oakguard`, `verify:honesty`, `verify:intent`), and the live Meta
-acceptance runs are in the repository. Current limit: candidate rules come from a hand-written
-catalogue, and the live model as proposer is the next step. It certifies procedure, not returns,
-and it is not financial advice.
+acceptance runs are in the repository. Candidate rules are written by Muse Wonder (see
+`docs/SUBMISSION.md` for the current copy). It certifies procedure, not returns, and it is not
+financial advice.
 
 ## 10. Judge FAQ (anticipated)
 
@@ -288,9 +297,8 @@ and it is not financial advice.
 - *"Does the backtest certificate mean the strategy makes money?"* No. It certifies the procedure:
   no lookahead, fills at the next open, costs charged, a reserved out-of-sample period with enough
   trades, and no parameter selection on that period. The strategy's result is not certified.
-- *"Is the playbook self-improving?"* It improves only through evidence: a deterministic referee
-  promotes or rejects each rule. Today the candidates come from a hand-written catalogue, and the
-  live model as proposer is the next step. The referee is the part that is proven.
+- *"Is the playbook self-improving?"* It improves only through evidence: Muse Wonder writes each
+  candidate and a deterministic referee promotes or rejects it. The current FAQ is in `docs/HACKATHON.md`.
 - *"What is new compared with the terminal you already had?"* Everything under "What we built during
   the hackathon" in `docs/HACKATHON.md`. The terminal is the pre-existing base.
 - *"Does the live path work?"* The live test is the 10-run acceptance against Meta's muse-spark-1.3

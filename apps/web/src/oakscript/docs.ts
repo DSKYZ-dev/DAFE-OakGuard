@@ -1609,23 +1609,26 @@ Keyboard: Ctrl+Alt+G = Generate | Ctrl+Alt+F = Fix | Ctrl+Alt+B = Brainstorm | C
     // ═══════════════════════════════════════════════════════════════════
     {
       title: 'OakGuard — Verifying AI-Written Indicators',
-      content: `OakGuard is the verification layer for indicators the agent writes. It
-checks the rules that catch broken AI code, such as a length argument of 0 or
-a dotted call that does not exist. Each candidate rule is scored against the
-shipped indicator library and generated mutants. Only rules that catch real
-bugs and raise no false alarms are promoted to the live playbook, and the
-editor applies the promoted rules to what the agent writes.
+      content: `OakGuard is the verification layer for indicators the agent writes. When a
+script passes the validator but is broken when it runs (a length of 0, a
+dotted call that does not exist, a breakout compared with a highest() that
+includes the current bar so it can never fire), Muse Wonder writes a
+declarative rule that would have caught it. An independent referee scores the
+rule against broken variants, some held out from the model, and against the
+known-good corpus (the shipped library plus contrast scripts). Only rules that
+catch every variant and raise no false alarm are promoted, and the editor
+applies them to everything the agent writes.
 
 Open it from Settings → LLM Configuration (⬢ OAKGUARD), or add ?oakguard=1
-to the address.
+to the address. ?oakguard=1&backend=none runs it with no backend.
 
-▶ Run OakGuard works through all 8 steps automatically and shows each step in
-plain language, with its result. ↻ Run again repeats the run.
+▶ Run live · Muse Wonder calls the Meta Model API through your backend.
+↻ Replay recorded run re-grades a recorded Muse Wonder run with today's
+referee; verdicts are recomputed, never replayed.
 Download report saves a self-contained HTML report of the run.
 Reset playbook returns the rules to version 1, so you can rehearse from the start.
 
-Candidates are data, and no candidate can change how it is scored. The rules
-come from a hand-written catalogue today.`,
+Candidates are data, never code, and no candidate can change how it is scored.`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {

@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DAFE Charts — Interactive Demo</title>
+  <script>
+    // ?backend=none runs the app with no backend (judge mode: synthetic data,
+    // OakGuard replays its recorded Muse Wonder run). ?backend=<url> points at
+    // another backend. Default: the local backend on port 8788.
+    (function () {
+      var b = new URLSearchParams(location.search).get('backend');
+      if (b === 'none') window.__DAFE_BACKEND_URL = 'http://127.0.0.1:9';
+      else if (b && /^https?:\/\//.test(b)) window.__DAFE_BACKEND_URL = b.replace(/\/$/, '');
+    })();
+  </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
@@ -1110,8 +1120,8 @@
       <div class="settings-section">
         <div class="settings-section-title">Signal Analysis Models</div>
         <button id="set-open-editor" class="settings-action-btn">Open OakScript Editor</button>
-        <button id="set-open-oakguard" class="settings-action-btn" style="margin-top:6px;">⬢ OAKGUARD — Evidence-Gated Verification Playbook</button>
-        <div style="color:rgba(255,255,255,0.3);font-size:9px;margin-top:4px;line-height:1.4;">OakGuard: candidate validation rules come from a hand-written catalogue today (a live model as proposer is the next step); an independent evaluator promotes only what passes (Probation → Duel → Promotion / Emeritus). Promoted rules then enforce live in the editor validator.</div>
+        <button id="set-open-oakguard" class="settings-action-btn" style="margin-top:6px;">⬢ OAKGUARD — Muse Wonder writes the rules, a referee decides <span title="Built during the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026)" style="display:inline-block;margin-left:5px;padding:0 4px;border-radius:3px;background:#ffd166;color:#0b0c1d;font-size:8px;font-weight:700;letter-spacing:0.06em;line-height:13px;vertical-align:middle;">NEW</span></button>
+        <div style="color:rgba(255,255,255,0.3);font-size:9px;margin-top:4px;line-height:1.4;">OakGuard: when code passes the validator but breaks at runtime, Muse Wonder writes a declarative rule that would have caught it. An independent referee tests it against broken variants (some held out) and known-good scripts, and promotes only rules that pass every gate. Promoted rules enforce live in the editor validator. Without a backend, OakGuard replays a recorded Muse Wonder run.</div>
       </div>
       <div class="settings-section">
         <div class="settings-section-title">Audit Trail</div>

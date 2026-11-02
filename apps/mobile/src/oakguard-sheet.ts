@@ -14,6 +14,11 @@ import { buildOakGuardReport } from '../../web/src/oakguard/report';
 import { CANDIDATE_CATALOGUE } from '../../web/src/oakguard/rules';
 import { activeRules, loadPlaybook, resetPlaybook } from '../../web/src/oakguard/store';
 import type { PlaybookState, RuleSpec } from '../../web/src/oakguard/types';
+import { replayTransport, type RecordedRun } from '../../web/src/oakguard/proposer';
+import recorded from '../../web/src/oakguard/recorded-run.json';
+
+/** The phone replays the recorded Muse Wonder run; the referee re-grades it on the device. */
+const RECORDED = recorded as unknown as RecordedRun;
 import { getIndicators, getUserIndicators } from '../../web/src/oakscript';
 import { openSheet, onSheetClosed, sectionTitle } from './sheets';
 import { submitReport } from './reports';
@@ -102,7 +107,7 @@ function syncScene(): void {
 
 function introBlock(): HTMLElement {
   return el('div', 'font-size:11px;line-height:1.55;color:rgba(255,255,255,0.7);',
-    'OakGuard checks the rules that check AI-written indicators. Candidate rules come from a hand-written catalogue today. An independent test keeps only the rules that catch real bugs without false alarms, and proven rules go live in your editor.');
+    'When code passes the validator but breaks at runtime, Muse Wonder writes a rule that would have caught it. A referee the model cannot see keeps only rules that catch every broken variant without a false alarm. The phone replays a recorded Muse Wonder run and re-grades it here.');
 }
 
 function runBlock(): HTMLElement {
@@ -273,6 +278,10 @@ async function runNow(): Promise<OakGuardRun | null> {
     const run = await runOakGuard({
       state,
       scripts: collectScripts(),
+      mode: 'replay',
+      transport: replayTransport(RECORDED),
+      model: RECORDED.model,
+      recordedAt: RECORDED.recordedAt,
       onStep,
       pause: () => new Promise<void>(resolve => setTimeout(resolve, 300)),
     });
