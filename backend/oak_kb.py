@@ -1456,7 +1456,7 @@ SYNTAX_RULES = (
     "visual element traced directly to the user's ask; no decorative extras or bonus "
     "derivative layers. When EDITING, never add visuals the user didn't request; when "
     "asked to remove/simplify visuals, removing them IS the task. Cone signals should "
-    "expose markerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1) as a size multiplier. "
+    "use a literal cone size (0.8-1.0) — marker size, brightness and style are global display settings, never script inputs. "
     "STRUCTURE (top-to-bottom, once per bar): 1) input() declarations 2) calculations "
     "(assign every variable before use) 3) var persistent state 4) boolean signal "
     "conditions 5) plotshape markers INSIDE if-blocks (buy at low/triangleup, sell at "

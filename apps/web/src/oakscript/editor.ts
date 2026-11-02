@@ -567,6 +567,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   editorPanel = document.createElement('div');
   editorPanel.id = 'oakscript-editor';
+  editorPanel.className = 'hud-window';
   Object.assign(editorPanel.style, {
     position: 'fixed', left: `${SECOND_COLUMN_LEFT}px`, top: `${WINDOW_TOP_MIN}px`, width: '460px', maxHeight: '90vh',
     minWidth: '420px', minHeight: '320px',
@@ -583,6 +584,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
 
   // ── Header (draggable) ─────────────────────────────────────────
   const header = document.createElement('div');
+  header.className = 'hud-head';
   Object.assign(header.style, {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     padding: '10px 14px', borderBottom: '1px solid rgba(180, 140, 255, 0.1)',
@@ -1204,10 +1206,17 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   editorPanel.appendChild(errorListDiv);
 
   // ── Documentation Panel ─────────────────────────────────────────
+  // The reference is a two-part layout: a compact, independently scrollable
+  // index above a content viewport. It used to be one scrolling box with a
+  // sticky index — once the index grew to 30+ entries it became taller than
+  // the panel's 300px cap, so it covered every section no matter where the
+  // content was scrolled to (the index looked like the only thing in the
+  // panel, and clicking a link moved the hidden content behind it).
   docPanel = document.createElement('div');
   docPanel.id = 'oakscript-docs';
   Object.assign(docPanel.style, {
-    overflow: 'auto', display: 'none', minHeight: '80px', maxHeight: '300px',
+    overflow: 'hidden', display: 'none', flexDirection: 'column',
+    height: '300px', minHeight: '180px', maxHeight: '300px',
     borderBottom: '1px solid rgba(180, 140, 255, 0.08)',
     flexShrink: '0',
   });
@@ -1693,7 +1702,7 @@ export function setStoredOverrides(overrides: Map<string, any>, scope?: string):
 function toggleDocs(): void {
   if (!docPanel) return;
   const isVisible = docPanel.style.display !== 'none';
-  docPanel.style.display = isVisible ? 'none' : 'block';
+  docPanel.style.display = isVisible ? 'none' : 'flex';
   if (!isVisible) {
     try { renderDocs(); } catch (e) {
       docPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load docs: ${escapeHtml(e)}</div>`;
@@ -1706,12 +1715,22 @@ function renderDocs(): void {
   if (!docPanel) return;
   docPanel.innerHTML = '';
   const sections = getDocumentation();
+  // Index: capped height with its own scrollbar, never allowed to grow over
+  // the reading pane below it.
   const nav = document.createElement('div');
   Object.assign(nav.style, {
-    position: 'sticky', top: '0', background: 'rgba(8,8,20,0.98)',
+    background: 'rgba(8,8,20,0.98)',
     borderBottom: '1px solid rgba(180,140,255,0.1)', padding: '6px 10px',
-    display: 'flex', flexWrap: 'wrap', gap: '4px', zIndex: '1',
+    display: 'flex', flexWrap: 'wrap', gap: '4px', flexShrink: '0',
+    maxHeight: '104px', overflowY: 'auto', alignContent: 'flex-start',
   });
+
+  // Content viewport: the only part that scrolls when jumping to a section.
+  const content = document.createElement('div');
+  Object.assign(content.style, {
+    flex: '1', minHeight: '0', overflowY: 'auto', position: 'relative',
+  });
+  const sectionEls = new Map<string, HTMLDivElement>();
 
   const navTitle = document.createElement('span');
   navTitle.textContent = '📖 OakScript Reference';
@@ -1733,12 +1752,15 @@ function renderDocs(): void {
     link.onmouseleave = () => { link.style.color = 'rgba(255,255,255,0.4)'; link.style.background = 'transparent'; };
     link.onclick = (e) => {
       e.preventDefault();
-      const sectionEl = docPanel!.querySelector(`[data-section="${section.title}"]`);
-      if (sectionEl) sectionEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const sectionEl = sectionEls.get(section.title);
+      if (!sectionEl) return;
+      const delta = sectionEl.getBoundingClientRect().top - content.getBoundingClientRect().top;
+      content.scrollTo({ top: Math.max(0, content.scrollTop + delta), behavior: 'smooth' });
     };
     nav.appendChild(link);
   }
   docPanel.appendChild(nav);
+  docPanel.appendChild(content);
 
   for (const section of sections) {
     const sec = document.createElement('div');
@@ -1762,7 +1784,8 @@ function renderDocs(): void {
     });
     sec.appendChild(body);
 
-    docPanel.appendChild(sec);
+    sectionEls.set(section.title, sec);
+    content.appendChild(sec);
   }
 }
 

@@ -20,6 +20,7 @@ export function createDashboard(): {
 } {
   const panel = document.createElement('div');
   panel.id = 'dafe-dashboard';
+  panel.className = 'hud-window';
   Object.assign(panel.style, {
     position: 'fixed',
     right: '12px',
@@ -59,6 +60,7 @@ export function createDashboard(): {
 
   // Header
   const header = document.createElement('div');
+  header.className = 'hud-head';
   Object.assign(header.style, {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     padding: '7px 10px', borderBottom: '1px solid rgba(180, 140, 255, 0.1)',
@@ -201,6 +203,16 @@ export function createDashboard(): {
     return neu;
   }
 
+  // Metric rows read number → swatch → label, so every value starts at the
+  // same left edge and the swatches/names stack into clean columns.
+  function metricRow(value: string, color: string, label?: string, valueColor = color): string {
+    return `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;display:flex;align-items:center;gap:4px;"`
+      + `><span style="display:inline-block;min-width:5.2em;color:${escapeHtml(valueColor)};font-variant-numeric:tabular-nums;"`
+      + `>${value}</span>${colorBox(color)}`
+      + (label ? `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</span>` : '')
+      + `</div>`;
+  }
+
   function formatVal(v: number): string {
     if (Math.abs(v) >= 1000) return (v / 1000).toFixed(1) + 'K';
     if (Math.abs(v) >= 100) return v.toFixed(1);
@@ -291,7 +303,7 @@ export function createDashboard(): {
           for (const [n, p] of latest) {
             const v = p.value ?? (p.price ?? 0);
             const c = p.color || '#b48cff';
-            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(c)}${escapeHtml(n)}: <span style="color:${escapeHtml(c)};">${formatVal(v)}</span></div>`;
+            html += metricRow(formatVal(v), c, `${escapeHtml(n)}:`);
           }
         }
 
@@ -307,7 +319,7 @@ export function createDashboard(): {
           for (const [n, p] of latest2) {
             const v = p.value ?? 0;
             const c = p.color || '#b48cff';
-            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(c)}${escapeHtml(n)}: <span style="color:${escapeHtml(c)};">${formatVal(v)}</span></div>`;
+            html += metricRow(formatVal(v), c, `${escapeHtml(n)}:`);
           }
         }
 
@@ -323,7 +335,7 @@ export function createDashboard(): {
           }
           for (const h of byLevel.values()) {
             const v = h.price ?? 0;
-            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(h.color || '#888')}<span style="color:rgba(255,255,255,0.4);">${v.toFixed(2)}</span></div>`;
+            html += metricRow(v.toFixed(2), h.color || '#888', undefined, 'rgba(255,255,255,0.4)');
           }
         }
 

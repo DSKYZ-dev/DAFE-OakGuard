@@ -46,8 +46,8 @@ import { AdvisorVoice } from './trade-advisor/voice';
 import { LiveDataStream } from './data-stream';
 import { HybridDataEngine } from './data-stream/hybrid-engine';
 import { getMarketStatus, marketStatusLabel } from './market-hours';
-import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene } from './three-indicators';
-import { show3D, hide3D, setLowerPaneBackground } from './three-lower-pane';
+import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene, setChart3DVisualSettings, getChart3DVisualSettings, type Chart3DVisualSettings } from './three-indicators';
+import { show3D, hide3D, setLowerPaneBackground, frameLower3D } from './three-lower-pane';
 import { draw3DScene } from './iso3d';
 import type { OakPlot3D } from './oakscript/runtime';
 import { layerTwins, shapeTwins } from './plot-twins';
@@ -83,7 +83,10 @@ import {
 } from './indicator-manager';
 import { setMlRedrawCallback } from './ml-client';
 import { mountOakGuardLauncher, openOakGuard } from './oakguard/panel';
-import { mountVisualEditor } from './visual-editor';
+import { mountVisualEditor, saveVisualSettings, refreshVisualEditorInputs } from './visual-editor';
+import { getSignalStyle, setSignalStyle, type SignalMarkerStyle } from './signal-style';
+import { mountNumberSteppers } from './number-stepper';
+import './ui-chrome.css';
 
 
 // ─── URL-based hard reset ──────────────────────────────────────────
@@ -1020,7 +1023,7 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
       case '0': is3DMode = !is3DMode; visualAdapter.logAction('mode', `Switched to ${is3DMode ? '3D' : '2D'} mode`); updateUI(); break;
       case '1': document.getElementById('vp-settings-panel')?.classList.toggle('active'); visualAdapter.logAction('toggle', 'Volume profile'); break;
       case '2': e.preventDefault(); const vis = toggleEditor(); oakScriptEnabled = vis; visualAdapter.logAction('indicator', `OakScript ${vis ? 'opened' : 'closed'}`); updateUI(); break;
-      case '3': view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0; visualAdapter.logAction('frame', 'Frame all'); break;
+      case '3': view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0; frameLower3D(); visualAdapter.logAction('frame', 'Frame all'); break;
       case '4': setDrawTool(draw.getTool() === 'trend' ? 'none' : 'trend'); break;
       case '5': setDrawTool(draw.getTool() === 'hline' ? 'none' : 'hline'); break;
       case '6': setDrawTool(draw.getTool() === 'ray' ? 'none' : 'ray'); break;
@@ -1482,7 +1485,7 @@ function buildIndicatorList() {
   const savedPos = readSavedPosition(LIST_POS_KEY);
   indicatorListEl = document.createElement('div');
   indicatorListEl.id = 'indicator-list';
-  indicatorListEl.className = 'dafe-glow-window';
+  indicatorListEl.className = 'dafe-glow-window hud-window';
   Object.assign(indicatorListEl.style, {
     position: 'fixed', top: `${savedPos?.top ?? WINDOW_TOP_MIN}px`, left: `${savedPos?.left ?? LEFT_COLUMN_LEFT}px`, zIndex: '90',
     background: 'rgba(8, 8, 20, 0.85)', border: '1px solid rgba(180, 140, 255, 0.15)',
@@ -1492,6 +1495,7 @@ function buildIndicatorList() {
   });
 
   const titleRow = document.createElement('div');
+  titleRow.className = 'hud-head';
   Object.assign(titleRow.style, {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     gap: '8px', marginBottom: '6px',
@@ -1743,6 +1747,7 @@ function updateUI() {
     }
   }
   document.getElementById('os-status')?.classList.toggle('has-errors', oakScriptErrors.length > 0);
+  document.getElementById('os-open-editor')?.classList.toggle('active', isEditorVisible());
   document.getElementById('live-tick-toggle')?.classList.toggle('active', liveTicksEnabled);
   buildIndicatorList();
   syncVPSettingsPanel();
@@ -2082,6 +2087,7 @@ document.addEventListener('DOMContentLoaded', () => {
   startupChecks();
   mountOakGuardLauncher();
   mountVisualEditor();
+  mountNumberSteppers();
   // Demo/testing deep-link: ?indicator=<built-in name> applies that model
   // on load (e.g. ?indicator=CCI%20Manifold%20Sheet for screenshots/demos).
   const deepIndicator = new URLSearchParams(window.location.search).get('indicator');
@@ -2192,6 +2198,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-frame')?.addEventListener('click', () => {
     view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0;
     visualAdapter.logAction('frame', 'Reset chart view');
+  });
+  document.getElementById('lower-frame-btn')?.addEventListener('click', () => {
+    frameLower3D();
+    visualAdapter.logAction('frame', 'Frame all (3D lower deck)');
   });
   document.getElementById('mode-toggle')?.addEventListener('click', () => {
     is3DMode = !is3DMode;
@@ -2544,7 +2554,7 @@ CRITICAL RULES:
 - 3D: Full plot3d/plotshape_3d docs are in the coder system prompt. Key: 2D plot()/plotshape() do NOT render in 3D mode — use plot3d()/plotshape_3d(). MANDATORY: plotshape_3d() must pair with at least one plot3d() using the EXACT SAME pane argument (both "3d", or both "separate") — a plotshape_3d(..., "3d") next to a plot3d(..., "separate") puts them in DIFFERENT scenes and one of them renders nowhere.
 - VISUAL FOCUS (this outranks everything about visuals): render ONLY what the request needs. Maximum 2-3 plot3d layers, and every single visual element must trace directly back to something the user asked for — no decorative extras, no "bonus" derivatives, no piling styles on. One excellent, readable visual beats five cluttered ones.
 - You are EDITING: do NOT add any new plot3d/plotshape_3d/label3d call the user did not ask for in THIS request. If the user asks to remove or simplify visuals, removing them IS the task — obey immediately and completely.
-- 3D cone signals: expose markerSize = input(1.0, "Marker Size", 0.2, 3.0, 0.1) and multiply the cone size by it so users can tune marker scale from the inputs panel.${signalRule}${dimensionRule}
+- 3D cone signals: pass a literal size (0.8–1.0) to plotshape_3d. Marker size, brightness and style are global display settings (Settings → Display → Signal Markers) — do NOT add a "Marker Size" input() call for them.${signalRule}${dimensionRule}
 - SELF-REVIEW BEFORE OUTPUT: Silently verify (1) mathematical accuracy — is every calculation, crossover, threshold, and indicator relationship correct? (2) visual focus — does every plot/shape/label trace back to the user's request? Remove anything they didn't ask for. If either check fails, fix it before answering.
 - DRAWING TOOLKIT: line.new(x1,y1,x2,y2,color?,width?,style?,extend?,id?) / line.delete(id); box.new(left,top,right,bottom,borderColor?,bgColor?,width?,id?) / box.delete(id); circle.new(x1,y1,x2,y2,color?,bgColor?,width?,id?); arrow.new(x1,y1,x2,y2,color?,width?,id?); polyline.new(points,color?,width?,closed?,id?) with points as [bar_index,price] pairs; linefill.new(lineId1,lineId2,color) fills the band between two existing line.new ids; table.new(position,columns,rows,bgColor?,id?) returns a handle and table.cell(handle,col,row,text,bgColor?,textColor?) fills it (position: top_left/top_right/top_center/middle_left/middle_center/middle_right/bottom_left/bottom_right/bottom_center); barcolor(color,pane?) recolors the current bar's candle; fibretracement.new(x1,y1,x2,y2,levels?,colorUp?,colorDown?,id?) and gannfan.new(x1,y1,angleUnit?,color?,id?) draw analyst overlays as real line objects; text.new(x,y,text,color?,size?,id?) is unboxed label sugar, label.new(x,y,text,color?,size?,boxed?,align?) is the boxed form.
 - OBJECT ID IDIOM: line.new/box.new/polyline.new/circle.new/arrow.new/table.new/image.new all take a trailing id — pass the SAME literal id string across multiple bars to UPDATE that object in place (a moving trendline, a growing zone) instead of stacking a new one every bar; omit the id for a fresh object per firing (e.g. one marker per pivot) — omitted-id objects are auto-capped on a rolling basis.
@@ -2848,12 +2858,14 @@ CRITICAL RULES:
   settingsClose?.addEventListener('click', () => settingsPanel?.classList.remove('active'));
 
   // Settings: Open OakScript Editor button
-  document.getElementById('set-open-editor')?.addEventListener('click', () => {
-    const vis2 = toggleEditor();
-    oakScriptEnabled = vis2;
-    settingsPanel?.classList.remove('active');
+  const openModelEditor = (closeSettings: boolean) => {
+    oakScriptEnabled = toggleEditor();
+    if (closeSettings) settingsPanel?.classList.remove('active');
     updateUI();
-  });
+  };
+  document.getElementById('set-open-editor')?.addEventListener('click', () => openModelEditor(true));
+  // Toolbar: the editor lives beside the Signal Models menu, one click away.
+  document.getElementById('os-open-editor')?.addEventListener('click', () => openModelEditor(false));
 
   document.getElementById('set-open-ledger')?.addEventListener('click', () => {
     settingsPanel?.classList.remove('active');
@@ -2918,6 +2930,77 @@ CRITICAL RULES:
   glowEnabledEl?.addEventListener('change', applyGlow);
   glowColorEl?.addEventListener('input', applyGlow);
   glowBrightEl?.addEventListener('input', applyGlow);
+
+  // Signal markers — size, brightness and style for buy/sell markers, shared
+  // by the 2D canvas and the 3D scene. These live here instead of in the Model
+  // Inputs panel so one control covers every model on the chart.
+  const signalSizeEl = document.getElementById('set-signal-size') as HTMLInputElement | null;
+  const signalBrightEl = document.getElementById('set-signal-bright') as HTMLInputElement | null;
+  const signalOffsetEl = document.getElementById('set-signal-offset') as HTMLInputElement | null;
+  const signalStyleEl = document.getElementById('set-signal-style') as HTMLSelectElement | null;
+  const signalSizeOut = document.getElementById('set-signal-size-val');
+  const signalBrightOut = document.getElementById('set-signal-bright-val');
+  const signalOffsetOut = document.getElementById('set-signal-offset-val');
+  const syncSignalControls = () => {
+    const s = getSignalStyle();
+    if (signalSizeEl) signalSizeEl.value = String(s.size);
+    if (signalBrightEl) signalBrightEl.value = String(Math.round(s.brightness * 100));
+    if (signalOffsetEl) signalOffsetEl.value = String(s.offset);
+    if (signalStyleEl) signalStyleEl.value = s.style;
+    if (signalSizeOut) signalSizeOut.textContent = `${s.size.toFixed(2)}×`;
+    if (signalBrightOut) signalBrightOut.textContent = `${Math.round(s.brightness * 100)}%`;
+    if (signalOffsetOut) signalOffsetOut.textContent = `${s.offset.toFixed(2)}×`;
+  };
+  syncSignalControls();
+  signalSizeEl?.addEventListener('input', () => {
+    const v = parseFloat(signalSizeEl.value);
+    if (!isFinite(v)) return;
+    setSignalStyle({ size: v });
+    syncSignalControls();
+    mark3DSceneDirty();
+  });
+  signalBrightEl?.addEventListener('input', () => {
+    const v = parseFloat(signalBrightEl.value);
+    if (!isFinite(v)) return;
+    setSignalStyle({ brightness: v / 100 });
+    syncSignalControls();
+    mark3DSceneDirty();
+  });
+  signalOffsetEl?.addEventListener('input', () => {
+    const v = parseFloat(signalOffsetEl.value);
+    if (!isFinite(v)) return;
+    setSignalStyle({ offset: v });
+    syncSignalControls();
+    mark3DSceneDirty();
+  });
+  signalStyleEl?.addEventListener('change', () => {
+    setSignalStyle({ style: signalStyleEl.value as SignalMarkerStyle });
+    mark3DSceneDirty();
+  });
+
+  // 3D Scene light controls — same stored profile as the Visual Editor, so
+  // Settings and the floating 🎛 panel always agree. These apply live to the
+  // 3D main chart and the lower deck (both read the shared settings).
+  const scene3dControls: Array<{ id: string; out: string; key: 'exposure' | 'barBrightness' | 'bgBrightness'; digits: number }> = [
+    { id: 'set-3d-exposure', out: 'set-3d-exposure-val', key: 'exposure', digits: 2 },
+    { id: 'set-3d-bars', out: 'set-3d-bars-val', key: 'barBrightness', digits: 2 },
+    { id: 'set-3d-bg', out: 'set-3d-bg-val', key: 'bgBrightness', digits: 2 },
+  ];
+  for (const ctl of scene3dControls) {
+    const input = document.getElementById(ctl.id) as HTMLInputElement | null;
+    if (!input) continue;
+    input.value = String(getChart3DVisualSettings()[ctl.key]);
+    const out = document.getElementById(ctl.out);
+    if (out) out.textContent = Number(input.value).toFixed(ctl.digits);
+    input.addEventListener('input', () => {
+      const v = parseFloat(input.value);
+      if (!isFinite(v)) return;
+      setChart3DVisualSettings({ [ctl.key]: v } as Partial<Chart3DVisualSettings>);
+      saveVisualSettings();
+      refreshVisualEditorInputs();
+      if (out) out.textContent = v.toFixed(ctl.digits);
+    });
+  }
 
 
   document.getElementById('perf-select')?.addEventListener('change', () => {
@@ -4024,8 +4107,12 @@ CRITICAL RULES:
     let tOffX = 0, tOffY = 0;
     tradingPanelHeader.addEventListener('mousedown', (e) => {
       if ((e.target as HTMLElement).tagName === 'BUTTON') return;
-      tOffX = e.clientX - tradingPanel.offsetLeft;
-      tOffY = e.clientY - tradingPanel.offsetTop;
+      // Grab offset from the on-screen box, not offsetLeft/offsetTop: those are
+      // measured against the offset parent, so any shift in the panel's
+      // positioning context made the panel jump away from the cursor.
+      const startRect = tradingPanel.getBoundingClientRect();
+      tOffX = e.clientX - startRect.left;
+      tOffY = e.clientY - startRect.top;
       tradingPanel.classList.add('dragging');
       const onMove = (ev: MouseEvent) => {
         tradingPanel.style.left = Math.max(0, Math.min(window.innerWidth - 100, ev.clientX - tOffX)) + 'px';
@@ -4034,7 +4121,8 @@ CRITICAL RULES:
       };
       const onUp = () => {
         tradingPanel.classList.remove('dragging');
-        localStorage.setItem(TRADING_POS_KEY, JSON.stringify({ left: tradingPanel.offsetLeft, top: tradingPanel.offsetTop }));
+        const r = tradingPanel.getBoundingClientRect();
+        localStorage.setItem(TRADING_POS_KEY, JSON.stringify({ left: Math.round(r.left), top: Math.round(r.top) }));
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       };
@@ -4116,10 +4204,14 @@ CRITICAL RULES:
     newsHeader.style.cursor = 'grab';
     newsHeader.addEventListener('mousedown', (e) => {
       if ((e.target as HTMLElement).tagName === 'BUTTON') return;
-      nX = e.clientX - newsBox.offsetLeft;
-      nY = e.clientY - newsBox.offsetTop;
+      // Same reason as the Trading panel: measure the grab offset on screen so
+      // the box stays under the cursor instead of jumping on first move.
+      const startRect = newsBox.getBoundingClientRect();
+      nX = e.clientX - startRect.left;
+      nY = e.clientY - startRect.top;
       const onMove = (ev: MouseEvent) => {
-        newsBox.style.left = Math.max(0, ev.clientX - nX) + 'px';
+        const left = Math.max(0, Math.min(window.innerWidth - newsBox.offsetWidth, ev.clientX - nX));
+        newsBox.style.left = left + 'px';
         newsBox.style.top = clearOfHeaderTop(ev.clientY - nY) + 'px';
         newsBox.style.right = 'auto';
       };

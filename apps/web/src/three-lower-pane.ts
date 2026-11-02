@@ -21,6 +21,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import type { OakPlot3D, OakPlot } from './oakscript/runtime';
 import { resolveImage } from './image-cache';
+import { getChart3DVisualSettings, chart3DEnvColor } from './three-indicators';
 
 const ID = 'three-lower-scene';
 let _ok = false;
@@ -32,36 +33,53 @@ let _composer: EffectComposer | null = null;
 let _bloomPass: UnrealBloomPass | null = null;
 let _lastPlots: OakPlot3D[] = [];
 let _lastShapes: OakPlot[] = [];
+let _lastTotalBars: number | undefined;
+let _appliedExposure = -1;
+let _appliedBg = -1;
 let _lastMin = 0;
 let _lastMax = 1;
 let _hostFallback: HTMLElement | null = null;
 
 export function setLowerPaneHost(el: HTMLElement | null): void { _hostFallback = el; }
 
-const BLOOM_STRENGTH = 0.62;
-const BLOOM_RADIUS = 0.42;
-const BLOOM_THRESHOLD = 0.52;
+// Bloom is a highlight treatment, not a fog layer. The previous 0.62 / 0.52
+// pair put every label and cage tick over the threshold, so the whole lower
+// deck read as one bright haze. Labels are now composited after the bloom
+// pass (see the render loop), and only genuinely bright geometry blooms.
+const BLOOM_STRENGTH = 0.38;
+const BLOOM_RADIUS = 0.35;
+const BLOOM_THRESHOLD = 0.62;
+let _starfield: THREE.Points | null = null;
+let _lowerBgMode = 'stars';
 const BASE_FOV_DEG = 34;
 const X_STRETCH_CLAMP: [number, number] = [0.88, 1.08];
 
 function isDecoration(obj: THREE.Object3D): boolean {
-  return obj instanceof THREE.Light || obj instanceof THREE.GridHelper || Boolean((obj as any).userData?.isCage);
+  // The starfield is atmosphere, not data. Leaving it in the content box made
+  // the auto-fit frame empty sky tens of units wide, so the actual instrument
+  // deck ended up tiny and pushed toward the lower-left of the pane.
+  return obj instanceof THREE.Light || obj instanceof THREE.GridHelper
+    || Boolean((obj as any).userData?.isCage)
+    || (_starfield !== null && obj === _starfield);
 }
 
 function stretchContentX(scene: THREE.Scene, k: number): void {
   for (const child of scene.children) {
     if (child instanceof THREE.Light) continue;
+    if (_starfield !== null && child === _starfield) continue;
     child.position.x *= k;
     child.scale.x *= k;
     child.traverse(o => { if (o instanceof THREE.Sprite) o.scale.x /= k; });
   }
 }
 
-function contentBox(scene: THREE.Scene): THREE.Box3 | null {
+function contentBox(scene: THREE.Scene, includeCage = false): THREE.Box3 | null {
   const box = new THREE.Box3();
   let has = false;
   for (const child of scene.children) {
-    if (isDecoration(child)) continue;
+    if (child instanceof THREE.Light) continue;
+    if (_starfield !== null && child === _starfield) continue;
+    if (!includeCage && isDecoration(child)) continue;
     box.expandByObject(child);
     has = true;
   }
@@ -271,14 +289,12 @@ function buildInstrumentCage(min: number, max: number, zMin: number, zMax: numbe
 }
 
 function applyCameraViewOffset(camera: THREE.PerspectiveCamera, w: number, h: number): void {
+  // The lower deck shares the full width of the chart, so keep its optical
+  // center in the middle. The old 9%-left view offset made the scene look
+  // permanently off-centre (and pushed its right edge under the floating
+  // panels on narrower layouts).
+  camera.clearViewOffset();
   camera.aspect = w / Math.max(h, 1);
-  if (w >= 820) {
-    // Shift the optical center of the 3D stage to ~40% from the left so it sits
-    // cleanly between the Left Telemetry Column and the Right 2D Sub-Panels.
-    camera.setViewOffset(w, h, Math.round(w * 0.09), 0, w, h);
-  } else {
-    camera.clearViewOffset();
-  }
   camera.updateProjectionMatrix();
 }
 
@@ -288,7 +304,7 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   if (!c) {
     c = document.createElement('canvas');
     c.id = ID;
-    c.style.cssText = `width:100%;height:${h}px;display:block;flex-shrink:0;border-top:1px solid rgba(0,229,255,0.22);background:#050711`;
+    c.style.cssText = `width:100%;height:${h}px;display:block;flex-shrink:0;border-top:1px solid rgba(0,229,255,0.22);background:#0a0a18`;
     const container = document.getElementById('chart-container');
     const sec = document.getElementById('secondary-canvas');
     if (container && sec) { sec.style.display = 'none'; container.insertBefore(c, sec); }
@@ -317,8 +333,32 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
     const pw0 = c.parentElement?.clientWidth || 1200;
     _renderer.setSize(pw0, h, false);
     _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    _renderer.setClearColor(0x050711, 1);
+    _renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    _renderer.setClearColor(chart3DEnvColor(), 1);
     _scene = new THREE.Scene();
+    _scene.background = chart3DEnvColor();
+    {
+      // Same deep-space cue as the main 3D scene (Settings → Display → Stars),
+      // so the lower deck is a continuation of the chart, not a flat grey slab.
+      const starGeo = new THREE.BufferGeometry();
+      const count = 500;
+      const pos = new Float32Array(count * 3);
+      let seed = 23;
+      const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+      for (let i = 0; i < count; i++) {
+        const r = 16 + rnd() * 30;
+        const a = rnd() * Math.PI * 2;
+        pos[i * 3] = Math.cos(a) * r;
+        pos[i * 3 + 1] = (rnd() - 0.25) * 24;
+        pos[i * 3 + 2] = Math.sin(a) * r;
+      }
+      starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      _starfield = new THREE.Points(starGeo, new THREE.PointsMaterial({
+        color: 0x8fb8ff, size: 0.11, transparent: true, opacity: 0.65, depthWrite: false,
+      }));
+      _starfield.visible = _lowerBgMode === 'stars' || _lowerBgMode === 'particles';
+      _scene.add(_starfield);
+    }
     _scene.add(new THREE.AmbientLight(0x556688, 1.15));
     const d1 = new THREE.DirectionalLight(0xffffff, 0.95);
     d1.position.set(6, 10, 7);
@@ -338,26 +378,73 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
   } catch { return null; }
 }
 
-let _lowerBgMode = 'stars';
+/**
+ * Mirror Settings → Display → Background in the lower deck exactly as the
+ * main chart renders it (same #0a0a18 base; the starfield is shown for the
+ * two atmospheric choices). Previously the lower pane ignored the selection
+ * and used its own hard-coded near-grey tint, which is why it never matched
+ * the chart above it.
+ */
 export function setLowerPaneBackground(mode: string): void {
   _lowerBgMode = mode;
   if (_renderer) {
-    const col = mode === 'plain' ? 0x070914 : mode === 'graph' ? 0x060813 : 0x04060e;
-    _renderer.setClearColor(col, 1);
-    if (_scene) _scene.background = new THREE.Color(col);
+    const env = chart3DEnvColor();
+    _renderer.setClearColor(env, 1);
+    if (_scene) _scene.background = env.clone();
+    if (_starfield) _starfield.visible = mode === 'stars' || mode === 'particles';
+  }
+}
+
+/** Keep the lower deck on the same light level as the main 3D chart. */
+function syncSharedVisuals(renderer: THREE.WebGLRenderer): void {
+  const s = getChart3DVisualSettings();
+  if (s.exposure !== _appliedExposure) {
+    _appliedExposure = s.exposure;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = s.exposure;
+  }
+  if (s.bgBrightness !== _appliedBg) {
+    _appliedBg = s.bgBrightness;
+    if (_scene) {
+      const env = chart3DEnvColor();
+      _scene.background = env.clone();
+      renderer.setClearColor(env, 1);
+    }
+    if (_starfield) {
+      (_starfield.material as THREE.PointsMaterial).opacity = Math.max(0, Math.min(1, 0.65 * s.bgBrightness));
+    }
+  }
+}
+
+/**
+ * Frame All — recentre the lower deck's isometric camera on the whole
+ * instrument (cage, floor, ticks and data) after the user has orbited, panned
+ * or zoomed it out of frame. One click; also bound to the Frame hotkey.
+ */
+export function frameLower3D(): void {
+  if (!_scene || !_camera) return;
+  _resetLowerOrbit?.();
+  _lastLowerFitSig = null;
+  if (_lastPlots.length > 0 || _lastShapes.length > 0) {
+    show3D(_lastPlots, _lastShapes, _lastTotalBars);
   }
 }
 
 export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: number): void {
   if (plots.length === 0 && (!shapePlots || shapePlots.length === 0)) { hide3D(); return; }
+  _lastPlots = plots;
+  _lastShapes = shapePlots ?? [];
+  _lastTotalBars = totalBars;
   const r = ensure();
   if (!r) return;
   _ok = true;
+  syncSharedVisuals(r.renderer);
 
   // Clear old geometry except lights
   const toRemove: THREE.Object3D[] = [];
   for (const child of r.scene.children) {
     if (child instanceof THREE.AmbientLight || child instanceof THREE.DirectionalLight) continue;
+    if (_starfield && child === _starfield) continue;
     toRemove.push(child);
   }
   for (const child of toRemove) { dispose(child); r.scene.remove(child); }
@@ -855,14 +942,57 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
     const sig = windowedPlots.map(p => `${p.name}|${p.style}`).join(';') + `#${shapePlots?.length ?? 0}`;
     if (sig !== _lastLowerFitSig && _lowerOrbitFit) {
       _lastLowerFitSig = sig;
-      const fitted = contentBox(r.scene);
-      if (fitted) {
+      // Frame the WHOLE instrument (cage, floor, ticks and data), not just the
+      // data mesh — the cage is what the eye reads as the deck's outer edge.
+      // Then correct against the actual projection, because an oblique
+      // isometric view puts the near floor edge well below the world-space
+      // box centre. The old fit used only the mesh bounds and a fixed
+      // multiplier, so on first activation the bottom of the deck sat below
+      // the canvas and had to be dragged into view.
+      const fitted = contentBox(r.scene, true);
+      if (fitted && _lowerOrbitFit) {
         const s = fitted.getSize(new THREE.Vector3());
         const center = fitted.getCenter(new THREE.Vector3());
         const vHalf = (r.camera.fov * Math.PI / 180) / 2;
         const dV = (s.y / 2) / Math.tan(vHalf);
-        const dist = Math.max(9.5, Math.min(16.5, dV * 1.55 + s.z * 0.65));
+        let dist = Math.max(8, Math.min(24, dV * 1.35 + s.z * 0.5));
+        const corners: THREE.Vector3[] = [];
+        for (const x of [fitted.min.x, fitted.max.x]) {
+          for (const y of [fitted.min.y, fitted.max.y]) {
+            for (const z of [fitted.min.z, fitted.max.z]) corners.push(new THREE.Vector3(x, y, z));
+          }
+        }
+        const extents = (): { maxX: number; maxY: number; cx: number; cy: number } => {
+          r.camera.updateMatrixWorld(true);
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const c of corners) {
+            const p = c.clone().project(r.camera);
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          }
+          return {
+            maxX: Math.max(Math.abs(minX), Math.abs(maxX)),
+            maxY: Math.max(Math.abs(minY), Math.abs(maxY)),
+            cx: (minX + maxX) / 2, cy: (minY + maxY) / 2,
+          };
+        };
         _lowerOrbitFit(dist, center);
+        // Two passes: recenter the projected box, then size it to ~80% of the
+        // viewport on its limiting axis.
+        for (let pass = 0; pass < 2; pass++) {
+          const e = extents();
+          const worldHalf = dist * Math.tan(vHalf);
+          const right = new THREE.Vector3(1, 0, 0).applyQuaternion(r.camera.quaternion);
+          const up = new THREE.Vector3(0, 1, 0).applyQuaternion(r.camera.quaternion);
+          center.addScaledVector(right, e.cx * worldHalf * r.camera.aspect);
+          center.addScaledVector(up, e.cy * worldHalf);
+          const overflow = Math.max(e.maxX, e.maxY);
+          if (overflow > 0.9) dist = Math.min(24, dist * (overflow / 0.86));
+          else if (overflow < 0.68) dist = Math.max(7, dist * (overflow / 0.78));
+          _lowerOrbitFit(dist, center);
+        }
       }
     }
   }
@@ -894,6 +1024,7 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
   const loop = () => {
     if (!document.getElementById(ID)) { _rafId = 0; return; }
     if (!document.hidden && r.canvas.clientHeight > 0) {
+      syncSharedVisuals(r.renderer);
       const cw = r.canvas.clientWidth || r.canvas.parentElement?.clientWidth || lastW;
       const ch = r.canvas.clientHeight || (window as any).__dafeLowerHeight || lastH;
       if (cw !== lastW || ch !== lastH) {
@@ -903,7 +1034,23 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
         _composer?.setSize(cw, ch);
         _bloomPass?.setSize(cw, ch);
       }
-      if (_composer) _composer.render(); else r.renderer.render(r.scene, r.camera);
+      if (_composer) {
+        _composer.render();
+        // Labels are on layer 1: render them after bloom so tick labels,
+        // label3d() text and axis captions stay crisp instead of becoming
+        // glowing blobs. Depth is irrelevant (sprites use depthTest: false).
+        const bg = r.scene.background;
+        r.scene.background = null;
+        r.camera.layers.set(1);
+        r.renderer.autoClear = false;
+        r.renderer.render(r.scene, r.camera);
+        r.renderer.autoClear = true;
+        r.camera.layers.set(0);
+        r.scene.background = bg;
+      } else {
+        r.camera.layers.enable(1);
+        r.renderer.render(r.scene, r.camera);
+      }
     }
     _rafId = requestAnimationFrame(loop);
   };
@@ -931,6 +1078,9 @@ export function makeTextSprite(text: string, color: string, size: number): THREE
   const tex = new THREE.CanvasTexture(cv);
   tex.minFilter = THREE.LinearFilter;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  // Text lives on its own layer so the bloom composer skips it; the render
+  // loops draw this layer directly over the bloomed scene.
+  sprite.layers.set(1);
   const s = 0.42 * Math.max(0.2, Math.min(3, size));
   sprite.scale.set((cv.width / cv.height) * s, s, 1);
   return sprite;
@@ -958,9 +1108,14 @@ export function hide3D(): void {
   _composer?.dispose();
   _composer = null; _bloomPass = null;
   if (_renderer) { _renderer.dispose(); _renderer = null; }
+  _starfield = null;
   _scene = null; _camera = null;
   _lowerOrbitFit = null;
+  _resetLowerOrbit = null;
   _lastLowerFitSig = null;
+  _lastPlots = [];
+  _lastShapes = [];
+  _lastTotalBars = undefined;
   const c = document.getElementById(ID);
   if (c) {
     c.onpointerdown = null; c.onpointermove = null; c.onpointerup = null; c.onwheel = null;
@@ -975,6 +1130,7 @@ export function hide3D(): void {
 }
 
 let _lowerOrbitFit: ((dist: number, target: THREE.Vector3) => void) | null = null;
+let _resetLowerOrbit: (() => void) | null = null;
 let _lastLowerFitSig: string | null = null;
 
 function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): void {
@@ -998,6 +1154,11 @@ function enableOrbit(dom: HTMLCanvasElement, camera: THREE.PerspectiveCamera): v
   _lowerOrbitFit = (d: number, t: THREE.Vector3) => {
     dist = Math.max(6, Math.min(36, d));
     target.copy(t);
+    apply();
+  };
+  _resetLowerOrbit = () => {
+    theta = -0.54; phi = 1.06; dist = 12.2;
+    target.set(0, 1.75, 0);
     apply();
   };
 

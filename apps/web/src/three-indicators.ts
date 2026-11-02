@@ -14,6 +14,7 @@ import type { OakPlot, OakPlot3D } from './oakscript/runtime';
 import { makeTextSprite } from './three-lower-pane';
 import { type ViewState, getVisibleRange, barX, priceToY, chartRight, TOP_FRAC, BOT_FRAC } from './chart-renderer';
 import { resolveImage } from './image-cache';
+import { getSignalStyle } from './signal-style';
 
 export type VizType = 'surface' | 'ribbon' | 'scatter' | 'wireframe' | 'bars3d' | 'line3d' | 'mesh'
   | 'helix' | 'vortex' | 'manifold' | 'nebula' | 'constellation' | 'torus' | 'trail';
@@ -44,27 +45,74 @@ export interface Chart3DVisualSettings {
   markerGap: number;
   fogDensity: number;
   zSpacing: number;
+  /** Renderer exposure — the master light level for the whole 3D scene. */
+  exposure: number;
+  /** Multiplier on candle body/wick colour + emissive. */
+  barBrightness: number;
+  /** Deep-space base: 0 = black, 1 = #0a0a18, >1 = lifted blue-slate haze. */
+  bgBrightness: number;
   showGrid: boolean;
   showStars: boolean;
 }
 
 const _vis: Chart3DVisualSettings = {
-  bloomStrength: 0.9, bloomThreshold: 0.28, emissiveScale: 1.6,
+  bloomStrength: 0.55, bloomThreshold: 0.52, emissiveScale: 1.15,
   markerScale: 1, markerGap: 1, fogDensity: 0.03, zSpacing: 2,
+  exposure: 1.45, barBrightness: 1.35, bgBrightness: 1,
   showGrid: true, showStars: true,
 };
 
+/**
+ * Background colour shared by the main 3D scene and the lower deck, so the two
+ * panes always agree on how brightly the space behind the data reads.
+ */
+export function chart3DEnvColor(): THREE.Color {
+  const b = Math.max(0, Math.min(2.2, _vis.bgBrightness));
+  const base = new THREE.Color(0x0a0a18);
+  if (b <= 1) return base.multiplyScalar(b);
+  return base.lerp(new THREE.Color(0x33487c), Math.min(1, b - 1));
+}
+
 let _gridHelper: THREE.GridHelper | null = null;
 let _starfield: THREE.Points | null = null;
+
+/** Retint the existing candle materials when Bar brightness moves. */
+function applyBarBrightness(): void {
+  if (!_barGroup) return;
+  const b = Math.max(0.2, _vis.barBrightness);
+  _barGroup.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    const m = mesh.material as THREE.MeshPhongMaterial | undefined;
+    const base = m?.userData?.barBase as { color: THREE.Color; emissive: THREE.Color; ei: number } | undefined;
+    if (!m || !base) return;
+    m.color.copy(base.color).multiplyScalar(b);
+    m.emissive.copy(base.emissive).multiplyScalar(b);
+    m.emissiveIntensity = base.ei * b;
+  });
+}
 
 export function getChart3DVisualSettings(): Chart3DVisualSettings { return { ..._vis }; }
 
 export function setChart3DVisualSettings(patch: Partial<Chart3DVisualSettings>): void {
   Object.assign(_vis, patch);
   if (_bloomPass) { _bloomPass.strength = _vis.bloomStrength; _bloomPass.threshold = _vis.bloomThreshold; }
-  if (_scene) _scene.fog = new THREE.FogExp2(0x05070f, _vis.fogDensity);
-  if (_gridHelper) _gridHelper.visible = _vis.showGrid;
-  if (_starfield) _starfield.visible = _vis.showStars;
+  if (_renderer) _renderer.toneMappingExposure = _vis.exposure;
+  const env = chart3DEnvColor();
+  if (_scene) _scene.fog = new THREE.FogExp2(env.getHex(), _vis.fogDensity);
+  if (_scene && _scene.background instanceof THREE.Color) _scene.background.copy(env);
+  if (_renderer) _renderer.setClearColor(env, _renderer.getClearAlpha());
+  applyBarBrightness();
+  if (_gridHelper) {
+    _gridHelper.visible = _vis.showGrid;
+    const m = _gridHelper.material as THREE.LineBasicMaterial;
+    const k = 0.45 + 0.55 * Math.min(1.8, _vis.bgBrightness);
+    m.color.setScalar(k);
+  }
+  if (_starfield) {
+    _starfield.visible = _vis.showStars;
+    const sm = _starfield.material as THREE.PointsMaterial;
+    sm.opacity = Math.max(0, Math.min(1, 0.7 * _vis.bgBrightness));
+  }
   mark3DSceneDirty();
 }
 
@@ -90,8 +138,27 @@ function resizeComposer(w: number, h: number): void {
 }
 
 function renderFrame(): void {
-  if (_composer) { _composer.render(); return; }
-  if (_renderer && _scene && _camera) _renderer.render(_scene, _camera);
+  if (_composer) {
+    _composer.render();
+    // Text sprites are on layer 1 and are drawn after the bloom pass: labels,
+    // axis ticks and signal captions stay sharp instead of blooming into
+    // bright smears over the chart.
+    if (_renderer && _scene && _camera) {
+      const bg = _scene.background;
+      _scene.background = null;
+      _camera.layers.set(1);
+      _renderer.autoClear = false;
+      _renderer.render(_scene, _camera);
+      _renderer.autoClear = true;
+      _camera.layers.set(0);
+      _scene.background = bg;
+    }
+    return;
+  }
+  if (_renderer && _scene && _camera) {
+    _camera.layers.enable(1);
+    _renderer.render(_scene, _camera);
+  }
 }
 
 export function setVizType(t: VizType) { _activeViz = t; }
@@ -220,11 +287,11 @@ function init(): void {
   _renderer.setSize(w, h, false);
   _renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
   _renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  _renderer.toneMappingExposure = 1.0;
+  _renderer.toneMappingExposure = _vis.exposure;
 
   _scene = new THREE.Scene();
   _scene.background = null;
-  _scene.fog = new THREE.FogExp2(0x05070f, _vis.fogDensity);
+  _scene.fog = new THREE.FogExp2(chart3DEnvColor().getHex(), _vis.fogDensity);
 
   // In-scene starfield (the 3D takeover used to hide the 2D one behind an
   // opaque clear color, losing the deep-space cue entirely).
@@ -260,6 +327,7 @@ function init(): void {
 
   const grid = new THREE.GridHelper(24, 20, 0x333366, 0x1a1a33);
   grid.visible = _vis.showGrid;
+  (grid.material as THREE.LineBasicMaterial).color.setScalar(0.45 + 0.55 * Math.min(1.8, _vis.bgBrightness));
   _gridHelper = grid;
   _scene.add(grid);
 
@@ -996,8 +1064,8 @@ function disableOrbitMain(): void {
 
 function initChart3D(): void {
   if (!_initialized) { init(); }
-  if (_scene) _scene.background = new THREE.Color(0x0a0a18);
-  if (_renderer) _renderer.setClearColor(0x0a0a18, 1);
+  if (_scene) _scene.background = chart3DEnvColor();
+  if (_renderer) _renderer.setClearColor(chart3DEnvColor(), 1);
   if (_barGroup) { _scene?.remove(_barGroup); disposeMesh(_barGroup); _barGroup = null; }
   clearViz();
   enableOrbitMain();
@@ -1077,8 +1145,18 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
     const hY = ((bar.high - minP) / pRange) * 6 - 3;
     const lY = ((bar.low - minP) / pRange) * 6 - 3;
     const isBull = bar.close >= bar.open;
-    const col = isBull ? 0x22cc88 : 0xff4477;
-    const em = isBull ? 0x004422 : 0x220011;
+    // Bar brightness lifts both the diffuse colour and its self-glow, so the
+    // candles can be read on a dark projector without cranking the whole UI.
+    const bb = Math.max(0.2, _vis.barBrightness);
+    const col = new THREE.Color(isBull ? 0x22cc88 : 0xff4477).multiplyScalar(bb);
+    const em = new THREE.Color(isBull ? 0x004422 : 0x220011).multiplyScalar(bb);
+    // Keep the unscaled colour on the material so the brightness slider can
+    // retint live bars without rebuilding the whole candle group.
+    const barBase = {
+      color: new THREE.Color(isBull ? 0x22cc88 : 0xff4477),
+      emissive: new THREE.Color(isBull ? 0x004422 : 0x220011),
+      ei: 0.25,
+    };
 
     const bodyTop = Math.max(oY, cY);
     const bodyBot = Math.min(oY, cY);
@@ -1088,20 +1166,18 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
     const bd = Math.max(0.012, pitch * (0.55 + 0.3 * vs));
 
     // Body
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(bw, bodyH, bd),
-      new THREE.MeshPhongMaterial({ color: col, emissive: em, emissiveIntensity: 0.25, transparent: true, opacity: 0.85, shininess: 40 })
-    );
+    const bodyMat = new THREE.MeshPhongMaterial({ color: col, emissive: em, emissiveIntensity: 0.25 * bb, transparent: true, opacity: 0.85, shininess: 40 });
+    bodyMat.userData.barBase = barBase;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(bw, bodyH, bd), bodyMat);
     body.position.set(xNorm, (bodyTop + bodyBot) / 2, 0);
     group.add(body);
 
     // Upper wick: from body top to high
     if (hY > bodyTop + 0.01) {
       const wickH = hY - bodyTop;
-      const wick = new THREE.Mesh(
-        new THREE.BoxGeometry(wickW, wickH, wickW),
-        new THREE.MeshPhongMaterial({ color: col, emissive: em, transparent: true, opacity: 0.6 })
-      );
+      const wickMat = new THREE.MeshPhongMaterial({ color: col, emissive: em, transparent: true, opacity: 0.6 });
+      wickMat.userData.barBase = barBase;
+      const wick = new THREE.Mesh(new THREE.BoxGeometry(wickW, wickH, wickW), wickMat);
       wick.position.set(xNorm, bodyTop + wickH / 2, 0);
       group.add(wick);
     }
@@ -1109,10 +1185,9 @@ function buildBarGroup(bars: BaseBar[], view: ViewState, width: number): THREE.G
     // Lower wick: from body bottom to low
     if (bodyBot - lY > 0.01) {
       const wickH = bodyBot - lY;
-      const wick = new THREE.Mesh(
-        new THREE.BoxGeometry(wickW, wickH, wickW),
-        new THREE.MeshPhongMaterial({ color: col, emissive: em, transparent: true, opacity: 0.6 })
-      );
+      const wickMat2 = new THREE.MeshPhongMaterial({ color: col, emissive: em, transparent: true, opacity: 0.6 });
+      wickMat2.userData.barBase = barBase;
+      const wick = new THREE.Mesh(new THREE.BoxGeometry(wickW, wickH, wickW), wickMat2);
       wick.position.set(xNorm, lY + wickH / 2, 0);
       group.add(wick);
     }
@@ -1541,8 +1616,14 @@ export function renderMain3DScene(
   // particles show the atmosphere, plain / graph use the solid scene.
   if (bgMode) {
     const atmospheric = bgMode === 'stars' || bgMode === 'particles';
-    _scene.background = atmospheric ? null : new THREE.Color(0x0a0a18);
-    _renderer.setClearColor(0x0a0a18, atmospheric ? 0 : 1);
+    _scene.background = atmospheric ? null : chart3DEnvColor();
+    _renderer.setClearColor(chart3DEnvColor(), atmospheric ? 0 : 1);
+    // The atmospheric modes keep the GL canvas transparent so the 2D time
+    // axis stays readable, which means the deep-space base has to be painted
+    // on the chart host — otherwise Background brightness would move the
+    // lower deck without moving the chart above it.
+    const host = _renderer.domElement.parentElement;
+    if (host) host.style.backgroundColor = atmospheric ? `#${chart3DEnvColor().getHexString()}` : '';
     if (_starfield) _starfield.visible = _vis.showStars && atmospheric;
     if (_gridHelper) _gridHelper.visible = _vis.showGrid;
   }
@@ -1705,6 +1786,10 @@ export function renderMain3DScene(
           const known = zPlaneByKey.get(key);
           return (known ?? key * Z_SPACING) - zCenter;
         };
+        // Global marker look (Settings → Display → Signal Markers): only the
+        // signal cones are remapped, so authored plotshape_3d geometry
+        // (cube/torus/...) still draws exactly as the script asked.
+        const sigLook = getSignalStyle();
         let labelBudget = 4;
         // Declutter: keep only the MOST RECENT visible occurrence of each
         // distinct label text (newest wins) and avoid close spatial overlap.
@@ -1736,8 +1821,15 @@ export function renderMain3DScene(
           const px = barX(vi, total, width, view.barSpacing, view.scrollX);
           const x = ((px - halfW) / halfW) * 5;
           const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
-          const z = shapeZ(sp.z_level, sp.price);
-          const s = Math.max(0.45, Math.min(1.0, sp.size ?? 0.8)) * _vis.markerScale;
+          // Buy/sell signals sit ON the candle plane. shapeZ() nudges
+          // price-aligned shapes to z=+0.28 so labels and level markers clear
+          // the bars, but for chunky signal geometry that reads as the markers
+          // being pushed out in front of the candles. A script that asks for a
+          // specific z_level still gets that depth plane.
+          const isSignalCone = sp.shape3d === 'coneup' || sp.shape3d === 'conedown';
+          const z = isSignalCone && sp.z_level === undefined ? 0 : shapeZ(sp.z_level, sp.price);
+          const s = Math.max(0.45, Math.min(1.0, sp.size ?? 0.8)) * _vis.markerScale * sigLook.size;
+
           // 3D image billboard (plotimage_3d) — resolved from the shared
           // sync-read image decode cache; skip the geometry switch entirely.
           if (sp.shape3d === 'image') {
@@ -1753,8 +1845,17 @@ export function renderMain3DScene(
             }
             continue;
           }
+          // Style override: the script says buy/sell (coneup/conedown), the
+          // viewer picks arrows, orbs or gems in Settings → Display.
+          const drawnShape = !isSignalCone
+            ? sp.shape3d
+            : sigLook.style === 'orbs'
+              ? 'sphere'
+              : sigLook.style === 'diamonds'
+                ? 'diamond'
+                : sp.shape3d;
           let geometry: THREE.BufferGeometry;
-          switch (sp.shape3d) {
+          switch (drawnShape) {
             case 'cube': geometry = new THREE.BoxGeometry(s * 0.22, s * 0.22, s * 0.22); break;
             case 'sphere': geometry = new THREE.SphereGeometry(s * 0.16, 8, 6); break;
             case 'pyramid': geometry = new THREE.ConeGeometry(s * 0.18, s * 0.28, 4); break;
@@ -1765,15 +1866,21 @@ export function renderMain3DScene(
           }
           const col = new THREE.Color(sp.color ?? '#b48cff');
           const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
-            color: col, emissive: col.clone().multiplyScalar(0.25 * _vis.emissiveScale),
+            color: col, emissive: col.clone().multiplyScalar(0.25 * _vis.emissiveScale * sigLook.brightness),
             specular: 0x222244, shininess: 60,
           }));
-          // Signal cones: offset from the bar (gap scales with size), tip
-          // pointing AT the price — coneup below, conedown flipped above.
+          // Signal markers: offset from the bar (gap scales with size) so they
+          // sit below a buy / above a sell instead of inside the candle. Cones
+          // keep their axis and point at the price; orbs and gems are centred
+          // on the same anchor with a smaller gap.
           let yOff = 0;
           let baseRotZ = 0;
-          if (sp.shape3d === 'coneup') { yOff = -(0.20) * s * _vis.markerGap; }
-          else if (sp.shape3d === 'conedown') { yOff = (0.20) * s * _vis.markerGap; baseRotZ = Math.PI; }
+          if (isSignalCone) {
+            const dir = sp.shape3d === 'conedown' ? 1 : -1;
+            const gapScale = drawnShape === sp.shape3d ? 0.20 : 0.14;
+            yOff = dir * gapScale * s * _vis.markerGap * sigLook.offset;
+            if (sp.shape3d === 'conedown') baseRotZ = Math.PI;
+          }
           const d2r = Math.PI / 180;
           mesh.rotation.set((sp.rx ?? 0) * d2r, (sp.ry ?? 0) * d2r, baseRotZ + (sp.rz ?? 0) * d2r);
           mesh.position.set(x, y + yOff, z);
@@ -1805,6 +1912,8 @@ export function dispose3DScene(): void {
   _orbitTheta = -0.16; _orbitPhi = 1.24; _orbitDist = 14;
   _orbitTarget.set(0, 0, 0);
   disableOrbitMain();
+  // Leave no tinted backdrop behind once the unified 3D chart is gone.
+  if (_renderer?.domElement.parentElement) _renderer.domElement.parentElement.style.backgroundColor = '';
   disposeViz();
 }
 
@@ -2002,8 +2111,13 @@ export function renderIsoOverlay3D(
           const px = barX(vi, total, width, view.barSpacing, view.scrollX);
           const x = ((px - halfW) / halfW) * 5;
           const y = ((sp.price ?? minP) - minP) / pRange * 6 - 3;
-          const z = shapeZ(sp.z_level);
-          const s = sp.size ?? 1;
+          // Signals stay on the candle plane (see the chart3D builder above);
+          // an explicit z_level still selects its own depth plane.
+          const isSignalCone = sp.shape3d === 'coneup' || sp.shape3d === 'conedown';
+          const z = isSignalCone && sp.z_level === undefined ? 0 : shapeZ(sp.z_level);
+          // Global signal look — see Settings → Display → Signal Markers.
+          const sigLook = getSignalStyle();
+          const s = (sp.size ?? 1) * sigLook.size;
           if (sp.shape3d === 'image') {
             const img = resolveImage(sp.imageRef ?? '');
             if (img) {
@@ -2017,8 +2131,15 @@ export function renderIsoOverlay3D(
             }
             continue;
           }
+          const drawnShape = !isSignalCone
+            ? sp.shape3d
+            : sigLook.style === 'orbs'
+              ? 'sphere'
+              : sigLook.style === 'diamonds'
+                ? 'diamond'
+                : sp.shape3d;
           let geometry: THREE.BufferGeometry;
-          switch (sp.shape3d) {
+          switch (drawnShape) {
             case 'cube': geometry = new THREE.BoxGeometry(s * 0.3, s * 0.3, s * 0.3); break;
             case 'sphere': geometry = new THREE.SphereGeometry(s * 0.2, 8, 6); break;
             case 'pyramid': geometry = new THREE.ConeGeometry(s * 0.25, s * 0.35, 4); break;
@@ -2029,13 +2150,17 @@ export function renderIsoOverlay3D(
           }
           const col = new THREE.Color(sp.color ?? '#b48cff');
           const mesh = new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
-            color: col, emissive: col.clone().multiplyScalar(0.2),
+            color: col, emissive: col.clone().multiplyScalar(0.2 * sigLook.brightness),
             specular: 0x222244, shininess: 60,
           }));
           let yOff = 0;
           let baseRotZ = 0;
-          if (sp.shape3d === 'coneup') { yOff = -(0.15 + 0.25) * s; }
-          else if (sp.shape3d === 'conedown') { yOff = (0.15 + 0.25) * s; baseRotZ = Math.PI; }
+          if (isSignalCone) {
+            const dir = sp.shape3d === 'conedown' ? 1 : -1;
+            const gapScale = drawnShape === sp.shape3d ? 0.40 : 0.28;
+            yOff = dir * gapScale * s * sigLook.offset;
+            if (sp.shape3d === 'conedown') baseRotZ = Math.PI;
+          }
           const d2r = Math.PI / 180;
           mesh.rotation.set((sp.rx ?? 0) * d2r, (sp.ry ?? 0) * d2r, baseRotZ + (sp.rz ?? 0) * d2r);
           mesh.position.set(x, y + yOff, z);

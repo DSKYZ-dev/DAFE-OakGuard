@@ -65,6 +65,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
 
   const panel = document.createElement('div');
   panel.id = 'age-inputs-panel';
+  panel.className = 'hud-window';
   Object.assign(panel.style, {
     position: 'fixed',
     left: `${SECOND_COLUMN_LEFT}px`,
@@ -95,6 +96,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   } catch {}
 
   const header = document.createElement('div');
+  header.className = 'hud-head';
   Object.assign(header.style, {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     padding: '8px 12px', borderBottom: '1px solid rgba(180, 140, 255, 0.1)',
@@ -266,10 +268,15 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   return {
     panel,
     update(inputs: InputDef[], name?: string, dashboard?: DashboardToggleState) {
+      // Signal marker size is a global display setting now (Settings → Display
+      // → Signal Markers), where one control covers every model. The script's
+      // own "Marker Size" parameter is dropped here instead of sitting in the
+      // panel doing nothing for the models that never multiply by it.
+      const shown = (inputs || []).filter(i => !/^marker\s*size$/i.test(i.title || ''));
       const structureKey = JSON.stringify([
         name ?? '',
         dashboard ? (dashboard.visible ? 1 : 0) : -1,
-        inputs.map(i => [i.name, i.title, i.type, i.min ?? null, i.max ?? null, i.step ?? null, i.defaultValue ?? null]),
+        shown.map(i => [i.name, i.title, i.type, i.min ?? null, i.max ?? null, i.step ?? null, i.defaultValue ?? null]),
       ]);
       if (structureKey === builtKey && scrollArea.childElementCount > 0) return;
       builtKey = structureKey;
@@ -309,8 +316,10 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
 
       // Guard against a null/undefined inputs list — `undefined.length` used to
       // throw here, leaving the panel completely blank (no rows, no message).
-      if (!inputs || inputs.length === 0) {
-        scrollArea.innerHTML += `<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">${name ? `“${escapeHtml(name)}” has` : 'This script has'} no configurable inputs. Add <code style="color:#b48cff">input(...)</code> calls to your script to expose parameters here.</div>`;
+      if (shown.length === 0) {
+        scrollArea.innerHTML += inputs && inputs.length > 0
+          ? `<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">This model's only parameter was Marker Size — it now lives in <strong style="color:#b48cff">Settings → Display → Signal Markers</strong> and applies to every model at once.</div>`
+          : `<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">${name ? `“${escapeHtml(name)}” has` : 'This script has'} no configurable inputs. Add <code style="color:#b48cff">input(...)</code> calls to your script to expose parameters here.</div>`;
         return;
       }
 
@@ -331,7 +340,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
 
       const overrides = getStoredOverrides(currentScope);
 
-      for (const input of inputs) {
+      for (const input of shown) {
         const row = document.createElement('div');
         row.className = 'age-input-row';
         row.dataset.inputName = input.name;
@@ -376,12 +385,12 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
             fontSize: '10px', textAlign: 'center', outline: 'none',
           });
 
-          const updateNum = () => { numInput.value = slider.value; triggerRunWithOverrides(inputs, scrollArea, currentScope, onRun); };
+          const updateNum = () => { numInput.value = slider.value; triggerRunWithOverrides(shown, scrollArea, currentScope, onRun); };
           const updateSlider = () => {
             const v = parseFloat(numInput.value);
             if (!isNaN(v) && v >= parseFloat(slider.min) && v <= parseFloat(slider.max)) {
               slider.value = String(v);
-              triggerRunWithOverrides(inputs, scrollArea, currentScope, onRun);
+              triggerRunWithOverrides(shown, scrollArea, currentScope, onRun);
             }
           };
           slider.oninput = updateNum;
@@ -393,7 +402,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
           const cb = document.createElement('input');
           cb.type = 'checkbox';
           cb.checked = currentVal === true;
-          cb.onchange = () => triggerRunWithOverrides(inputs, scrollArea, currentScope, onRun);
+          cb.onchange = () => triggerRunWithOverrides(shown, scrollArea, currentScope, onRun);
           row.appendChild(cb);
         } else {
           const textInput = document.createElement('input');
@@ -404,7 +413,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
             borderRadius: '3px', background: 'rgba(12,12,28,0.9)', color: 'rgba(255,255,255,0.6)',
             fontSize: '10px', outline: 'none',
           });
-          textInput.onchange = () => triggerRunWithOverrides(inputs, scrollArea, currentScope, onRun);
+          textInput.onchange = () => triggerRunWithOverrides(shown, scrollArea, currentScope, onRun);
           row.appendChild(textInput);
         }
         scrollArea.appendChild(row);

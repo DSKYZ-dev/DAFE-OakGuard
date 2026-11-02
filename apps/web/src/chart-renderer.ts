@@ -5,6 +5,7 @@ import type { VPComputed, VPColorTheme } from './volume-profile';
 import { resolveImage } from './image-cache';
 import { signalColors } from './accessibility';
 import { resolveTheme } from './theme-engine';
+import { getSignalStyle } from './signal-style';
 
 export type PerfMode = 'low' | 'medium' | 'high' | 'ultra';
 let _perf: PerfMode = 'high';
@@ -1696,15 +1697,37 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
     if (typeof p.price !== 'number' || isNaN(p.price)) continue;
     let y = priceToY(p.price, minP, pRange, height, view);
     const col = p.color || '#b48cff';
-    const style = p.style || 'circle';
+    const authored = p.style || 'circle';
 
-    const gap = Math.max(8, view.barSpacing * 1.5);
+    // Global marker look (Settings → Display → Signal Markers). The script
+    // supplies the direction, the viewer supplies size/brightness/shape; only
+    // signal shapes are remapped so authored markers keep their style.
+    const sig = getSignalStyle();
+    const isSignalShape = authored === 'triangleup' || authored === 'triangledown'
+      || authored === 'arrowup' || authored === 'arrowdown' || authored === 'circle';
+    const style = isSignalShape && sig.style === 'orbs'
+      ? 'signal-orb'
+      : isSignalShape && sig.style === 'diamonds'
+        ? 'signal-diamond'
+        : authored;
+
+    // sig.offset scales the standoff so markers can hug the bar or float clear
+    // of it (Settings → Display → Signal Markers).
+    const gap = Math.max(8, view.barSpacing * 1.5) * sig.offset;
     if (style === 'triangleup' || style === 'arrowup') y += gap;
     if (style === 'triangledown' || style === 'arrowdown') y -= gap;
+    if (style === 'signal-orb' || style === 'signal-diamond') {
+      y += authored === 'triangledown' || authored === 'arrowdown' ? -gap : gap;
+    }
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(sig.size, sig.size);
+    ctx.translate(-x, -y);
 
     ctx.fillStyle = col;
-    ctx.shadowBlur = 16;
-    ctx.shadowColor = hexToRgba(col, 0.6);
+    ctx.shadowBlur = 16 * sig.brightness;
+    ctx.shadowColor = hexToRgba(col, 0.6 * sig.brightness);
 
     switch (style) {
       case 'triangleup': {
@@ -1759,6 +1782,24 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
         ctx.moveTo(x + 5, y - 5); ctx.lineTo(x - 5, y + 5); ctx.stroke();
         break;
       }
+      case 'signal-orb': {
+        ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+        ctx.beginPath(); ctx.arc(x, y, 6.6, 0, Math.PI * 2); ctx.stroke();
+        break;
+      }
+      case 'signal-diamond': {
+        ctx.beginPath();
+        ctx.moveTo(x, y - 7.5); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 7.5); ctx.lineTo(x - 6, y);
+        ctx.closePath(); ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 4.5); ctx.lineTo(x + 3.6, y); ctx.lineTo(x, y + 4.5); ctx.lineTo(x - 3.6, y);
+        ctx.closePath(); ctx.stroke();
+        break;
+      }
       case 'square': {
         ctx.fillRect(x - 5, y - 5, 10, 10);
         ctx.lineWidth = 1.2; ctx.strokeStyle = 'rgba(0,0,0,0.5)';
@@ -1802,6 +1843,7 @@ export function drawOakScriptPlots(ctx: CanvasRenderingContext2D, plots: OakPlot
         ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
       }
     }
+    ctx.restore();
     // Draw text label alongside any shape that has a name. A label that would
     // stack on one already drawn on the same row is skipped; the marker still draws.
     if (p.text && p.text.length > 0 && style !== 'label') {

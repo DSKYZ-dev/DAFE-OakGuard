@@ -225,7 +225,10 @@ export function createRegimeRibbon(): RegimeRibbonWidget {
     fontSize: '10px', fontFamily: 'monospace', color: 'rgba(255,255,255,0.75)',
     background: 'linear-gradient(180deg, rgba(12,12,28,0.85), rgba(12,12,28,0.5) 75%, transparent)',
     borderBottom: '1px solid rgba(180,140,255,0.08)',
-    zIndex: '5', pointerEvents: 'none',
+    // Must stack ABOVE the unified 3D scene canvas (three-viz-canvas, z-index
+    // 10) that fills #chart-area. At the old z-index 5 the 3D takeover covered
+    // the header bar completely, making it look like 3D mode removed it.
+    zIndex: '12', pointerEvents: 'none',
   });
 
   // The regime CLASSIFICATION display — dot/label/confidence/ADX/ATR + the

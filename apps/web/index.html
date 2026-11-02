@@ -1168,6 +1168,35 @@
             <option value="plain">Plain</option>
           </select>
         </label>
+        <div class="settings-section-title" style="margin-top:10px;">Signal Markers</div>
+        <label>Marker size <span id="set-signal-size-val" style="color:#9be8ff;">1.00×</span>
+          <input type="range" id="set-signal-size" min="0.4" max="2.5" step="0.05" value="1" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <label>Marker brightness <span id="set-signal-bright-val" style="color:#9be8ff;">80%</span>
+          <input type="range" id="set-signal-bright" min="20" max="180" step="5" value="80" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <label>Marker offset <span id="set-signal-offset-val" style="color:#9be8ff;">1.00×</span>
+          <input type="range" id="set-signal-offset" min="0" max="3" step="0.05" value="1" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <label>Marker style
+          <select id="set-signal-style">
+            <option value="arrows">Arrows — directional cones</option>
+            <option value="orbs">Orbs — soft glowing spheres</option>
+            <option value="diamonds">Diamonds — faceted gems</option>
+          </select>
+        </label>
+        <div style="color:rgba(255,255,255,0.3);font-size:9px;line-height:1.4;">Buy/sell markers on the main chart and their 3D cones. Turn brightness down to calm an over-bright signal; offset sets how far markers sit from the bar (0 = on the bar). Size, offset and style apply to every model at once.</div>
+        <div class="settings-section-title" style="margin-top:10px;">3D Scene</div>
+        <label>Scene exposure <span id="set-3d-exposure-val" style="color:#9be8ff;">1.45</span>
+          <input type="range" id="set-3d-exposure" min="0.4" max="2.4" step="0.05" value="1.45" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <label>Bar brightness <span id="set-3d-bars-val" style="color:#9be8ff;">1.35</span>
+          <input type="range" id="set-3d-bars" min="0.3" max="2.4" step="0.05" value="1.35" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <label>Background brightness <span id="set-3d-bg-val" style="color:#9be8ff;">1.00</span>
+          <input type="range" id="set-3d-bg" min="0" max="2.2" step="0.05" value="1" style="flex:1;accent-color:#6fd6ff;cursor:pointer;">
+        </label>
+        <div style="color:rgba(255,255,255,0.3);font-size:9px;line-height:1.4;">Applies to the 3D main chart and the 3D lower deck together. Exposure lifts the whole scene; bar brightness targets the candles; background brightness changes the deep-space base.</div>
       <div class="settings-section">
         <div class="settings-section-title">Hotkeys (Numpad)</div>
         <div class="hotkey-grid">
@@ -1407,6 +1436,7 @@
     <select id="indicator-select" title="Load Signal Analysis Model" style="width:110px;padding:2px 4px;font-size:10px;background:rgba(12,12,28,0.9);color:rgba(255,255,255,0.7);border:1px solid rgba(180,140,255,0.15);border-radius:4px;cursor:pointer;">
       <option value="" disabled selected>📊 Signal Models</option>
     </select>
+    <button id="os-open-editor" title="OakScript Editor — write, backtest and apply signal models">⌘ Editor</button>
     <button id="vp-toggle">VP <span class="key-hint">Np1</span></button>
     <button id="regime-toggle" title="Toggle the Regime Ribbon (advisory market-state strip at the top of the chart)">◉ Regime</button>
     <div id="widgets-combo" style="position:relative;display:inline-block">
@@ -1415,6 +1445,7 @@
     </div>
     <button id="live-tick-toggle" title="Live tick simulation">◆ Live</button>
     <button id="chart-reset" title="Reset chart view (zoom, pan, scale)">⟳ Reset</button>
+    <button id="lower-frame-btn" title="Frame All — recentre the 3D lower deck on the whole instrument">⛶ Frame</button>
     <button id="settings-toggle" title="Settings">⚙</button>
     <button id="toolbar-collapse" title="Collapse toolbar">▲</button>
     <select id="perf-select" title="Performance mode">
