@@ -137,7 +137,7 @@ function buildWindow(): void {
   minBtn.title = 'Collapse window';
   minBtn.onclick = () => {
     minimized = !minimized;
-    if (bodyEl) bodyEl.style.display = minimized ? 'none' : 'flex';
+    if (bodyEl) bodyEl.style.display = minimized ? 'none' : 'flex'; if (win) { if (minimized) win.dataset.expandedHeight = `${win.offsetHeight}px`; win.style.height = minimized ? 'auto' : (win.dataset.expandedHeight || ''); minBtn.textContent = minimized ? '+' : '−'; minBtn.title = minimized ? 'Expand window' : 'Collapse window'; }
   };
   const closeBtn = node('button', 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:12px;padding:1px 6px;border-radius:4px;', '✕');
   closeBtn.title = 'Close';
