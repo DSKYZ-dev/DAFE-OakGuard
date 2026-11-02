@@ -1,0 +1,37 @@
+{
+  "recordedAt": "2026-11-02T01:30:46.297Z",
+  "model": "muse-wonder-1.0",
+  "note": "Live OakGuard run: muse-wonder-1.0 proposed rules for 3 escapes, graded by the referee at record time. Replays re-grade this text with the current referee.",
+  "exchanges": [
+    {
+      "key": "esc-dead-length#1",
+      "model": "muse-wonder-1.0",
+      "content": "{\"description\": \"Flags any length builtin called with a numeric literal length that is not a positive integer, such as 0, a negative number, or a fractional number, which produces no finite output.\", \"family\": \"positive-int-length\", \"fixHint\": \"Replace the flagged length argument with a positive integer >= 1, e.g. change sma(close, 0) to sma(close, 14), or use a variable guaranteed to hold a positive integer; never use 0, negative, or fractional lengths.\", \"issueCode\": \"NON_POSITIVE_INTEGER_LENGTH\", \"name\": \"Length arguments must be positive integers\", \"params\": {\"allowObjectMethods\": false, \"followVariables\": false, \"functions\": [], \"operators\": [], \"windowFunctions\": []}, \"rationale\": \"The seed uses sma(close, 0); a zero, negative, or fractional literal length is invalid for every length builtin and yields no finite values, while legitimate scripts use positive integer literals or variables.\"}",
+      "inputTokens": 733,
+      "outputTokens": 1115,
+      "latencyMs": 8989,
+      "costUsd": 0.025232,
+      "promptHash": "a2e2e0e1"
+    },
+    {
+      "key": "esc-silent-call#1",
+      "model": "muse-wonder-1.0",
+      "content": "{\n  \"description\": \"Flags unknown dotted builtin calls such as array.avgg that silently return 0\",\n  \"family\": \"unknown-dotted-call\",\n  \"fixHint\": \"Replace the unknown dotted call with a registered builtin with the correct spelling, e.g. change array.avgg(vals) to array.avg(vals). Check the namespace and method name against the builtin registry (array.*, math.*, line.*, table.*, color.*, etc.) and do not use invented or misspelled method names.\",\n  \"issueCode\": \"UNKNOWN_DOTTED_CALL\",\n  \"name\": \"Unknown dotted builtin call\",\n  \"params\": {\n    \"allowObjectMethods\": true,\n    \"followVariables\": false,\n    \"functions\": [],\n    \"operators\": [],\n    \"windowFunctions\": []\n  }\n  ,\n  \"rationale\": \"array.avgg is not a registered builtin; the correct name is array.avg. Allowing known runtime object methods (push, get, set, sum, avg, size, etc.) avoids flagging legitimate OakRing/Matrix/table handle methods while still flagging misspelled names like avgg on any object or namespace.\"\n}",
+      "inputTokens": 782,
+      "outputTokens": 1592,
+      "latencyMs": 13190,
+      "costUsd": 0.034968,
+      "promptHash": "572fe93f"
+    },
+    {
+      "key": "esc-impossible-breakout#1",
+      "model": "muse-wonder-1.0",
+      "content": "{\"description\": \"Flags a comparison between a price series (open, high, low, close) and a highest()/lowest() window over a price series evaluated on the same bar, with no [k] history offset on the window.\", \"family\": \"self-inclusive-window\", \"fixHint\": \"Offset the channel window by one bar so it excludes the current bar: use highest(high, len)[1] and lowest(low, len)[1] (e.g. upper = highest(high, len)[1], lower = lowest(low, len)[1]) before comparing or crossing close against them.\", \"issueCode\": \"SELF_INCLUSIVE_WINDOW_BREAKOUT\", \"name\": \"Self-inclusive breakout window\", \"params\": {\"allowObjectMethods\": false, \"followVariables\": true, \"functions\": [], \"operators\": [\">\", \"<\", \"crossover\", \"crossunder\"], \"windowFunctions\": []}, \"rationale\": \"close can never exceed highest(high) or fall below lowest(low) when the current bar is included in the window, so breakouts never fire; offsetting the window by [1] compares against prior bars only.\"}",
+      "inputTokens": 858,
+      "outputTokens": 2582,
+      "latencyMs": 22850,
+      "costUsd": 0.055072,
+      "promptHash": "d88d5b0c"
+    }
+  ]
+}

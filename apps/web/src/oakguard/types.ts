@@ -8,7 +8,43 @@
  * preserved in the Emeritus archive with their counterexamples.
  */
 
-export type RuleFamily = 'positive-int-length' | 'unknown-dotted-call';
+/** The rule language. Each family is a fixed, parameterised checker; a
+ *  candidate only chooses a family and fills in its parameters. */
+export type RuleFamily = 'positive-int-length' | 'unknown-dotted-call' | 'self-inclusive-window';
+
+/** Bug classes the referee owns. Each has a runtime oracle that proves the
+ *  bug and a deterministic generator of broken variants. A candidate is
+ *  always scored against the class of the escape it was written for, so it
+ *  cannot choose its own test. */
+export type DefectClass = 'dead-length' | 'silent-call' | 'impossible-breakout';
+
+export type WindowOperator = '>' | '<' | '>=' | '<=' | '==' | 'crossover' | 'crossunder';
+
+export interface RuleParams {
+  /** positive-int-length: builtins to check (default: every length builtin). */
+  functions?: string[];
+  /** self-inclusive-window: which window builtins to track. */
+  windowFunctions?: Array<'highest' | 'lowest'>;
+  /** self-inclusive-window: comparison forms to flag. */
+  operators?: WindowOperator[];
+  /** self-inclusive-window: follow `x = highest(...)` into later uses of x. */
+  followVariables?: boolean;
+}
+
+/** Provenance of a model-written candidate: what was asked, what came back, what it cost. */
+export interface ProposalMeta {
+  model: string;
+  round: number;
+  promptHash: string;
+  latencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  /** 'live' = called during this run; 'replay' = a recorded response re-graded now. */
+  source: 'live' | 'replay';
+  recordedAt?: string;
+  raw: string;
+}
 
 export interface RuleSpec {
   id: string;
@@ -27,6 +63,12 @@ export interface RuleSpec {
   proposedBy: string;
   /** For unknown-dotted-call: allow known runtime-object method names (OakRing/Matrix/handles). */
   allowObjectMethods?: boolean;
+  params?: RuleParams;
+  /** Fix text shown with every issue this rule raises. */
+  fixHint?: string;
+  /** The escape class this candidate is scored against (set by the pipeline, never by the model). */
+  defectClass?: DefectClass;
+  proposal?: ProposalMeta;
 }
 
 export interface RuleIssue {
@@ -40,7 +82,7 @@ export interface RuleIssue {
 
 export interface MutantCase {
   id: string;
-  family: RuleFamily;
+  defectClass: DefectClass;
   baseIndicator: string;
   /** Mutated OakScript source. */
   source: string;
@@ -67,6 +109,10 @@ export interface EvalReport {
   /** Names of known-good scripts the candidate incorrectly flagged (first counterexample kept). */
   falsePositiveNames: string[];
   counterexample?: string;
+  /** The flagged line of the first false positive (visible to the proposer). */
+  counterexampleLine?: string;
+  /** Visible variants the candidate missed, as defect descriptions. Held-out misses are only counted. */
+  missedVisible?: string[];
   baselineExecErrors: number;
   candidateExecErrors: number;
   durationMs: number;
@@ -100,6 +146,8 @@ export interface PlaybookState {
   activeRuleIds: string[];
   promotions: PromotionRecord[];
   emeritus: EmeritusRecord[];
+  /** Full specs of promoted rules that are not in the hand-written catalogue (model-proposed). */
+  learnedRules?: RuleSpec[];
   /** Assistant-rule status by id: certified rules whose dependencies
    * changed drop to 'needs_recert' until re-graded. */
   assistantStatus?: Record<string, 'active' | 'needs_recert'>;

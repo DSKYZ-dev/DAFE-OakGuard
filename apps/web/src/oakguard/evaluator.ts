@@ -8,8 +8,8 @@
 import { validate } from '../oakscript/validator';
 import { parse } from '../oakscript/parser';
 import { executeScript } from '../oakscript/interpreter';
-import { evaluateRuleOnSource } from './rules';
-import { generateMutants, knownGoodCorpus, syntheticBars } from './mutants';
+import { defectClassOf, evaluateRuleOnSource, validateRuleSpec } from './rules';
+import { generateMutantsForClass, knownGoodCorpus, syntheticBars } from './mutants';
 import type { EvalReport, RuleSpec } from './types';
 
 export const SEED_SCRIPT = [
@@ -110,19 +110,36 @@ function countExecErrors(runRule: RuleSpec | null): number {
 export function evaluateCandidate(rule: RuleSpec, opts: { execProbe?: boolean } = {}): EvalReport {
   const started = performance.now();
   const corpus = knownGoodCorpus();
-  const mutants = generateMutants(rule.family, corpus);
   const { manifestHash } = corpusManifest();
+
+  // A malformed spec never reaches the gates.
+  const specErrors = validateRuleSpec(rule);
+  if (specErrors.length > 0) {
+    return {
+      ruleId: rule.id, mutantTotal: 0, mutantCaught: 0, heldOutTotal: 0, heldOutCaught: 0,
+      goodTotal: corpus.length, falsePositiveCount: 0, falsePositiveNames: [],
+      baselineExecErrors: 0, candidateExecErrors: 0,
+      durationMs: Math.round(performance.now() - started), manifestHash,
+      verdict: 'rejected', reasons: specErrors.map(e => `Malformed spec: ${e}`),
+    };
+  }
+
+  // Variants come from the escape's class, never from the candidate's own choice of family.
+  const mutants = generateMutantsForClass(defectClassOf(rule), corpus);
 
   let caught = 0, heldCaught = 0;
   const held = mutants.filter(m => m.heldOut);
+  const missedVisible: string[] = [];
   for (const m of mutants) {
     const issues = evaluateRuleOnSource(rule, m.source);
     const hit = issues.some(i => i.severity === 'error' && i.code === rule.issueCode);
     if (hit) { caught++; if (m.heldOut) heldCaught++; }
+    else if (!m.heldOut && missedVisible.length < 6 && !missedVisible.includes(m.defect)) missedVisible.push(m.defect);
   }
 
   const falsePositiveNames: string[] = [];
   let counterexample: string | undefined;
+  let counterexampleLine: string | undefined;
   for (const entry of corpus) {
     const issues = evaluateRuleOnSource(rule, entry.source);
     const errs = issues.filter(i => i.severity === 'error');
@@ -130,6 +147,7 @@ export function evaluateCandidate(rule: RuleSpec, opts: { execProbe?: boolean } 
       falsePositiveNames.push(entry.name);
       if (!counterexample) {
         counterexample = `${entry.name}: [${errs[0].code}] ${errs[0].message}`;
+        counterexampleLine = (entry.source.split('\n')[errs[0].line - 1] || '').trim().slice(0, 160);
       }
     }
   }
@@ -158,6 +176,8 @@ export function evaluateCandidate(rule: RuleSpec, opts: { execProbe?: boolean } 
     falsePositiveCount: falsePositiveNames.length,
     falsePositiveNames,
     counterexample,
+    counterexampleLine,
+    missedVisible,
     baselineExecErrors,
     candidateExecErrors,
     durationMs: Math.round(performance.now() - started),

@@ -2,13 +2,16 @@
  * OakGuard pipeline and report — headless checks.
  * Run: npm run verify:oakguard (chained after the evaluator checks)
  *
- * Drives the same runOakGuard() the Crucible window uses, then checks the
- * outcomes, that a second run changes nothing, and that the report is
- * complete, honest and escaped.
+ * Drives the same runOakGuard() the Crucible window uses, here with the
+ * hand-written catalogue as the proposer (no model, fully deterministic),
+ * then checks the outcomes, that a second run changes nothing, and that the
+ * report is complete, honest and escaped. The recorded Muse Wonder run is
+ * checked by npm run verify:proposer.
  */
 import { runOakGuard, STEP_TITLES } from '../../apps/web/src/oakguard/pipeline';
 import { buildOakGuardReport, escapeHtml } from '../../apps/web/src/oakguard/report';
 import { ASSISTANT_RULES } from '../../apps/web/src/oakguard/assistant';
+import { SEED_ESCAPES } from '../../apps/web/src/oakguard/escapes';
 import { getIndicators } from '../../apps/web/src/oakscript/indicators';
 import type { PlaybookState } from '../../apps/web/src/oakguard/types';
 
@@ -18,35 +21,43 @@ function check(label: string, cond: boolean, detail?: unknown): void {
   if (!cond) failures++;
 }
 
-const fresh: PlaybookState = { version: 1, activeRuleIds: [], promotions: [], emeritus: [] };
+const fresh: PlaybookState = { version: 1, activeRuleIds: [], promotions: [], emeritus: [], learnedRules: [] };
 const scripts = getIndicators().map(i => ({ name: i.name, source: i.source }));
-console.log('OakGuard pipeline and report\n');
+console.log('OakGuard pipeline and report (catalogue proposer)\n');
 
 // 1. One full run from a clean playbook.
-const first = await runOakGuard({ state: fresh, scripts });
+const first = await runOakGuard({ state: fresh, scripts, escapes: SEED_ESCAPES });
 check('all eight steps finish', first.steps.length === STEP_TITLES.length && first.steps.every(s => s.status === 'done'), first.steps.map(s => s.status));
-const byId = new Map(first.candidates.map(c => [c.rule.id, c]));
-check('length rule is promoted', byId.get('cand-length-v1')?.outcome === 'promoted');
-check('naive dotted rule is archived', byId.get('cand-dotted-naive-v1')?.outcome === 'rejected');
-check('refined dotted rule is promoted', byId.get('cand-dotted-refined-v1')?.outcome === 'promoted');
+check('every escape passes the validator', first.escapes.every(e => e.validatorValid));
+check('every escape is broken at runtime', first.escapes.every(e => e.evidence !== 'no runtime defect found'), first.escapes.map(e => e.evidence));
+const byId = new Map(first.candidates.map(c => [c.rule.issueCode + '#' + c.round, c]));
+check('length rule is promoted in round 1', byId.get('INVALID_LENGTH_ARG#1')?.outcome === 'promoted');
+check('naive dotted rule is rejected in round 1', byId.get('UNKNOWN_DOTTED_FUNCTION#1')?.outcome === 'rejected');
+check('the rejection carries a counterexample', !!byId.get('UNKNOWN_DOTTED_FUNCTION#1')?.report.counterexampleLine);
+check('refined dotted rule is promoted in round 2', byId.get('UNKNOWN_DOTTED_FUNCTION#2')?.outcome === 'promoted');
 check('playbook advanced to v3 (two promotions)', first.playbook.version === 3, first.playbook.version);
-check('the new playbook catches the seed', first.reRun.caughtBy.includes('INVALID_LENGTH_ARG'), first.reRun.caughtBy);
-check('the auto-fixed seed is finite on most bars (warm-up NaNs included)', first.reRun.fixedFiniteRatio >= 0.8, first.reRun.fixedFiniteRatio);
-check('CCI dependents return to probation', first.assistant.invalidated.length === 2, first.assistant.invalidated);
+const caught = first.escapes.filter(e => e.caughtAfter.length > 0).map(e => e.escape.id);
+check('the length and dotted escapes are caught after the run', caught.includes('esc-dead-length') && caught.includes('esc-silent-call'), caught);
+check('the breakout escape stays uncaught without a model (no catalogue rule)', !caught.includes('esc-impossible-breakout'));
+check('no model was paid for', first.proposer.costUsd === 0 && first.proposer.mode === 'catalogue');
+check('dependents return to probation when the playbook changes', first.assistant.invalidated.length === 2, first.assistant.invalidated);
 check('every assistant rule is re-certified', first.assistant.certified === ASSISTANT_RULES.length, first.assistant.certified);
+check('the library scan raises no flags', first.library.flagged.length === 0, first.library.flagged.slice(0, 2));
 
 // 2. A second run from the resulting playbook must change nothing.
-const second = await runOakGuard({ state: first.playbook, scripts });
+const second = await runOakGuard({ state: first.playbook, scripts, escapes: SEED_ESCAPES });
 check('second run does not change the playbook version', second.playbook.version === first.playbook.version, second.playbook.version);
+check('second run skips escapes the playbook already catches', second.escapes.filter(e => e.alreadyCaughtBy.length > 0).length === 2);
 check('second run promotes nothing new', second.candidates.every(c => c.outcome !== 'promoted'));
-check('second run archives no duplicate', second.candidates.every(c => c.outcome !== 'rejected') && second.playbook.emeritus.length === first.playbook.emeritus.length);
-check('promoted rules stay active', second.candidates.filter(c => c.outcome === 'active').length === 2);
+check('second run archives no duplicate', second.playbook.emeritus.length === first.playbook.emeritus.length);
+check('no dependents are invalidated when nothing was promoted', second.assistant.invalidated.length === 0);
 
 // 3. The report is complete, labelled and honest.
 const html = buildOakGuardReport(first, new Date('2026-10-30T12:00:00Z'));
 check('report is a complete HTML document', html.startsWith('<!doctype html>') && html.trimEnd().endsWith('</html>'));
 check('report carries the corpus fingerprint', html.includes(first.manifest.manifestHash));
 check('report names every candidate', first.candidates.every(c => html.includes(escapeHtml(c.rule.name))));
+check('report shows every escape', first.escapes.every(e => html.includes(escapeHtml(e.escape.title))));
 check('report keeps its method and limits section', html.includes('Method and limits'));
 check('report states the not-financial-advice disclaimer', html.includes('not financial advice'));
 

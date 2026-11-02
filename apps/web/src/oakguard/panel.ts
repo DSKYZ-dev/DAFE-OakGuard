@@ -1,19 +1,24 @@
 /**
  * OakGuard window — the Crucible as a floating window, like the rest of the app.
  *
- * One action runs the whole loop (pipeline.ts). The 3D stage, the step list,
- * the results and the report all read the same run.
+ * One action runs the whole loop (pipeline.ts): live against Muse Wonder when
+ * the backend has a Meta key, or as a replay that re-grades a recorded Muse
+ * Wonder run with today's referee (judge mode, no backend). The 3D stage, the
+ * proposal feed, the step list and the report all read the same run.
  */
 import { OakGuardObservatory } from './observatory';
 import {
-  runOakGuard, STEP_GROUPS, STEP_HINTS, STEP_TITLES,
-  type CandidateStatus, type OakGuardRun, type ScriptRef, type StepRecord, type StepStatus,
+  runOakGuard, STEP_GROUPS, STEP_HINTS, STEP_TITLES, defaultEscapes,
+  type CandidateStatus, type OakGuardRun, type ProposerMode, type ScriptRef, type StepRecord, type StepStatus,
 } from './pipeline';
+import { backendTransport, replayTransport, DEFAULT_PROPOSER_MODEL, type RecordedRun, type RoundRecord } from './proposer';
 import { buildOakGuardReport } from './report';
 import { ASSISTANT_RULES } from './assistant';
-import { CANDIDATE_CATALOGUE } from './rules';
 import { activeRules, loadPlaybook, resetPlaybook, validateWithPlaybook } from './store';
 import { corpusManifest } from './evaluator';
+import { measureCurve } from './curve';
+import { DEFECT_CLASS_LABELS, type EscapeCase } from './escapes';
+import recorded from './recorded-run.json';
 import { validate } from '../oakscript/validator';
 import { getIndicators, getUserIndicators } from '../oakscript/indicators';
 import { WINDOW_TOP_MIN, clearOfHeaderTop } from '../header-band';
@@ -21,9 +26,18 @@ import type { PlaybookState } from './types';
 
 const ACCENT = 'var(--dafe-glow, #2dffb3)';
 const SUBTLE_BORDER = 'rgba(180,140,255,0.12)';
+const RECORDED = recorded as unknown as RecordedRun;
+const BACKEND = (): string => (window as any).__DAFE_BACKEND_URL || 'http://localhost:8788';
 
 interface CheckIssue { line: number; code: string; message: string; }
 interface CheckResult { empty: boolean; issues: CheckIssue[]; }
+
+/** One row of the live proposal feed. */
+interface FeedItem {
+  escape: EscapeCase;
+  round: RoundRecord;
+  graded: boolean;
+}
 
 let win: HTMLDivElement | null = null;
 let bodyEl: HTMLDivElement | null = null;
@@ -34,10 +48,14 @@ let manifest: ReturnType<typeof corpusManifest> | null = null;
 let state: PlaybookState = loadPlaybook();
 let lastRun: OakGuardRun | null = null;
 let running = false;
+let runningMode: ProposerMode | null = null;
 let minimized = false;
 let detailsOpen = false;
 let placed = false;
 let checkResult: CheckResult | null = null;
+let feed: FeedItem[] = [];
+/** null = not probed yet; true when the backend answers and a Meta key is saved. */
+let liveAvailable: boolean | null = null;
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, css: string, text?: string): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
@@ -63,8 +81,8 @@ function chip(text: string): HTMLDivElement {
   return node('div', 'padding:3px 9px;border-radius:999px;font-size:10px;letter-spacing:0.04em;background:rgba(8,8,20,0.78);border:1px solid rgba(255,255,255,0.12);color:rgba(255,255,255,0.75);white-space:nowrap;', text);
 }
 
-function pill(text: string, tone: 'ok' | 'warn' | 'muted'): HTMLSpanElement {
-  const color = tone === 'ok' ? '#22cc88' : tone === 'warn' ? '#FFB800' : 'rgba(255,255,255,0.45)';
+function pill(text: string, tone: 'ok' | 'warn' | 'muted' | 'live'): HTMLSpanElement {
+  const color = tone === 'ok' ? '#22cc88' : tone === 'warn' ? '#FFB800' : tone === 'live' ? '#7fd6ff' : 'rgba(255,255,255,0.45)';
   return node('span', `display:inline-block;padding:1px 8px;border-radius:999px;font-size:10px;font-weight:600;color:${color};border:1px solid ${color}66;white-space:nowrap;`, text);
 }
 
@@ -78,8 +96,10 @@ function ensureStyles(): void {
   style.id = 'oakguard-styles';
   style.textContent = `
     @keyframes og-spin { to { transform: rotate(360deg); } }
+    @keyframes og-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     #oakguard-window button:disabled { opacity: .4; cursor: default; }
     #oakguard-window button:not(:disabled):hover { filter: brightness(1.15); }
+    #oakguard-window .og-feed-item { animation: og-in .35s ease-out; }
   `;
   document.head.appendChild(style);
 }
@@ -87,11 +107,11 @@ function ensureStyles(): void {
 function placeWindow(): void {
   if (!win || placed) return;
   placed = true;
-  const width = Math.min(1040, window.innerWidth - 32);
-  const height = Math.min(640, window.innerHeight - WINDOW_TOP_MIN - 40);
+  const width = Math.min(1100, window.innerWidth - 32);
+  const height = Math.min(680, window.innerHeight - WINDOW_TOP_MIN - 40);
   Object.assign(win.style, {
     width: `${width}px`,
-    height: `${Math.max(440, height)}px`,
+    height: `${Math.max(460, height)}px`,
     left: `${Math.max(12, Math.round((window.innerWidth - width) / 2))}px`,
     top: `${clearOfHeaderTop(WINDOW_TOP_MIN + 12)}px`,
   });
@@ -105,12 +125,12 @@ function buildWindow(): void {
   win.id = 'oakguard-window';
   win.className = 'dafe-glow-window';
 
-  // Header: the same chrome as the Model Inputs window.
   const header = node('div', 'display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(180,140,255,0.1);cursor:move;user-select:none;flex-shrink:0;');
   const titleWrap = node('div', 'display:flex;align-items:baseline;gap:10px;min-width:0;');
   titleWrap.append(
     node('span', `color:${ACCENT};font-size:12px;font-weight:600;white-space:nowrap;`, '⬢ OakGuard'),
-    node('span', 'color:rgba(255,255,255,0.4);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', 'Verification for AI-written indicators'),
+    node('span', 'color:rgba(255,255,255,0.4);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;', 'Muse Wonder writes the rules · a referee it cannot see decides'),
+    node('span', 'font-size:9px;font-weight:700;letter-spacing:0.08em;color:#0b0c1d;background:#ffd166;border-radius:4px;padding:1px 5px;', 'NEW'),
   );
   const controls = node('div', 'display:flex;gap:4px;flex-shrink:0;');
   const minBtn = node('button', 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:14px;padding:1px 7px;border-radius:4px;', '−');
@@ -143,19 +163,30 @@ function buildWindow(): void {
   document.addEventListener('mouseup', () => { dragging = false; });
 
   bodyEl = node('div', 'display:flex;flex:1;min-height:0;');
-  const viewport = node('div', 'position:relative;flex:1.25;min-width:0;background:#04040c;border-right:1px solid rgba(180,140,255,0.1);');
+  const viewport = node('div', 'position:relative;flex:1.2;min-width:0;background:#04040c;border-right:1px solid rgba(180,140,255,0.1);');
   const canvas = node('canvas', 'position:absolute;inset:0;width:100%;height:100%;display:block;');
   chips = node('div', 'position:absolute;top:10px;left:10px;right:10px;display:flex;gap:6px;flex-wrap:wrap;pointer-events:none;');
   const caption = node('div', 'position:absolute;left:12px;bottom:10px;font-size:10px;letter-spacing:0.08em;color:rgba(255,255,255,0.35);pointer-events:none;', 'DRAG TO ORBIT · SCROLL TO ZOOM');
   viewport.append(canvas, chips, caption);
 
-  side = node('div', 'width:392px;flex-shrink:0;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;');
+  side = node('div', 'width:430px;flex-shrink:0;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;');
   bodyEl.append(viewport, side);
   win.append(header, bodyEl);
   document.body.appendChild(win);
 
   observatory = new OakGuardObservatory(canvas);
   placeWindow();
+  render();
+}
+
+async function probeLive(): Promise<void> {
+  try {
+    const r = await fetch(`${BACKEND()}/api/llm/providers`, { signal: AbortSignal.timeout(2500) });
+    const d = await r.json();
+    liveAvailable = !!d?.providers?.some((p: any) => p.id === 'meta' && p.configured);
+  } catch {
+    liveAvailable = false;
+  }
   render();
 }
 
@@ -167,6 +198,7 @@ export function openOakGuard(): void {
   observatory?.resize();
   syncScene();
   render();
+  if (liveAvailable === null) void probeLive();
 }
 
 export function closeOakGuard(): void {
@@ -199,10 +231,11 @@ function renderChips(): void {
   if (!chips || !manifest) return;
   const rules = activeRules(state).length;
   chips.replaceChildren(
-    chip('PLAYBOOK'),
+    chip(`PLAYBOOK v${state.version}`),
     chip(`${rules} ACTIVE RULE${rules === 1 ? '' : 'S'}`),
     chip(`CORPUS ${manifest.corpusCount} SCRIPTS`),
     chip(`FINGERPRINT ${manifest.manifestHash}`),
+    ...(lastRun && lastRun.proposer.costUsd > 0 ? [chip(`META API $${lastRun.proposer.costUsd.toFixed(3)}`)] : []),
   );
 }
 
@@ -213,6 +246,7 @@ function render(): void {
   side.replaceChildren(
     introBlock(),
     runBlock(),
+    feedBlock(),
     stepsBlock(),
     tilesBlock(),
     verdictBlock(),
@@ -224,19 +258,84 @@ function render(): void {
 
 function introBlock(): HTMLElement {
   return node('div', 'font-size:11px;line-height:1.55;color:rgba(255,255,255,0.7);',
-    'OakGuard checks the rules that check AI-written indicators. Candidate rules come from a hand-written catalogue today. An independent test keeps only the rules that catch real bugs without false alarms, and proven rules go live in your editor.');
+    'When code passes the validator but breaks at runtime, Muse Wonder writes a rule that would have caught it: declarative data, never code. A referee the model cannot see tests the rule against broken variants, some held out, and known-good scripts. Only rules that pass every gate go live in your editor.');
 }
 
 function runBlock(): HTMLElement {
   const wrap = node('div', 'display:flex;flex-direction:column;gap:6px;');
-  const run = button(running ? 'Running…' : lastRun ? '↻ Run again' : '▶ Run OakGuard', 'primary');
-  run.style.width = '100%';
-  run.style.padding = '9px 12px';
-  run.style.fontSize = '12px';
-  run.disabled = running;
-  run.onclick = () => { void runNow(); };
-  wrap.append(run, node('div', 'font-size:10px;color:rgba(255,255,255,0.4);text-align:center;',
-    running ? 'Working through all 8 steps…' : 'Runs all 8 steps automatically. Takes a few seconds.'));
+  const row = node('div', 'display:flex;gap:6px;');
+  const live = button(running && runningMode === 'live' ? 'Muse Wonder is working…' : '▶ Run live · Muse Wonder', 'primary');
+  live.style.flex = '1.3';
+  live.style.padding = '9px 10px';
+  live.style.fontSize = '12px';
+  live.disabled = running || liveAvailable !== true;
+  live.title = liveAvailable === true
+    ? `Calls ${DEFAULT_PROPOSER_MODEL} on the Meta Model API through your backend.`
+    : 'Live mode needs the local backend with a Meta Model API key. Replay works anywhere.';
+  live.onclick = () => { void runNow('live'); };
+  const replay = button(running && runningMode === 'replay' ? 'Replaying…' : '↻ Replay recorded run', 'outline');
+  replay.style.flex = '1';
+  replay.disabled = running;
+  replay.title = `Re-grades the text ${RECORDED.model} wrote on ${new Date(RECORDED.recordedAt).toLocaleString()} with today's referee.`;
+  replay.onclick = () => { void runNow('replay'); };
+  row.append(live, replay);
+  const note = liveAvailable === false
+    ? 'No backend or Meta key here, so live mode is off. The replay re-grades a recorded Muse Wonder run; verdicts are recomputed, never replayed.'
+    : running ? 'Working through all 8 steps…' : 'Reset the playbook first to watch rules being learned from v1.';
+  wrap.append(row, node('div', 'font-size:10px;color:rgba(255,255,255,0.4);text-align:center;line-height:1.4;', note));
+  return wrap;
+}
+
+function specText(r: RoundRecord): string {
+  if (!r.rule) return '';
+  const p: Record<string, unknown> = { family: r.rule.family, issueCode: r.rule.issueCode };
+  const params = r.rule.params ?? {};
+  for (const [k, v] of Object.entries(params)) if (v !== undefined) p[k] = v;
+  if (r.rule.allowObjectMethods) p.allowObjectMethods = true;
+  return JSON.stringify(p, null, 1).replace(/\n\s*/g, ' ');
+}
+
+function feedBlock(): HTMLElement {
+  const wrap = node('div', 'display:flex;flex-direction:column;gap:6px;');
+  if (feed.length === 0 && !lastRun) return node('div', 'display:none;');
+  wrap.appendChild(sectionTitle(`Proposals · ${lastRun?.proposer.model ?? DEFAULT_PROPOSER_MODEL}`));
+  if (feed.length === 0) {
+    wrap.appendChild(node('div', 'font-size:10.5px;color:rgba(255,255,255,0.45);', lastRun?.escapes.every(e => e.alreadyCaughtBy.length)
+      ? 'Every escape is already caught by the playbook, so nothing was proposed. Reset the playbook to learn again.'
+      : 'Waiting for the first proposal…'));
+    return wrap;
+  }
+  for (const item of feed) {
+    const r = item.round;
+    const c = card('display:flex;flex-direction:column;gap:4px;');
+    c.className = 'og-feed-item';
+    const head = node('div', 'display:flex;justify-content:space-between;gap:8px;align-items:center;');
+    head.append(
+      node('div', 'font-size:10.5px;font-weight:600;color:#e8e2ff;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;',
+        `${DEFECT_CLASS_LABELS[item.escape.defectClass]} · round ${r.round}`),
+      !item.graded ? pill('Testing…', 'live')
+        : r.error ? pill('Unusable', 'warn')
+          : r.report?.verdict === 'promoted' ? pill('Promoted', 'ok') : pill('Rejected', 'warn'),
+    );
+    c.appendChild(head);
+    if (r.rule) {
+      c.appendChild(node('div', 'font:10px/1.45 ui-monospace,Menlo,Consolas,monospace;color:rgba(190,220,255,0.88);word-break:break-word;', specText(r)));
+      if (r.rule.fixHint) c.appendChild(node('div', 'font-size:10px;color:rgba(255,255,255,0.5);', `Fix hint: ${r.rule.fixHint}`));
+    }
+    if (r.error) c.appendChild(node('div', 'font-size:10px;color:#ffd9a0;', r.error));
+    if (item.graded && r.report) {
+      const rep = r.report;
+      c.appendChild(node('div', 'font-size:10px;color:#ffd9a0;',
+        `Variants ${rep.mutantCaught}/${rep.mutantTotal} · held-out ${rep.heldOutCaught}/${rep.heldOutTotal} · false alarms ${rep.falsePositiveCount}/${rep.goodTotal}`));
+      if (rep.verdict === 'rejected') c.appendChild(node('div', 'font-size:10px;color:#ff9db1;', rep.reasons[0] ?? ''));
+    }
+    if (r.meta) {
+      const src = r.meta.source === 'live' ? 'live' : `recorded ${r.meta.recordedAt ? new Date(r.meta.recordedAt).toLocaleDateString() : ''}`;
+      c.appendChild(node('div', 'font-size:9.5px;color:rgba(255,255,255,0.35);',
+        `${r.meta.model} · ${src} · ${(r.meta.latencyMs / 1000).toFixed(1)} s · ${r.meta.inputTokens + r.meta.outputTokens} tokens · $${r.meta.costUsd.toFixed(4)}`));
+    }
+    wrap.appendChild(c);
+  }
   return wrap;
 }
 
@@ -246,7 +345,7 @@ function stepRow(index: number, step: StepRecord): HTMLElement {
       : step.status === 'running' ? '#2dffb3'
         : 'rgba(255,255,255,0.3)';
   const live = step.status === 'running';
-  const row = node('div', `display:grid;grid-template-columns:24px 1fr 18px;gap:10px;align-items:start;padding:8px 10px;border-radius:8px;border:1px solid ${live ? 'rgba(45,255,179,0.45)' : SUBTLE_BORDER};background:${live ? 'rgba(45,255,179,0.06)' : 'rgba(255,255,255,0.02)'};`);
+  const row = node('div', `display:grid;grid-template-columns:24px 1fr 18px;gap:10px;align-items:start;padding:7px 10px;border-radius:8px;border:1px solid ${live ? 'rgba(45,255,179,0.45)' : SUBTLE_BORDER};background:${live ? 'rgba(45,255,179,0.06)' : 'rgba(255,255,255,0.02)'};`);
   const badge = node('div', `width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:${tone};border:1px solid ${tone};`, String(index + 1));
   const text = node('div', 'min-width:0;');
   text.append(
@@ -273,29 +372,40 @@ function stepsBlock(): HTMLElement {
 }
 
 function tilesBlock(): HTMLElement {
-  const grid = node('div', 'display:grid;grid-template-columns:1fr 1fr;gap:8px;');
+  const grid = node('div', 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;');
   const candidates = lastRun?.candidates ?? [];
   const caught = candidates.reduce((n, c) => n + c.report.mutantCaught, 0);
   const variants = candidates.reduce((n, c) => n + c.report.mutantTotal, 0);
+  const held = candidates.reduce((n, c) => n + c.report.heldOutTotal, 0);
+  const heldCaught = candidates.reduce((n, c) => n + c.report.heldOutCaught, 0);
   const falseAlarms = candidates
     .filter(c => c.outcome === 'promoted' || c.outcome === 'active')
     .reduce((n, c) => n + c.report.falsePositiveCount, 0);
   const corpus = manifest?.corpusCount ?? 0;
+  const curve = lastRun?.curve ?? measureCurve(state);
   const tile = (value: string, label: string, color: string): HTMLElement => {
-    const t = card('padding:9px 10px;');
+    const t = card('padding:8px 9px;');
     t.append(
-      node('div', `font-size:18px;font-weight:700;color:${color};font-variant-numeric:tabular-nums;`, value),
-      node('div', 'font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:rgba(255,255,255,0.45);margin-top:2px;', label),
+      node('div', `font-size:16px;font-weight:700;color:${color};font-variant-numeric:tabular-nums;`, value),
+      node('div', 'font-size:9px;letter-spacing:0.07em;text-transform:uppercase;color:rgba(255,255,255,0.45);margin-top:2px;', label),
     );
     return t;
   };
   grid.append(
     tile(String(activeRules(state).length), 'Active rules', ACCENT),
     tile(String(state.emeritus.length), 'Archived rules', '#c9a6ff'),
-    tile(lastRun ? `${caught} / ${variants}` : '—', 'Broken variants caught', '#eaf4ff'),
-    tile(lastRun ? `${falseAlarms} / ${corpus}` : '—', 'False alarms in playbook', lastRun && falseAlarms === 0 ? '#22cc88' : '#eaf4ff'),
+    tile(lastRun ? `${caught} / ${variants}` : '—', 'Variants caught', '#eaf4ff'),
+    tile(lastRun ? `${heldCaught} / ${held}` : '—', 'Held-out caught', '#eaf4ff'),
+    tile(lastRun ? `${falseAlarms} / ${corpus}` : '—', 'False alarms', lastRun && falseAlarms === 0 ? '#22cc88' : '#eaf4ff'),
+    tile(lastRun ? `$${lastRun.proposer.costUsd.toFixed(3)}` : '—', 'Meta API cost', '#ffd166'),
   );
-  return grid;
+  const wrap = node('div', 'display:flex;flex-direction:column;gap:6px;');
+  wrap.appendChild(grid);
+  if (curve) {
+    wrap.appendChild(node('div', 'font-size:10px;line-height:1.45;color:rgba(255,255,255,0.5);',
+      `Unseen ${curve.draftModel} drafts: ${curve.validatorClean} of ${curve.drafts} pass the validator, ${curve.escapes} carry a runtime defect, ${curve.falseFlagsNow} false alarm(s) from the playbook. First-draft validity ${curve.firstDraftValidity.validatorClean}/${curve.firstDraftValidity.drafts}.`));
+  }
+  return wrap;
 }
 
 function verdictBlock(): HTMLElement {
@@ -303,27 +413,20 @@ function verdictBlock(): HTMLElement {
   const run = lastRun;
   const promotedNow = run.candidates.filter(c => c.outcome === 'promoted').length;
   const archivedNow = run.candidates.filter(c => c.outcome === 'rejected').length;
-  const playbookFalseAlarms = run.candidates
-    .filter(c => c.outcome === 'promoted' || c.outcome === 'active')
-    .reduce((n, c) => n + c.report.falsePositiveCount, 0);
-  const blockedFalseAlarms = run.candidates
-    .filter(c => c.outcome === 'rejected' || c.outcome === 'archived')
-    .reduce((n, c) => n + c.report.falsePositiveCount, 0);
+  const caughtAfter = run.escapes.filter(e => e.caughtAfter.length > 0).length;
   const enforced = activeRules(run.playbook).length;
   const headline = promotedNow
-    ? `${promotedNow} rule${promotedNow === 1 ? '' : 's'} now enforced in your editor`
+    ? `${promotedNow} rule${promotedNow === 1 ? '' : 's'} written by ${run.proposer.model} now enforced in your editor`
     : enforced
       ? `${enforced} rule${enforced === 1 ? '' : 's'} enforced in your editor`
       : 'No rule qualified in this run';
+  const p = run.proposer;
   const lines = [
-    run.seed.validatorValid && run.seed.finiteRatio < 0.5
-      ? `Found a real failure: the validator accepts code whose SMA output is ${Math.round(run.seed.finiteRatio * 100)}% finite.`
-      : 'Replayed the seed failure.',
-    archivedNow ? `${archivedNow} rule archived with its counterexample.` : 'No rule was archived in this run.',
-    `Rules in your playbook raise ${playbookFalseAlarms} false alarms on ${run.manifest.corpusCount} known-good scripts.`,
-    ...(blockedFalseAlarms ? [`The gate blocked ${blockedFalseAlarms} false alarms from archived candidates.`] : []),
-    `Trade assistant: ${run.assistant.certified} of ${run.assistant.grades.length} rules certified.`,
-  ];
+    `${caughtAfter} of ${run.escapes.length} escapes are now flagged before they run.`,
+    archivedNow ? `${archivedNow} rule(s) rejected and archived with counterexamples.` : 'No rule was rejected in this run.',
+    p.calls > 0 ? `${p.calls} Meta API call(s) · ${p.inputTokens + p.outputTokens} tokens · $${p.costUsd.toFixed(4)} · ${(p.latencyMs / 1000).toFixed(0)} s of model time${p.mode === 'replay' ? ' (recorded)' : ''}.` : '',
+    `Dependent advice: ${run.assistant.certified} of ${run.assistant.grades.length} rules re-certified.`,
+  ].filter(Boolean);
   const wrap = node('div', 'border-left:3px solid var(--dafe-glow, #2dffb3);background:rgba(45,255,179,0.06);border-radius:6px;padding:9px 11px;');
   wrap.append(node('div', 'font-size:12px;font-weight:700;color:#e8fff5;', headline));
   for (const line of lines) {
@@ -335,7 +438,7 @@ function verdictBlock(): HTMLElement {
 function actionsBlock(): HTMLElement {
   const row = node('div', 'display:flex;gap:8px;flex-wrap:wrap;');
   const report = button('Download report', 'outline');
-  report.title = lastRun ? 'Save a printable HTML report of the last run' : 'Runs OakGuard, then saves the report';
+  report.title = lastRun ? 'Save a printable HTML report of the last run' : 'Replays the recorded run, then saves the report';
   report.disabled = running;
   report.onclick = () => { void downloadReport(); };
   const reset = button('Reset playbook', 'ghost');
@@ -345,23 +448,23 @@ function actionsBlock(): HTMLElement {
   return row;
 }
 
-function candidateCard(rule: { name: string; description: string }, status: CandidateStatus | undefined, report: OakGuardRun['candidates'][number]['report'] | undefined): HTMLElement {
+function candidateCard(c: OakGuardRun['candidates'][number]): HTMLElement {
+  const status: CandidateStatus = c.outcome;
   const label = status === 'active' ? 'Active'
     : status === 'promoted' ? 'Promoted'
       : status === 'rejected' ? 'Archived'
-        : status === 'archived' ? 'Archived earlier'
-          : 'Not tested';
-  const tone = status === 'active' || status === 'promoted' ? 'ok' : status ? 'warn' : 'muted';
-  const c = card('display:flex;flex-direction:column;gap:4px;');
+        : 'Archived earlier';
+  const tone = status === 'active' || status === 'promoted' ? 'ok' : 'warn';
+  const el = card('display:flex;flex-direction:column;gap:4px;');
   const head = node('div', 'display:flex;justify-content:space-between;gap:8px;align-items:center;');
-  head.append(node('div', 'font-size:11px;font-weight:600;color:#e8e2ff;', rule.name), pill(label, tone));
-  c.append(head, node('div', 'font-size:10px;color:rgba(255,255,255,0.5);', rule.description));
-  if (report) {
-    c.append(node('div', 'font-size:10px;color:#ffd9a0;',
-      `Broken variants ${report.mutantCaught}/${report.mutantTotal} · held-out ${report.heldOutCaught}/${report.heldOutTotal} · false alarms ${report.falsePositiveCount}/${report.goodTotal}`));
-    if (report.reasons[0]) c.append(node('div', 'font-size:10px;color:rgba(255,255,255,0.45);', report.reasons[0]));
-  }
-  return c;
+  head.append(node('div', 'font-size:11px;font-weight:600;color:#e8e2ff;', c.rule.name), pill(label, tone));
+  el.append(head, node('div', 'font-size:10px;color:rgba(255,255,255,0.5);', c.rule.description));
+  el.append(node('div', 'font-size:10px;color:rgba(255,255,255,0.4);', `${c.rule.issueCode} · ${c.rule.family} · by ${c.rule.proposal?.model ?? c.rule.proposedBy}`));
+  if (c.rule.rationale) el.append(node('div', 'font-size:10px;color:rgba(255,255,255,0.45);', `Rationale: ${c.rule.rationale}`));
+  el.append(node('div', 'font-size:10px;color:#ffd9a0;',
+    `Variants ${c.report.mutantCaught}/${c.report.mutantTotal} · held-out ${c.report.heldOutCaught}/${c.report.heldOutTotal} · false alarms ${c.report.falsePositiveCount}/${c.report.goodTotal}`));
+  if (c.report.reasons[0]) el.append(node('div', 'font-size:10px;color:rgba(255,255,255,0.45);', c.report.reasons[0]));
+  return el;
 }
 
 function checkOutput(result: CheckResult): HTMLElement {
@@ -386,11 +489,25 @@ function detailsBlock(): HTMLElement {
   wrap.appendChild(toggle);
   if (!detailsOpen) return wrap;
 
+  wrap.appendChild(sectionTitle('Escapes'));
+  const escapes = lastRun?.escapes.map(e => ({ escape: e.escape, evidence: e.evidence, caught: e.caughtAfter }))
+    ?? defaultEscapes().map(escape => ({ escape, evidence: '', caught: [] as string[] }));
+  for (const e of escapes) {
+    const c = card('display:flex;flex-direction:column;gap:4px;');
+    c.append(node('div', 'font-size:11px;font-weight:600;color:#e8e2ff;', e.escape.title));
+    c.append(node('div', 'font-size:10px;color:rgba(255,255,255,0.45);',
+      e.escape.origin === 'model-draft' ? `${e.escape.model} draft for "${e.escape.request}"` : 'Seed reproduction of the bug class'));
+    if (e.evidence) c.append(node('div', 'font-size:10px;color:#ff9db1;', `Runtime: ${e.evidence}`));
+    if (e.caught.length) c.append(node('div', 'font-size:10px;color:#22cc88;', `Now flagged before running by ${e.caught.join(', ')}`));
+    c.append(node('pre', 'margin:0;max-height:120px;overflow:auto;white-space:pre;font:10px/1.4 ui-monospace,Menlo,Consolas,monospace;color:rgba(190,220,255,0.8);background:rgba(3,6,16,0.9);border-radius:6px;padding:6px;', e.escape.source));
+    wrap.appendChild(c);
+  }
+
   wrap.appendChild(sectionTitle('Candidate rules'));
-  if (lastRun) {
-    for (const c of lastRun.candidates) wrap.appendChild(candidateCard(c.rule, c.outcome, c.report));
+  if (lastRun?.candidates.length) {
+    for (const c of lastRun.candidates) wrap.appendChild(candidateCard(c));
   } else {
-    for (const rule of CANDIDATE_CATALOGUE) wrap.appendChild(candidateCard(rule, undefined, undefined));
+    wrap.appendChild(node('div', 'font-size:10.5px;color:rgba(255,255,255,0.45);', 'Run OakGuard to see the proposed rules and their scores.'));
   }
 
   wrap.appendChild(sectionTitle(`Archive · ${state.emeritus.length}`));
@@ -405,7 +522,7 @@ function detailsBlock(): HTMLElement {
     wrap.appendChild(c);
   }
 
-  wrap.appendChild(sectionTitle('Trade assistant rules'));
+  wrap.appendChild(sectionTitle('Dependent advice rules'));
   for (const rule of ASSISTANT_RULES) {
     const status = state.assistantStatus?.[rule.id];
     const label = status === 'active' ? 'Certified' : status === 'needs_recert' ? 'In probation' : 'Not graded yet';
@@ -441,38 +558,59 @@ function onStep(index: number, status: StepStatus, run: OakGuardRun): void {
     if (status === 'running') {
       observatory.setStage(Math.min(index, 4));
     } else if (status === 'done') {
-      if (index === 0) observatory.pulseEscape();
-      if (index === 2) {
-        const best = run.candidates.reduce(
-          (b, c) => (c.report.mutantTotal > b.total ? { total: c.report.mutantTotal, caught: c.report.mutantCaught } : b),
-          { total: 1, caught: 0 },
-        );
-        observatory.launchSwarm(best.total, best.caught);
-        observatory.setStage(3);
-      }
-      if (index === 3) {
-        for (const c of run.candidates) if (c.outcome === 'rejected') observatory.rejectToEmeritus(c.rule.name);
+      if (index === 0 && run.escapes.length) observatory.pulseEscape();
+      if (index === 4) {
         observatory.setPlaybook(activeRules(run.playbook).map(r => r.issueCode));
         observatory.setStage(4);
       }
-      if (index === 6 && run.assistant.invalidated.length) observatory.pulseEscape();
+    }
+  }
+  state = run.playbook;
+  render();
+}
+
+function onRound(escape: EscapeCase, round: RoundRecord, phase: 'proposed' | 'graded', run: OakGuardRun): void {
+  lastRun = run;
+  const existing = feed.find(f => f.escape.id === escape.id && f.round.round === round.round);
+  if (existing) {
+    existing.round = round;
+    existing.graded = phase === 'graded';
+  } else {
+    feed.push({ escape, round, graded: phase === 'graded' });
+  }
+  if (observatory) {
+    if (phase === 'proposed') {
+      observatory.setStage(1);
+    } else if (round.report) {
+      observatory.launchSwarm(round.report.mutantTotal, round.report.mutantCaught);
+      if (round.report.verdict === 'rejected') {
+        observatory.rejectToEmeritus(round.rule?.name ?? 'rule');
+        observatory.setStage(3);
+      }
     }
   }
   render();
 }
 
-async function runNow(): Promise<OakGuardRun | null> {
+async function runNow(mode: 'live' | 'replay'): Promise<OakGuardRun | null> {
   if (running) return null;
   running = true;
+  runningMode = mode;
   checkResult = null;
   lastRun = null;
+  feed = [];
   render();
   try {
     const run = await runOakGuard({
       state,
       scripts: collectScripts(),
+      mode,
+      transport: mode === 'live' ? backendTransport(BACKEND()) : replayTransport(RECORDED),
+      model: mode === 'live' ? DEFAULT_PROPOSER_MODEL : RECORDED.model,
+      recordedAt: mode === 'replay' ? RECORDED.recordedAt : undefined,
       onStep,
-      pause: () => new Promise<void>(resolve => setTimeout(resolve, 300)),
+      onRound,
+      pause: () => new Promise<void>(resolve => setTimeout(resolve, mode === 'replay' ? 650 : 250)),
     });
     lastRun = run;
     state = run.playbook;
@@ -482,6 +620,7 @@ async function runNow(): Promise<OakGuardRun | null> {
     return null;
   } finally {
     running = false;
+    runningMode = null;
     syncScene();
     render();
   }
@@ -494,7 +633,7 @@ function fileStamp(d: Date): string {
 
 async function downloadReport(): Promise<void> {
   if (running) return;
-  const run = lastRun && lastRun.steps.every(s => s.status === 'done') ? lastRun : await runNow();
+  const run = lastRun && lastRun.steps.every(s => s.status === 'done') ? lastRun : await runNow('replay');
   if (!run) return;
   const html = buildOakGuardReport(run, new Date());
   const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
@@ -512,6 +651,7 @@ function resetAll(): void {
   state = resetPlaybook();
   lastRun = null;
   checkResult = null;
+  feed = [];
   syncScene();
   observatory?.setStage(0);
   render();

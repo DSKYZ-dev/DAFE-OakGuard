@@ -120,11 +120,22 @@ export interface OakContext {
 // ─── Standard Library ──────────────────────────────────────────────
 function smaImpl(source: number[], length: number): number[] {
   const result: number[] = new Array(source.length);
+  // A length that is not a positive integer has no meaning: NaN everywhere.
+  if (!Number.isInteger(length) || length <= 0) return result.fill(NaN);
+  // Running sum over the finite values in the window. A NaN in the window
+  // (an oscillator's warm-up bars) makes that bar NaN; it used to enter the
+  // running sum and make every later bar NaN too, so sma(stoch(...), 3) was
+  // dead forever (found by the OakGuard dead-output oracle).
   let sum = 0;
+  let missing = 0;
   for (let i = 0; i < source.length; i++) {
-    sum += source[i];
-    if (i >= length) sum -= source[i - length];
-    result[i] = i < length - 1 ? NaN : sum / length;
+    const v = source[i];
+    if (Number.isFinite(v)) sum += v; else missing++;
+    if (i >= length) {
+      const old = source[i - length];
+      if (Number.isFinite(old)) sum -= old; else missing--;
+    }
+    result[i] = i < length - 1 || missing > 0 ? NaN : sum / length;
   }
   return result;
 }
@@ -135,13 +146,25 @@ function emaImpl(source: number[], length: number): number[] {
   // Wilder-correct seed: SMA of first length bars, not source[0] (reduces early bias)
   let emaV: number;
   if (source.length >= length && length > 1) {
-    let s = 0; for (let k = 0; k < length; k++) s += source[k];
+    // Seed on the first run of `length` finite values, so leading NaNs (an
+    // oscillator's warm-up) delay the EMA instead of poisoning it forever.
+    result.fill(NaN);
+    let run = 0;
+    let seedEnd = -1;
+    for (let i = 0; i < source.length; i++) {
+      run = Number.isFinite(source[i]) ? run + 1 : 0;
+      if (run === length) { seedEnd = i; break; }
+    }
+    if (seedEnd < 0) return result;
+    let s = 0; for (let k = seedEnd - length + 1; k <= seedEnd; k++) s += source[k];
     emaV = s / length;
-    for (let i = 0; i < length - 1; i++) result[i] = NaN;
-    result[length - 1] = emaV;
-    for (let i = length; i < source.length; i++) {
-      emaV = (source[i] - emaV) * multiplier + emaV;
-      result[i] = emaV;
+    result[seedEnd] = emaV;
+    for (let i = seedEnd + 1; i < source.length; i++) {
+      const v = source[i];
+      if (Number.isFinite(v)) {
+        emaV = (v - emaV) * multiplier + emaV;
+        result[i] = emaV;
+      }
     }
   } else {
     emaV = source[0];

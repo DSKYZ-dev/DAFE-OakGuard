@@ -1,0 +1,186 @@
+{
+  "generatedAt": "2026-11-02T01:31:44.914Z",
+  "draftsRecordedAt": "2026-11-02T01:27:37.285Z",
+  "draftModel": "meta/muse-spark-1.3",
+  "proposerModel": "muse-wonder-1.0",
+  "proposerRecordedAt": "2026-11-02T01:30:46.297Z",
+  "playbook": [
+    {
+      "issueCode": "NON_POSITIVE_INTEGER_LENGTH",
+      "family": "positive-int-length",
+      "name": "Length arguments must be positive integers",
+      "defectClass": "dead-length"
+    },
+    {
+      "issueCode": "UNKNOWN_DOTTED_CALL",
+      "family": "unknown-dotted-call",
+      "name": "Unknown dotted builtin call",
+      "defectClass": "silent-call"
+    },
+    {
+      "issueCode": "SELF_INCLUSIVE_WINDOW_BREAKOUT",
+      "family": "self-inclusive-window",
+      "name": "Self-inclusive breakout window",
+      "defectClass": "impossible-breakout"
+    }
+  ],
+  "firstDraftValidity": {
+    "drafts": 32,
+    "validatorClean": 22,
+    "note": "All 32 drafts, graded by the current validator. Before scientific notation (1e-9) was added to the lexer, 20 of the same 32 drafts parsed as valid."
+  },
+  "validatorFailures": {
+    "INPUT_NO_ASSIGN": 7,
+    "FN_TOO_FEW_ARGS": 3,
+    "UNDEFINED_VAR": 1
+  },
+  "heldOut": {
+    "drafts": 16,
+    "withCode": 16,
+    "validatorClean": 12,
+    "escapes": 0,
+    "caughtByLearned": 0,
+    "caughtByV1": 0,
+    "flaggedWithoutOracleDefect": 0
+  },
+  "mining": {
+    "drafts": 16,
+    "withCode": 16,
+    "validatorClean": 10,
+    "escapes": 0,
+    "caughtByLearned": 0,
+    "caughtByV1": 0,
+    "flaggedWithoutOracleDefect": 0
+  },
+  "heldOutEscapes": [],
+  "heldOutDrafts": [
+    {
+      "index": 2,
+      "request": "Signal when price breaks above the highest high of the last 50 bars",
+      "code": "breakoutLen = input(50, \"Breakout Length\", 2, 200, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nprevHH = highest(high, breakoutLen)[1]\nbuySig = bar_index > breakoutLen and close > prevHH\n\nif buySig {\n    plotshape(bar_index, low, \"Breakout\", \"triangleup\", \"#22cc88\")\n    plotshape_3d(bar_index, low, \"Breakout\", \"coneup\", \"#22cc88\", markerSize, 0, \"3d\")\n}\n\nplot(close, \"Price\", \"#22cc88\", 1, \"line\")\nplot(prevHH, \"50-Bar High\", \"#ffcc00\", 1, \"stepline\")\nplot3d(close, \"Price\", \"ribbon\", \"#22cc88\", \"3d\")\nplot3d(prevHH, \"Breakout Level\", \"line3d\", \"#ffcc00\", \"3d\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 4,
+      "request": "Breakout of the previous 10-bar range with volume confirmation",
+      "code": "rangeLen = input(10, \"Range Length\", 5, 50, 1)\nvolLen = input(20, \"Volume Avg Length\", 5, 100, 1)\nvolMult = input(1.5, \"Volume Multiplier\", 0.5, 5.0, 0.1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nprevHighRaw = highest(high, rangeLen)\nprevLowRaw = lowest(low, rangeLen)\nprevHigh = prevHighRaw[1]\nprevLow = prevLowRaw[1]\nvolAvg = sma(volume, volLen)\nvolOk = volume > volAvg * volMult\nbreakUp = close > prevHigh\nbreakDn = close < prevLow\nbuySig = breakUp and volOk\nsellSig = breakDn and volOk\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif buySig {\n  plotshape_3d(bar_index, low, \"Buy 3D\", \"coneup\", \"#22cc88\", markerSize, 0, \"3d\")\n}\nif sellSig {\n  plotshape_3d(bar_index, high, \"Sell 3D\", \"conedown\", \"#ff4477\", markerSize, 1, \"3d\")\n}\n\nplot(prevHigh, \"Prev High\", \"#22cc88\", 1, \"stepline\")\nplot(prevLow, \"Prev Low\", \"#ff4477\", 1, \"stepline\")\nplot3d(prevHigh, \"Prev High 3D\", \"line3d\", \"#22cc88\", \"3d\", 0)\nplot3d(prevLow, \"Prev Low 3D\", \"line3d\", \"#ff4477\", \"3d\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 6,
+      "request": "RSI smoothed with a 3-bar SMA, signal when it crosses 50",
+      "code": "rsiLen = input(14, \"RSI Length\", 2, 50, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nrawRsi = rsi(close, rsiLen)\nsmoothRsi = sma(rawRsi, 3)\n\nbuySig = smoothRsi > 50 and smoothRsi[1] <= 50\nsellSig = smoothRsi < 50 and smoothRsi[1] >= 50\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n    plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 0, \"separate\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n    plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 0, \"separate\")\n}\n\nplot(smoothRsi, \"Smooth RSI\", \"#2962ff\", 2, \"line\", \"separate\")\nplot(rawRsi, \"Raw RSI\", \"#888888\", 1, \"line\", \"separate\")\nhline(50, \"#787b86\", \"separate\")\nplot3d(smoothRsi, \"Smooth RSI 3D\", \"ribbon\", \"#2962ff\", \"separate\")\nplot3d(rawRsi, \"Raw RSI 3D\", \"trail\", \"#888888\", \"separate\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 8,
+      "request": "Bollinger Band squeeze breakout signals",
+      "code": "input(20, \"BB Length\", 2, 100, 1)\ninput(2.0, \"BB Mult\", 0.5, 4.0, 0.1)\ninput(120, \"Squeeze Lookback\", 20, 250, 1)\ninput(10, \"Breakout Window\", 2, 30, 1)\ninput(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nbasis = sma(close, 20)\nsd = stdev(close, 20)\nupper = basis + 2.0 * sd\nlower = basis - 2.0 * sd\nbandwidth = (upper - lower) / (basis + 1e-9)\nsqLowLong = lowest(bandwidth, 120)\nlowShort = lowest(bandwidth, 10)\nwasSqueeze = lowShort == sqLowLong\ninSqueeze = bandwidth == sqLowLong\n\nvar lastLabel = -1000\n\nbuySig = crossover(close, upper) and wasSqueeze\nsellSig = crossunder(close, lower) and wasSqueeze\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif buySig {\n    plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0, 0, \"3d\")\n}\nif sellSig {\n    plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1.0, 1, \"3d\")\n}\nif buySig and bar_index - lastLabel > 20 {\n    label3d(bar_index, high, \"Squeeze Break\", \"#22cc88\", 1.0, 0, \"3d\")\n    lastLabel := bar_index\n}\nif sellSig and bar_index - lastLabel > 20 {\n    label3d(bar_index, low, \"Squeeze Break\", \"#ff4477\", 1.0, 1, \"3d\")\n    lastLabel := bar_index\n}\n\nplot(basis, \"Basis\", \"#ffcc33\", 1, \"line\")\nplot(upper, \"Upper\", \"#22cc88\", 1, \"line\")\nplot(lower, \"Lower\", \"#ff4477\", 1, \"line\")\nplot3d(upper, \"BB Upper 3D\", \"ribbon\", \"#22cc88\", \"3d\", 0)\nplot3d(lower, \"BB Lower 3D\", \"ribbon\", \"#ff4477\", \"3d\", 1)",
+      "validatorClean": false,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 10,
+      "request": "Turtle trading entry: 20-bar high breakout, exit on a 10-bar low",
+      "code": "entryLen = input(20, \"Entry Channel\", 2, 100, 1)\nexitLen = input(10, \"Exit Channel\", 2, 100, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nentryLevel = highest(high, entryLen)[1]\nexitLevel = lowest(low, exitLen)[1]\n\nvar inPos = 0.0\n\nbuySig = close > entryLevel and inPos[1] == 0.0 and bar_index > entryLen\nsellSig = close < exitLevel and inPos[1] == 1.0 and bar_index > exitLen\n\nif buySig {\n    inPos := 1.0\n}\nif sellSig {\n    inPos := 0.0\n}\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\n\nif buySig {\n    plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 0, \"3d\")\n}\nif sellSig {\n    plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1, \"3d\")\n}\n\nplot(entryLevel, \"Entry 20H\", \"#22cc88\", 1, \"stepline\")\nplot(exitLevel, \"Exit 10L\", \"#ff4477\", 1, \"stepline\")\nplot3d(entryLevel, \"Entry 20H 3D\", \"line3d\", \"#22cc88\", \"3d\", 0)\nplot3d(exitLevel, \"Exit 10L 3D\", \"line3d\", \"#ff4477\", \"3d\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 12,
+      "request": "Williams %R with signals at -80 and -20",
+      "code": "input(14, \"W%R Length\", 2, 100, 1)\ninput(3, \"Smooth Length\", 1, 20, 1)\ninput(-80, \"Oversold Level\", -100, -50, 1)\ninput(-20, \"Overbought Level\", -50, 0, 1)\ninput(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nhh = highest(high, 14)\nll = lowest(low, 14)\nrng = hh - ll\nwrRaw = rng == 0 ? 0 : (hh - close) / rng * -100\nwr = wrRaw\nwrSmooth = sma(wr, 3)\n\nbuySig = crossover(wr, -80)\nsellSig = crossunder(wr, -20)\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\n\nif buySig {\n  plotshape_3d(bar_index, wr, \"Buy\", \"coneup\", \"#22cc88\", 1.0, 0, \"separate\")\n}\nif sellSig {\n  plotshape_3d(bar_index, wr, \"Sell\", \"conedown\", \"#ff4477\", 1.0, 1, \"separate\")\n}\n\nplot(wr, \"Williams %R\", \"#7b5cff\", 2, \"line\")\nplot(wrSmooth, \"W%R Smooth\", \"#22cc88\", 1, \"line\")\nhline(-80, \"#22cc88\", \"separate\")\nhline(-20, \"#ff4477\", \"separate\")\nhline(-50, \"#888888\", \"separate\")\nplot3d(wr, \"W%R Ribbon\", \"ribbon\", \"#7b5cff\", \"separate\", 0)\nplot3d(wrSmooth, \"W%R Smooth Layer\", \"line3d\", \"#22cc88\", \"separate\", 1)",
+      "validatorClean": false,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 14,
+      "request": "Volume spike detector: volume above twice its 20-bar average",
+      "code": "len = input(20, \"Avg Length\", 2, 100, 1)\nmult = input(2.0, \"Spike Multiple\", 1.0, 5.0, 0.1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nvolAvg = sma(volume, len)\nspikeLevel = volAvg * mult\nspike = volume > spikeLevel\n\nif spike {\n    plotshape(bar_index, low, \"Spike\", \"triangleup\", \"#ffcc00\")\n}\n\nif spike {\n    plotshape_3d(bar_index, volume, \"Spike\", \"cube\", \"#ffcc00\", markerSize, 0, \"separate\")\n}\n\nplot(volume, \"Volume\", \"#3aa0ff\", 1, \"columns\")\nplot(spikeLevel, \"2x Avg\", \"#ffaa00\", 1, \"stepline\")\nplot3d(volume, \"Volume 3D\", \"bars3d\", \"#3aa0ff\", \"separate\")\nplot3d(spikeLevel, \"Threshold 3D\", \"line3d\", \"#ffaa00\", \"separate\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 16,
+      "request": "Swing high and swing low markers using pivots",
+      "code": "leftLen = input(5, \"Left Bars\", 1, 20, 1)\nrightLen = input(5, \"Right Bars\", 1, 20, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nph = pivothigh(high, leftLen, rightLen)\npl = pivotlow(low, leftLen, rightLen)\n\nswingHigh = ph > 0\nswingLow = pl > 0\n\nphBar = bar_index - rightLen\n\nif swingHigh {\n  plotshape(phBar, ph, \"Swing High\", \"triangledown\", \"#ff4477\")\n  plotshape_3d(phBar, ph, \"Swing High\", \"conedown\", \"#ff4477\", markerSize, 0, \"3d\")\n}\n\nif swingLow {\n  plotshape(phBar, pl, \"Swing Low\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(phBar, pl, \"Swing Low\", \"coneup\", \"#22cc88\", markerSize, 1, \"3d\")\n}\n\nplot(ph, \"Swing High\", \"#ff4477\", 2, \"circles\")\nplot(pl, \"Swing Low\", \"#22cc88\", 2, \"circles\")\nplot3d(high, \"Swing Highs\", \"ribbon\", \"#ff4477\", \"3d\", 0)\nplot3d(low, \"Swing Lows\", \"ribbon\", \"#22cc88\", \"3d\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 18,
+      "request": "VWAP with standard deviation bands and signals on band touches",
+      "code": "input(true, \"Reset Daily\", 0, 1, 1)\ninput(1.0, \"Band Mult 1\", 0.1, 5.0, 0.1)\ninput(2.0, \"Band Mult 2\", 0.1, 5.0, 0.1)\ninput(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\ntp = (high + low + close) / 3\nv = volume\ndRef = security(\"1d\", close)\nnewDay = bar_index == 0 or dRef != dRef[1]\n\nvar cumPV = 0.0\nvar cumV = 0.0\nvar cumP2V = 0.0\n\nif newDay {\n  cumPV := tp * v\n  cumV := v\n  cumP2V := tp * tp * v\n} else {\n  cumPV := cumPV[1] + tp * v\n  cumV := cumV[1] + v\n  cumP2V := cumP2V[1] + tp * tp * v\n}\n\nvwap = cumV > 0 ? cumPV / cumV : tp\nmeanSq = cumV > 0 ? cumP2V / cumV : tp * tp\nvari = meanSq - vwap * vwap\nvariFix = vari > 0 ? vari : 0\nsd = sqrt(variFix)\n\nupper1 = vwap + input1 * sd\nlower1 = vwap - input1 * sd\nupper2 = vwap + input2 * sd\nlower2 = vwap - input2 * sd\n\nbuySig = low <= lower2\nsellSig = high >= upper2\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0 * input3, 0, \"3d\")\n}\n\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n  plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1.0 * input3, 0, \"3d\")\n}\n\nplot(vwap, \"VWAP\", \"#22aaff\", 2, \"line\")\nplot(upper1, \"Upper 1SD\", \"#ffaa00\", 1, \"stepline\")\nplot(lower1, \"Lower 1SD\", \"#ffaa00\", 1, \"stepline\")\nplot(upper2, \"Upper 2SD\", \"#ff4477\", 1, \"stepline\")\nplot(lower2, \"Lower 2SD\", \"#22cc88\", 1, \"stepline\")\nfill(upper2, lower2, \"#22aaff\")\n\nplot3d(vwap, \"VWAP 3D\", \"ribbon\", \"#22aaff\", \"3d\")\nplot3d(upper2, \"Upper 2SD 3D\", \"line3d\", \"#ff4477\", \"3d\", 1)\nplot3d(lower2, \"Lower 2SD 3D\", \"line3d\", \"#22cc88\", \"3d\", 2)",
+      "validatorClean": false,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 20,
+      "request": "CCI smoothed over 3 bars with zero-line cross signals",
+      "code": "cciLen = input(20, \"CCI Length\", 2, 100, 1)\nsmoothLen = input(3, \"Smooth Length\", 1, 10, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\ntp = (high + low + close) / 3\ntpSma = sma(tp, cciLen)\ndev = abs(tp - tpSma)\nmeanDev = sma(dev, cciLen)\ncciRaw = (tp - tpSma) / (0.015 * (meanDev + 1e-9))\ncciSmooth = sma(cciRaw, smoothLen)\n\nbuySig = cciSmooth > 0 and cciSmooth[1] <= 0\nsellSig = cciSmooth < 0 and cciSmooth[1] >= 0\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n    plotshape_3d(bar_index, cciSmooth, \"Buy 3D\", \"coneup\", \"#22cc88\", markerSize, 0, \"separate\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n    plotshape_3d(bar_index, cciSmooth, \"Sell 3D\", \"conedown\", \"#ff4477\", markerSize, 0, \"separate\")\n}\n\nplot(cciSmooth, \"CCI Smooth\", \"#22cc88\", 2, \"line\")\nplot(cciRaw, \"CCI Raw\", \"#888888\", 1, \"line\")\nhline(0, \"#888888\")\nplot3d(cciSmooth, \"CCI Smooth 3D\", \"ribbon\", \"#22cc88\", \"separate\")\nplot3d(cciRaw, \"CCI Raw 3D\", \"trail\", \"#ffaa00\", \"separate\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 22,
+      "request": "Midline of the 20-bar high/low channel with crossover signals",
+      "code": "len = input(20, \"Channel Length\", 2, 100, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nchHigh = highest(high, len)\nchLow = lowest(low, len)\nmid = (chHigh + chLow) / 2\n\nbuySig = crossover(close, mid)\nsellSig = crossunder(close, mid)\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 2, \"3d\")\n}\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n  plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 2, \"3d\")\n}\n\nplot(chHigh, \"Channel High\", \"#ff4477\", 1, \"line\")\nplot(chLow, \"Channel Low\", \"#22cc88\", 1, \"line\")\nplot(mid, \"Midline\", \"#ffcc33\", 2, \"line\")\nplot3d(chHigh, \"High 3D\", \"line3d\", \"#ff4477\", \"3d\", 0)\nplot3d(chLow, \"Low 3D\", \"line3d\", \"#22cc88\", \"3d\", 1)\nplot3d(mid, \"Midline 3D\", \"line3d\", \"#ffcc33\", \"3d\", 2)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 24,
+      "request": "Rolling z-score of close over 30 bars with signals at plus and minus 2",
+      "code": "len = input(30, \"Z Length\", 2, 200, 1)\nupperThresh = input(2.0, \"Upper Signal\", 0.5, 5.0, 0.1)\nlowerThresh = input(-2.0, \"Lower Signal\", -5.0, -0.5, 0.1)\nsmoothLen = input(5, \"Smooth Length\", 1, 30, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nmean = sma(close, len)\nsd = stdev(close, len)\nsafeSd = sd < 1e-9\nzScore = safeSd ? 0.0 : (close - mean) / sd\nzSmooth = ema(zScore, smoothLen)\n\nbuySig = zScore[1] >= lowerThresh and zScore < lowerThresh\nsellSig = zScore[1] <= upperThresh and zScore > upperThresh\n\nif buySig {\n    plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n    plotshape_3d(bar_index, zScore, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 0, \"separate\")\n}\nif sellSig {\n    plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n    plotshape_3d(bar_index, zScore, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 1, \"separate\")\n}\n\nplot(zScore, \"Z-Score\", \"#33aaff\", 1, \"line\", \"separate\")\nplot(zSmooth, \"Z-Smooth\", \"#ffaa22\", 1, \"line\", \"separate\")\nhline(upperThresh, \"#ff4477\", \"separate\")\nhline(lowerThresh, \"#22cc88\", \"separate\")\nhline(0.0, \"#888888\", \"separate\")\nplot3d(zScore, \"Z-Score 3D\", \"ribbon\", \"#33aaff\", \"separate\")\nplot3d(zSmooth, \"Z-Smooth 3D\", \"line3d\", \"#ffaa22\", \"separate\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 26,
+      "request": "Ichimoku-style conversion and base lines with crossover signals",
+      "code": "input(9, \"Conversion Length\", 2, 50, 1)\ninput(26, \"Base Length\", 5, 100, 1)\ninput(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nconvHigh = highest(high, 9)\nconvLow = lowest(low, 9)\nbaseHigh = highest(high, 26)\nbaseLow = lowest(low, 26)\nconvLine = (convHigh + convLow) / 2\nbaseLine = (baseHigh + baseLow) / 2\nspread = convLine - baseLine\n\nbuySig = crossover(convLine, baseLine)\nsellSig = crossunder(convLine, baseLine)\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif buySig {\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", 1.0, 0, \"3d\")\n}\nif sellSig {\n  plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", 1.0, 0, \"3d\")\n}\n\nplot(convLine, \"Conversion\", \"#22cc88\", 2, \"line\")\nplot(baseLine, \"Base\", \"#ff4477\", 2, \"line\")\nfill(convLine, baseLine, \"#22cc8844\")\nplot3d(convLine, \"Conv Ribbon\", \"ribbon\", \"#22cc88\", \"3d\")\nplot3d(baseLine, \"Base Line\", \"line3d\", \"#ff4477\", \"3d\", 1)",
+      "validatorClean": false,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 28,
+      "request": "Fibonacci retracement levels of the last 50-bar swing with touch signals",
+      "code": "swingLen = input(50, \"Swing Length\", 2, 200, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nswingHigh = highest(high, swingLen)\nswingLow = lowest(low, swingLen)\nrng = swingHigh - swingLow\nlev0 = swingLow\nlev236 = swingLow + 0.236 * rng\nlev382 = swingLow + 0.382 * rng\nlev50 = swingLow + 0.5 * rng\nlev618 = swingLow + 0.618 * rng\nlev786 = swingLow + 0.786 * rng\nlev100 = swingHigh\nisBull = close > open\nisBear = close < open\ntouch0 = low <= lev0 and high >= lev0\ntouch236 = low <= lev236 and high >= lev236\ntouch382 = low <= lev382 and high >= lev382\ntouch50 = low <= lev50 and high >= lev50\ntouch618 = low <= lev618 and high >= lev618\ntouch786 = low <= lev786 and high >= lev786\ntouch100 = low <= lev100 and high >= lev100\nsupportTouch = touch0 or touch236 or touch382\nresistTouch = touch618 or touch786 or touch100\nbuySig = supportTouch and isBull or touch50 and isBull\nsellSig = resistTouch and isBear or touch50 and isBear\n\nif buySig {\n  plotshape(bar_index, low, \"Buy\", \"triangleup\", \"#22cc88\")\n}\nif sellSig {\n  plotshape(bar_index, high, \"Sell\", \"triangledown\", \"#ff4477\")\n}\nif buySig {\n  plotshape_3d(bar_index, low, \"Buy\", \"coneup\", \"#22cc88\", markerSize, 0, \"3d\")\n}\nif sellSig {\n  plotshape_3d(bar_index, high, \"Sell\", \"conedown\", \"#ff4477\", markerSize, 1, \"3d\")\n}\n\nplot(lev0, \"0%\", \"#888888\", 1, \"stepline\")\nplot(lev236, \"23.6%\", \"#22cc88\", 1, \"stepline\")\nplot(lev382, \"38.2%\", \"#33aaff\", 1, \"stepline\")\nplot(lev50, \"50%\", \"#ffcc33\", 1, \"stepline\")\nplot(lev618, \"61.8%\", \"#ff8833\", 1, \"stepline\")\nplot(lev786, \"78.6%\", \"#cc44ff\", 1, \"stepline\")\nplot(lev100, \"100%\", \"#ff4477\", 1, \"stepline\")\nplot3d(lev0, \"0%\", \"line3d\", \"#888888\", \"3d\", 0)\nplot3d(lev236, \"23.6%\", \"line3d\", \"#22cc88\", \"3d\", 1)\nplot3d(lev382, \"38.2%\", \"line3d\", \"#33aaff\", \"3d\", 2)\nplot3d(lev50, \"50%\", \"line3d\", \"#ffcc33\", \"3d\", 3)\nplot3d(lev618, \"61.8%\", \"line3d\", \"#ff8833\", \"3d\", 4)\nplot3d(lev786, \"78.6%\", \"line3d\", \"#cc44ff\", \"3d\", 5)\nplot3d(lev100, \"100%\", \"line3d\", \"#ff4477\", \"3d\", 6)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 30,
+      "request": "Breakdown below the lowest low of the last 30 bars with an exit marker",
+      "code": "lookback = input(30, \"Lookback\", 1, 200, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nbreakLevel = lowest(low, lookback)\nprevLevel = breakLevel[1]\nsmoothLevel = sma(breakLevel, 5)\n\nbreakSig = close < prevLevel and bar_index > lookback\nreclaimSig = close > prevLevel and bar_index > lookback\n\nvar inTrade = 0.0\nvar entryLvl = 0.0\n\nisBreak = breakSig and inTrade == 0\nisExit = inTrade == 1 and reclaimSig\n\nif isBreak {\n  inTrade := 1\n  entryLvl := prevLevel\n}\n\nif isExit {\n  inTrade := 0\n  entryLvl := 0.0\n}\n\nif isBreak {\n  plotshape(bar_index, high, \"Breakdown\", \"triangledown\", \"#ff4477\")\n}\n\nif isExit {\n  plotshape(bar_index, low, \"Exit\", \"triangleup\", \"#22cc88\")\n}\n\nplot(breakLevel, \"Lowest Low 30\", \"#ff4477\", 1, \"stepline\")\nplot(close, \"Close\", \"#22aaff\", 1, \"line\")\nplot3d(close, \"Price Ribbon\", \"ribbon\", \"#22aaff\", \"3d\")\nplot3d(breakLevel, \"Breakdown Level\", \"line3d\", \"#ff4477\", \"3d\", 1)\nplot3d(smoothLevel, \"Level Trend\", \"line3d\", \"#ffbb33\", \"3d\", 2)\nplotshape_3d(bar_index, high, \"Breakdown\", \"conedown\", \"#ff4477\", 1.0 * markerSize, 1, \"3d\")\nplotshape_3d(bar_index, low, \"Exit\", \"coneup\", \"#22cc88\", 1.0 * markerSize, 1, \"3d\")",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    },
+    {
+      "index": 32,
+      "request": "Momentum burst: close breaks the 15-bar high while RSI is above 60",
+      "code": "len = input(15, \"Lookback Length\", 1, 100, 1)\nrsiLen = input(14, \"RSI Length\", 2, 100, 1)\nrsiThresh = input(60, \"RSI Threshold\", 50, 90, 1)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nr = rsi(close, rsiLen)\nhh = highest(high, len)\nprevHigh = hh[1]\nbuySig = close > prevHigh and r > rsiThresh and bar_index > len\n\nif buySig {\n    plotshape(bar_index, low, \"Burst\", \"triangleup\", \"#22cc88\")\n}\n\nif buySig {\n    plotshape_3d(bar_index, low, \"Burst\", \"coneup\", \"#22cc88\", markerSize, 0, \"3d\")\n}\n\nplot(close, \"Price\", \"#22cc88\", 1, \"line\")\nplot(prevHigh, \"15-Bar High\", \"#ffaa00\", 1, \"stepline\")\nplot3d(close, \"Price\", \"ribbon\", \"#22cc88\", \"3d\")\nplot3d(prevHigh, \"15-Bar High\", \"line3d\", \"#ffaa00\", \"3d\", 1)",
+      "validatorClean": true,
+      "escape": false,
+      "defect": ""
+    }
+  ]
+}

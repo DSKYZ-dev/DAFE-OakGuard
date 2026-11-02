@@ -20,7 +20,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { makeTextSprite } from '../three-lower-pane';
 
-export const STAGE_NAMES = ['FAILURE', 'CANDIDATE', 'PROBATION', 'DUEL', 'GATE'] as const;
+export const STAGE_NAMES = ['ESCAPE', 'PROPOSAL', 'REFEREE', 'REVISION', 'PLAYBOOK'] as const;
 
 const CORE_POS = new THREE.Vector3(0, -0.4, 0);
 

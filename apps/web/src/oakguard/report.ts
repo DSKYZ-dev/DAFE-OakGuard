@@ -4,8 +4,7 @@
  * Every dynamic value passes through escapeHtml, so rule names, script names
  * and log lines can never inject markup into the report.
  */
-import { CANDIDATE_CATALOGUE } from './rules';
-import { SEED_SCRIPT } from './evaluator';
+import { getRuleById } from './store';
 import { DEMO_TOOL, type CandidateStatus, type OakGuardRun } from './pipeline';
 import { escapeHtml } from '../escape-html';
 
@@ -74,19 +73,26 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
     .filter(c => c.outcome === 'rejected' || c.outcome === 'archived')
     .reduce((n, c) => n + c.report.falsePositiveCount, 0);
   const corpus = run.manifest.corpusCount;
-  const seedAccepted = run.seed.validatorValid;
   const flagged = run.library.flagged.length;
   const certified = run.assistant.certified;
   const assistantTotal = run.assistant.grades.length;
   const invalidated = run.assistant.invalidated.length;
+  const p = run.proposer;
+  const caughtAfter = run.escapes.filter(x => x.caughtAfter.length > 0).length;
+  const proposerLabel = p.mode === 'live' ? `${p.model}, called live`
+    : p.mode === 'replay' ? `${p.model}, recorded ${p.recordedAt ?? ''} and re-graded now`
+      : 'the hand-written catalogue (no model)';
 
   const summary = [
-    `The baseline validator ${seedAccepted ? 'accepted' : 'rejected'} the seed script, while its SMA series was only ${pct(run.seed.finiteRatio)} finite when executed.`,
+    `${run.escapes.length} escape(s): scripts the baseline validator accepted that the runtime oracles proved broken.`,
+    `Candidate rules came from ${proposerLabel}: ${p.calls} call(s), ${p.inputTokens + p.outputTokens} tokens, $${p.costUsd.toFixed(4)}.`,
     `${promoted} rule(s) promoted into the playbook and ${archived} archived with counterexamples.`,
     `Candidate rules caught ${totals.caught} of ${totals.variants} broken variants (held-out: ${totals.heldCaught} of ${totals.held}).`,
     `Rules in the playbook raise ${playbookFalseAlarms} false alarms across ${corpus} known-good scripts.`,
     ...(blockedFalseAlarms ? [`The gate blocked ${blockedFalseAlarms} false alarms from archived candidates.`] : []),
-    `Trade assistant: ${certified} of ${assistantTotal} rules certified${invalidated ? `, after ${invalidated} were returned to probation by the ${DEMO_TOOL} upgrade` : ''}.`,
+    `After the run, ${caughtAfter} of ${run.escapes.length} escape(s) are flagged before they run.`,
+    ...(run.curve ? [`Unseen ${run.curve.draftModel} drafts: ${run.curve.validatorClean} of ${run.curve.drafts} pass the validator, ${run.curve.escapes} carry a runtime defect, and the playbook raises ${run.curve.falseFlagsNow} false alarm(s) on them.`] : []),
+    `Dependent advice: ${certified} of ${assistantTotal} rules certified${invalidated ? `, after ${invalidated} returned to probation when the playbook changed` : ''}.`,
     `Script library: ${run.library.scanned} scripts scanned, ${flagged} flagged.`,
   ];
 
@@ -97,9 +103,11 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
 
   const candidateRows = cands.map(c => {
     const pill = STATUS_PILL[c.outcome];
+    const meta = c.rule.proposal;
+    const by = meta ? `${meta.model}, round ${meta.round}${meta.costUsd ? `, $${meta.costUsd.toFixed(4)}` : ''}` : c.rule.proposedBy;
     return `
-    <tr><td><strong>${e(c.rule.name)}</strong><div class="muted">${e(c.rule.description)}</div></td>
-    <td><code>${e(c.rule.issueCode)}</code></td>
+    <tr><td><strong>${e(c.rule.name)}</strong><div class="muted">${e(c.rule.description)}</div><div class="muted">Proposed by ${e(by)} for ${e(c.escapeId ?? '—')}</div></td>
+    <td><code>${e(c.rule.issueCode)}</code><div class="muted">${e(c.rule.family)}</div></td>
     <td class="num">${c.report.mutantCaught} / ${c.report.mutantTotal}</td>
     <td class="num">${c.report.heldOutCaught} / ${c.report.heldOutTotal}</td>
     <td class="num">${c.report.falsePositiveCount} / ${c.report.goodTotal}</td>
@@ -108,14 +116,26 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
   }).join('');
 
   const playbookRows = run.playbook.activeRuleIds.map(id => {
-    const rule = CANDIDATE_CATALOGUE.find(r => r.id === id);
-    const promo = run.playbook.promotions.find(p => p.ruleId === id);
+    const rule = getRuleById(id, run.playbook);
+    const promo = run.playbook.promotions.find(pr => pr.ruleId === id);
     return `
-    <tr><td><strong>${e(rule?.name ?? id)}</strong></td>
+    <tr><td><strong>${e(rule?.name ?? id)}</strong><div class="muted">${e(rule?.fixHint ?? '')}</div></td>
     <td><code>${e(rule?.issueCode ?? '')}</code></td>
+    <td class="muted">${e(promo?.modelId ?? '')}</td>
     <td class="num">v${promo?.playbookVersion ?? '—'}</td>
     <td class="muted">${promo ? e(new Date(promo.promotedAt).toLocaleString()) : '—'}</td></tr>`;
   }).join('');
+
+  const escapeBlocks = run.escapes.map(x => `
+    <h3 style="font-size:14px;margin:16px 0 4px">${e(x.escape.title)} <span class="muted">· ${e(x.escape.origin === 'model-draft' ? `${x.escape.model ?? 'model'} draft` : 'seed')}</span></h3>
+    <table><tbody>
+      <tr><td>Baseline validator</td><td>${x.validatorValid ? '<span class="pill ok">Accepts</span>' : '<span class="pill warn">Rejects</span>'}</td></tr>
+      <tr><td>Runtime evidence</td><td>${e(x.evidence)}</td></tr>
+      <tr><td>After the run</td><td>${x.caughtAfter.length ? `Flagged before running by ${x.caughtAfter.map(c => `<code>${e(c)}</code>`).join(' ')}` : '<span class="muted">Not caught</span>'}</td></tr>
+    </tbody></table>
+    <pre>${e(x.escape.source)}</pre>`).join('');
+
+  const curve = run.curve;
 
   const archiveItems = run.playbook.emeritus.map(rec => `
     <li><strong>${e(rec.name)}</strong> — ${e(rec.reasons.join(' '))}${rec.counterexample ? `<div class="muted">Counterexample: ${e(rec.counterexample)}</div>` : ''}</li>`).join('');
@@ -133,13 +153,14 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
     <tr><td>${e(s.label)}</td><td>${e(s.classified)}</td><td class="num">${s.atrRatio.toFixed(2)}×</td></tr>`).join('');
 
   const limits = [
-    'Candidates in this build come from a hand-written catalogue of declarative rule specs. Connecting a live model to propose rules is the next step; the evaluator and its gates stay the same.',
-    `The known-good corpus is the ${corpus} scripts shipped with the app. "No false alarms" means none on this corpus, not a guarantee for every script a user could write.`,
-    'Broken variants are generated by deterministic mutation of shipped scripts and split into visible and held-out sets. Held-out variants are never shown to the proposer.',
-    'Execution checks run on 120 synthetic bars. They confirm that a script produces finite output. They are not a backtest and say nothing about profitability.',
-    'Trade assistant rules are graded on process compliance and correct abstention over synthetic point-in-time regime scenarios, never on profit.',
+    'Candidates are declarative rule specs in a fixed rule language of three families. The model chooses a family and its parameters; it never writes executable code, and a malformed spec is rejected before testing.',
+    'A replayed run re-grades the model\'s recorded text with the current referee. Verdicts are never replayed.',
+    `The known-good corpus is the scripts shipped with the app plus contrast scripts that sit next to each bug class (${corpus} in total). "No false alarms" means none on this corpus, not a guarantee for every script a user could write.`,
+    'Broken variants are generated by deterministic mutation of known-good scripts and split into visible and held-out sets. Held-out variants are never shown to the proposer; it sees only counts.',
+    'Runtime oracles run each script on four synthetic markets (2,400 bars). They prove that output is dead or a signal never fires there. They are not a backtest and say nothing about profitability.',
+    'Dependent advice rules are graded on process compliance and correct abstention over synthetic point-in-time regime scenarios, never on profit.',
     'The playbook and archive are stored in this browser. They are not a server authority.',
-    'Reproduce the checks with npm run verify:oakguard (headless evaluator) and npm test.',
+    'Reproduce the checks with npm run verify:oakguard and npm run verify:proposer (headless, no API key).',
   ];
 
   return `<!doctype html>
@@ -159,7 +180,7 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
   </header>
   <div class="body">
     <h2>Summary</h2>
-    <p class="lede">OakGuard tests the rules that check AI-written indicators. Only rules that catch real bugs without false alarms are kept, and kept rules are enforced in the editor.</p>
+    <p class="lede">OakGuard turns runtime evidence into permanent checks. A Meta model writes a declarative rule for each bug the validator missed; an independent referee keeps only rules that catch every broken variant, held-out ones included, without a false alarm. Kept rules are enforced in the editor.</p>
     <ul class="summary">${summary.map(line => `<li>${e(line)}</li>`).join('')}</ul>
 
     <h2>How the run went</h2>
@@ -168,15 +189,9 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
       <tbody>${stepRows}</tbody>
     </table>
 
-    <h2>1 · The failure</h2>
-    <p class="muted">The seed script below is the kind of code an AI coder writes. The baseline validator and the executed output disagree.</p>
-    <pre>${e(SEED_SCRIPT)}</pre>
-    <table style="margin-top:10px">
-      <tbody>
-        <tr><td>Baseline validator</td><td>${seedAccepted ? '<span class="pill ok">Accepts</span>' : '<span class="pill warn">Rejects</span>'} ${e(run.seed.validatorIssueCodes.join(', ') || 'no issues reported')}</td></tr>
-        <tr><td>Executed SMA series</td><td>${pct(run.seed.finiteRatio)} finite values (${run.seed.plotCount} plot points)</td></tr>
-      </tbody>
-    </table>
+    <h2>1 · The escapes</h2>
+    <p class="muted">Each script below passes the baseline validator, and running it proves it broken.</p>
+    ${escapeBlocks || '<p class="muted">No escapes in this run.</p>'}
 
     <h2>2 · Candidate rules and their scores</h2>
     <table>
@@ -186,27 +201,28 @@ export function buildOakGuardReport(run: OakGuardRun, generatedAt: Date): string
 
     <h2>3 · The playbook</h2>
     ${playbookRows
-      ? `<table><thead><tr><th>Rule</th><th>Enforces</th><th>Added in</th><th>Promoted</th></tr></thead><tbody>${playbookRows}</tbody></table>`
+      ? `<table><thead><tr><th>Rule</th><th>Enforces</th><th>Written by</th><th>Added in</th><th>Promoted</th></tr></thead><tbody>${playbookRows}</tbody></table>`
       : '<p class="muted">No rules are active yet. Run OakGuard to promote proven rules.</p>'}
     <p class="muted">Promoted rules now run inside the editor validator and the agent auto-fix loop for every script.</p>
 
     <h2>4 · Emeritus archive</h2>
     ${archiveItems ? `<ul class="limits">${archiveItems}</ul>` : '<p class="muted">Nothing archived. Rejected rules are kept here with their counterexamples.</p>'}
 
-    <h2>5 · Re-run of the failing task</h2>
-    <table>
-      <tbody>
-        <tr><td>Caught by</td><td>${run.reRun.caughtBy.length ? run.reRun.caughtBy.map(c => `<code>${e(c)}</code>`).join(' ') : '<span class="muted">No active rule</span>'}</td></tr>
-        <tr><td>Auto-fix <code>sma(close, 0)</code> → <code>sma(close, 14)</code></td><td>${pct(run.reRun.fixedFiniteRatio)} finite values across all bars (warm-up included), ${run.reRun.remainingIssues} playbook issue(s) remaining</td></tr>
-      </tbody>
-    </table>
+    <h2>5 · Unseen model drafts</h2>
+    ${curve ? `<table><tbody>
+      <tr><td>Drafts</td><td>${curve.drafts} held-out first drafts from <code>${e(curve.draftModel)}</code>, recorded ${e(curve.recordedAt)}</td></tr>
+      <tr><td>Accepted by the baseline validator</td><td>${curve.validatorClean}</td></tr>
+      <tr><td>Runtime defects among them</td><td>${curve.escapes} (flagged before running: v1 ${curve.caughtV1}, now ${curve.caughtNow})</td></tr>
+      <tr><td>False alarms on clean drafts</td><td>${curve.falseFlagsNow}</td></tr>
+      <tr><td>First-draft validity (all drafts)</td><td>${curve.firstDraftValidity.validatorClean} of ${curve.firstDraftValidity.drafts}. ${e(curve.firstDraftValidity.note)}</td></tr>
+    </tbody></table>` : '<p class="muted">No recorded drafts in this build.</p>'}
 
     <h2>6 · Script library scan</h2>
     <p class="muted">${run.library.scanned} scripts checked against ${run.library.activeRuleCount} active rule(s). ${flagged} flagged.</p>
     ${flaggedRows ? `<table><thead><tr><th>Script</th><th>Rule</th><th>Message</th></tr></thead><tbody>${flaggedRows}</tbody></table>` : ''}
 
-    <h2>7 · Trade assistant pack</h2>
-    <p class="muted">Rules depending on <strong>${e(DEMO_TOOL)}</strong>: ${run.assistant.dependents}. Returned to probation by this run's tool upgrade: ${invalidated}. Re-graded after the upgrade.</p>
+    <h2>7 · Dependent advice</h2>
+    <p class="muted">Rules depending on <strong>${e(DEMO_TOOL)}</strong>: ${run.assistant.dependents}. Returned to probation because the playbook changed: ${invalidated}. Re-graded afterwards.</p>
     <table>
       <thead><tr><th>Rule</th><th>Depends on</th><th>Compliant scenarios</th><th>Status</th></tr></thead>
       <tbody>${assistantRows}</tbody>

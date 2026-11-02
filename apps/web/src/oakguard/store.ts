@@ -7,9 +7,17 @@ import type { PlaybookState, PromotionRecord, EmeritusRecord, RuleIssue, RuleSpe
 
 const KEY = 'dafe_oakguard_playbook_v1';
 
-const DEFAULT_STATE: PlaybookState = { version: 1, activeRuleIds: [], promotions: [], emeritus: [] };
+const DEFAULT_STATE: PlaybookState = { version: 1, activeRuleIds: [], promotions: [], emeritus: [], learnedRules: [] };
+
+/** Tools that run outside the browser (the learning-curve harness) pin a playbook here. */
+let override: PlaybookState | null = null;
+
+export function setPlaybookOverride(state: PlaybookState | null): void {
+  override = state;
+}
 
 export function loadPlaybook(): PlaybookState {
+  if (override) return override;
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULT_STATE };
@@ -20,21 +28,22 @@ export function loadPlaybook(): PlaybookState {
 }
 
 export function savePlaybook(state: PlaybookState): void {
+  if (override) { override = state; return; }
   try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* storage unavailable */ }
 }
 
 export function resetPlaybook(): PlaybookState {
-  const fresh = { ...DEFAULT_STATE };
+  const fresh = { ...DEFAULT_STATE, learnedRules: [] };
   savePlaybook(fresh);
   return fresh;
 }
 
-export function getRuleById(id: string): RuleSpec | undefined {
-  return CANDIDATE_CATALOGUE.find(r => r.id === id);
+export function getRuleById(id: string, state?: PlaybookState): RuleSpec | undefined {
+  return CANDIDATE_CATALOGUE.find(r => r.id === id) ?? state?.learnedRules?.find(r => r.id === id);
 }
 
 export function activeRules(state: PlaybookState): RuleSpec[] {
-  return state.activeRuleIds.map(getRuleById).filter((r): r is RuleSpec => !!r);
+  return state.activeRuleIds.map(id => getRuleById(id, state)).filter((r): r is RuleSpec => !!r);
 }
 
 /** Validate a source with the ACTIVE playbook rules (on top of the baseline validator's job). */
@@ -44,12 +53,16 @@ export function validateWithPlaybook(state: PlaybookState, source: string): Rule
   return out;
 }
 
-export function promoteRule(state: PlaybookState, record: PromotionRecord): PlaybookState {
+export function promoteRule(state: PlaybookState, record: PromotionRecord, spec?: RuleSpec): PlaybookState {
+  const learned = state.learnedRules ?? [];
+  const keepSpec = spec && !CANDIDATE_CATALOGUE.some(r => r.id === spec.id);
   const next: PlaybookState = {
+    ...state,
     version: state.version + 1,
     activeRuleIds: [...new Set([...state.activeRuleIds, record.ruleId])],
     promotions: [...state.promotions, record],
     emeritus: state.emeritus,
+    learnedRules: keepSpec ? [...learned.filter(r => r.id !== spec!.id), spec!] : learned,
   };
   savePlaybook(next);
   return next;

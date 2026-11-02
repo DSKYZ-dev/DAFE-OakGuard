@@ -5,10 +5,17 @@
  */
 import { getIndicators } from '../oakscript/indicators';
 import { LENGTH_ARG_POSITIONS } from './rules';
-import type { CorpusEntry, MutantCase, RuleFamily } from './types';
+import { CONTRAST_SCRIPTS } from './contrast';
+import type { CorpusEntry, DefectClass, MutantCase } from './types';
 
-export function knownGoodCorpus(): CorpusEntry[] {
+/** The shipped library. */
+export function shippedCorpus(): CorpusEntry[] {
   return getIndicators().map(i => ({ name: i.name, category: i.category, source: i.source }));
+}
+
+/** Everything a promoted rule must leave alone: the shipped library plus the contrast scripts. */
+export function knownGoodCorpus(): CorpusEntry[] {
+  return [...shippedCorpus(), ...CONTRAST_SCRIPTS];
 }
 
 const LENGTH_CALL_RE = /\b(sma|ema|wma|hma|rma|vwma|rsi|highest|lowest|stdev|roc|median|macd|linreg|correlation|atr|cci|adx|stoch|mfi|cmf|pivothigh|pivotlow)\s*\(/g;
@@ -63,7 +70,7 @@ export function generateLengthMutants(corpus: CorpusEntry[], cap = 240): MutantC
           n++;
           mutants.push({
             id: `mut-len-${n}`,
-            family: 'positive-int-length',
+            defectClass: 'dead-length',
             baseIndicator: entry.name,
             source,
             defect: `${fn}() length ${raw} → ${bad}`,
@@ -99,7 +106,7 @@ export function generateDottedMutants(corpus: CorpusEntry[], cap = 120): MutantC
       n++;
       mutants.push({
         id: `mut-dot-${n}`,
-        family: 'unknown-dotted-call',
+        defectClass: 'silent-call',
         baseIndicator: entry.name,
         source,
         defect: `${good}() → ${bad}()`,
@@ -111,14 +118,66 @@ export function generateDottedMutants(corpus: CorpusEntry[], cap = 120): MutantC
   return mutants;
 }
 
-export function generateMutants(family: RuleFamily, corpus: CorpusEntry[]): MutantCase[] {
-  return family === 'positive-int-length' ? generateLengthMutants(corpus) : generateDottedMutants(corpus);
+/**
+ * Impossible breakouts: a signal compares price with a highest()/lowest()
+ * window that includes the current bar, so it can never fire. Each form is
+ * appended to a shipped script; the forms vary the operator, the operand
+ * order and whether the window is stored in a variable first.
+ */
+const BREAKOUT_FORMS: Array<{ label: string; lines: (n: number) => string[]; marker: 'up' | 'down' }> = [
+  { label: 'crossover(close, highest(high, N))', marker: 'up', lines: n => [`if crossover(close, highest(high, ${n})) {`] },
+  { label: 'close > highest(high, N)', marker: 'up', lines: n => [`if close > highest(high, ${n}) {`] },
+  { label: 'ogHi = highest(high, N); crossover(close, ogHi)', marker: 'up', lines: n => [`ogHi = highest(high, ${n})`, 'if crossover(close, ogHi) {'] },
+  { label: 'ogLo = lowest(low, N); close < ogLo', marker: 'down', lines: n => [`ogLo = lowest(low, ${n})`, 'if close < ogLo {'] },
+  { label: 'lowest(low, N) > low', marker: 'down', lines: n => [`if lowest(low, ${n}) > low {`] },
+  { label: 'ogHi = highest(high, N); ogBreak = high > ogHi and volume > 0', marker: 'up', lines: n => [`ogHi = highest(high, ${n})`, 'ogBreak = high > ogHi and volume > 0', 'if ogBreak {'] },
+  { label: 'crossunder(close, lowest(low, N))', marker: 'down', lines: n => [`if crossunder(close, lowest(low, ${n})) {`] },
+  { label: 'ogTop = highest(close, N); ogTop < close', marker: 'up', lines: n => [`ogTop = highest(close, ${n})`, 'if ogTop < close {'] },
+];
+
+const BREAKOUT_LENGTHS = [10, 20, 34, 55];
+
+export const BREAKOUT_MARKERS = { up: 'OG Breakout', down: 'OG Breakdown' } as const;
+
+export function breakoutBlock(formIndex: number, length: number): string {
+  const form = BREAKOUT_FORMS[formIndex % BREAKOUT_FORMS.length];
+  const marker = form.marker === 'up'
+    ? `  plotshape(bar_index, low, "${BREAKOUT_MARKERS.up}", "triangleup", "#22cc88")`
+    : `  plotshape(bar_index, high, "${BREAKOUT_MARKERS.down}", "triangledown", "#ff4477")`;
+  return ['', '// injected signal', ...form.lines(length), marker, '}'].join('\n');
+}
+
+export function generateBreakoutMutants(corpus: CorpusEntry[], cap = 120): MutantCase[] {
+  const mutants: MutantCase[] = [];
+  let n = 0;
+  corpus.forEach((entry, idx) => {
+    for (let k = 0; k < 2 && mutants.length < cap; k++) {
+      const formIndex = (idx * 2 + k) % BREAKOUT_FORMS.length;
+      const length = BREAKOUT_LENGTHS[(idx + k) % BREAKOUT_LENGTHS.length];
+      n++;
+      mutants.push({
+        id: `mut-brk-${n}`,
+        defectClass: 'impossible-breakout',
+        baseIndicator: entry.name,
+        source: entry.source + '\n' + breakoutBlock(formIndex, length),
+        defect: `signal on ${BREAKOUT_FORMS[formIndex].label.replace(/N/g, String(length))}`,
+        heldOut: n % 3 === 2,
+      });
+    }
+  });
+  return mutants;
+}
+
+export function generateMutantsForClass(defectClass: DefectClass, corpus: CorpusEntry[]): MutantCase[] {
+  if (defectClass === 'dead-length') return generateLengthMutants(corpus);
+  if (defectClass === 'silent-call') return generateDottedMutants(corpus);
+  return generateBreakoutMutants(corpus);
 }
 
 export interface SyntheticBarSet { close: number[]; open: number[]; high: number[]; low: number[]; volume: number[]; time: number[]; count: number }
 
 /** mulberry32 PRNG (same family as mega-test): deterministic for a given seed. */
-function mulberry32(seed: number): () => number {
+export function mulberry32(seed: number): () => number {
   let s = seed >>> 0;
   return () => {
     s = (s + 0x6d2b79f5) >>> 0;

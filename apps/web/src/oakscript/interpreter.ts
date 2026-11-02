@@ -803,6 +803,19 @@ function evaluateUnary(expr: UnaryExpr, ctx: RuntimeContext): RuntimeValue {
   return arg;
 }
 
+const callSiteIds = new WeakMap<CallExpr, number>();
+let nextCallSiteId = 1;
+
+/** Stable id for one call expression in a parsed script. */
+function callSiteId(expr: CallExpr): number {
+  let id = callSiteIds.get(expr);
+  if (id === undefined) {
+    id = nextCallSiteId++;
+    callSiteIds.set(expr, id);
+  }
+  return id;
+}
+
 function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
   const callee = expr.callee;
   let funcName = '';
@@ -979,9 +992,12 @@ function evaluateCall(expr: CallExpr, ctx: RuntimeContext): RuntimeValue {
       }
 
       case 'crossover': case 'crossunder': {
-        // Cache full-array results so we don't recompute every bar
+        // Cache full-array results so we don't recompute every bar. The key
+        // is the call site: an earlier key built from the argument node TYPES
+        // made every crossover(ident, ident) in a script share the first
+        // one's result (found by the OakGuard dead-signal oracle).
         const aNode = expr.args[0], bNode = expr.args[1];
-        const cacheKey = `${funcName}:${aNode.type}:${bNode.type}`;
+        const cacheKey = `${funcName}:site${callSiteId(expr)}`;
         const cached = ctx.cache.get(cacheKey) as boolean[] | undefined;
         if (cached && cached.length > ctx.barIndex) return cached[ctx.barIndex] || false;
 

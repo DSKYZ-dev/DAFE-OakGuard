@@ -75,6 +75,13 @@ export function tokenize(source: string): Token[] {
       while (i < source.length && /[0-9.]/.test(source[i])) {
         value += source[i]; i++; col++;
       }
+      // Scientific notation (1e-9, 2.5E+3). Model-written guards use it
+      // constantly; without it `x + 1e-9` lexed as `1` then identifier `e`
+      // and 5 of 32 Muse Spark first drafts failed to parse.
+      const exp = /^[eE][+-]?[0-9]+/.exec(source.slice(i, i + 12));
+      if (exp) {
+        value += exp[0]; i += exp[0].length; col += exp[0].length;
+      }
       tokens.push({ type: 'NUMBER', value, line, col: startCol });
       continue;
     }

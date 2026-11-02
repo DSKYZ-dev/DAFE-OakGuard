@@ -1634,6 +1634,156 @@ async def api_llm_hosted_chat(body: dict[str, Any]):
     return {**result, "provider": pid, "model": model}
 
 
+# ── Meta Model API: structured output and speech-to-text ──────────────────────
+# OakGuard's rule proposer (Muse Wonder) and the chart vision check (Muse Spark)
+# need schema-constrained JSON; voice prompts need Muse Voice Transcribe. Both
+# go through here so the key stays on this PC, and every reply reports its
+# token use and cost so the UI can show what a step actually cost.
+
+# USD per 1M tokens (input, output), Standard mode — dev.meta.ai/docs/pricing-rate-limits.
+META_TOKEN_PRICES: dict[str, tuple[float, float]] = {
+    "muse-wonder-1.0": (4.00, 20.00),
+    "muse-spark-1.3": (1.25, 4.25),
+    "muse-spark-1.2": (1.25, 4.25),
+    "muse-spark-1.1": (1.25, 4.25),
+}
+META_TRANSCRIBE_USD_PER_HOUR = 0.18
+_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "max")
+
+
+def _meta_record() -> dict[str, Any]:
+    rec = _provider_record("meta", load_settings())
+    if not rec.get("api_key"):
+        raise HTTPException(status_code=400, detail="Add a Meta Model API key in Settings → Provider API Keys.")
+    return rec
+
+
+@app.post("/api/meta/structured")
+async def api_meta_structured(body: dict[str, Any]):
+    """One schema-constrained completion on a Meta model, optionally with one image."""
+    rec = _meta_record()
+    model = str(body.get("model") or "muse-wonder-1.0").strip()
+    if model not in META_TOKEN_PRICES:
+        raise HTTPException(status_code=400, detail=f"Structured calls are limited to: {', '.join(META_TOKEN_PRICES)}")
+    schema = body.get("schema")
+    if not isinstance(schema, dict):
+        raise HTTPException(status_code=400, detail="schema must be a JSON Schema object")
+    system = str(body.get("system") or "")[:40000]
+    user = str(body.get("user") or "")[:60000]
+    image = body.get("image")
+    effort = str(body.get("reasoning_effort") or "medium")
+    if effort not in _REASONING_EFFORTS:
+        effort = "medium"
+    try:
+        max_tokens = max(256, min(int(body.get("max_tokens") or 8000), 16000))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_tokens must be a number")
+
+    if isinstance(image, str) and image.startswith("data:image/"):
+        user_content: Any = [{"type": "text", "text": user}, {"type": "image_url", "image_url": {"url": image}}]
+    else:
+        user_content = user
+    payload = {
+        "model": model,
+        "stream": False,
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+        "reasoning_effort": effort,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_content}],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": str(body.get("schema_name") or "result")[:64], "schema": schema, "strict": True},
+        },
+    }
+    base = (rec.get("base_url") or "").rstrip("/")
+    headers = {"Authorization": f"Bearer {rec['api_key']}"}
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            resp = None
+            for attempt in range(3):
+                resp = await client.post(f"{base}/chat/completions", headers=headers, json=payload)
+                if resp.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                break
+    except httpx.TimeoutException as e:
+        return {"ok": False, "detail": f"Meta Model API timed out ({type(e).__name__})."}
+    except httpx.HTTPError as e:
+        return {"ok": False, "detail": f"Meta Model API unreachable ({type(e).__name__})."}
+    latency_ms = int((time.time() - started) * 1000)
+    if resp is None or resp.status_code != 200:
+        code = resp.status_code if resp is not None else 0
+        return {"ok": False, "detail": f"Meta Model API returned {code}: {(resp.text if resp is not None else '')[:300]}"}
+    data = resp.json()
+    choice = (data.get("choices") or [{}])[0]
+    content = (choice.get("message") or {}).get("content") or ""
+    usage = data.get("usage") or {}
+    in_tok = int(usage.get("prompt_tokens") or 0)
+    out_tok = int(usage.get("completion_tokens") or 0)
+    price_in, price_out = META_TOKEN_PRICES[model]
+    cost = (in_tok * price_in + out_tok * price_out) / 1_000_000
+    logger.info("meta structured: model=%s effort=%s in=%d out=%d %.1fs finish=%s",
+                model, effort, in_tok, out_tok, latency_ms / 1000, choice.get("finish_reason"))
+    return {
+        "ok": bool(content),
+        "detail": "" if content else "The model returned an empty reply.",
+        "content": content,
+        "model": data.get("model") or model,
+        "finish_reason": choice.get("finish_reason"),
+        "usage": {"input_tokens": in_tok, "output_tokens": out_tok},
+        "latency_ms": latency_ms,
+        "cost_usd": round(cost, 6),
+    }
+
+
+@app.post("/api/meta/transcribe")
+async def api_meta_transcribe(body: dict[str, Any]):
+    """Muse Voice Transcribe on one push-to-talk recording (mono 16-bit PCM WAV, base64)."""
+    rec = _meta_record()
+    raw = str(body.get("audio_b64") or "")
+    if "," in raw[:80] and raw.startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        audio = base64.b64decode(raw, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="audio_b64 must be base64-encoded WAV")
+    if len(audio) < 1000 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        raise HTTPException(status_code=400, detail="Send a mono 16-bit PCM WAV recording.")
+    request_cfg: dict[str, Any] = {"model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV", "mode": "PUSH_TO_TALK"}
+    keywords = [str(k)[:40] for k in (body.get("keywords") or []) if str(k).strip()][:50]
+    if keywords:
+        request_cfg["keywords"] = keywords
+    base = (rec.get("base_url") or "").rstrip("/")
+    started = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{base}/asr/transcribe",
+                headers={"Authorization": f"Bearer {rec['api_key']}", "Accept": "application/json"},
+                files={
+                    "request": (None, json.dumps(request_cfg), "application/json"),
+                    "audio": ("prompt.wav", audio, "audio/wav"),
+                },
+            )
+    except httpx.HTTPError as e:
+        return {"ok": False, "detail": f"Muse Voice Transcribe unreachable ({type(e).__name__})."}
+    latency_ms = int((time.time() - started) * 1000)
+    if resp.status_code != 200:
+        return {"ok": False, "detail": f"Muse Voice Transcribe returned {resp.status_code}: {resp.text[:300]}"}
+    data = resp.json()
+    duration_ms = int(data.get("audioDurationMs") or 0)
+    logger.info("meta transcribe: %d ms audio, %.1fs", duration_ms, latency_ms / 1000)
+    return {
+        "ok": True,
+        "transcript": (data.get("transcript") or "").strip(),
+        "model": "muse-voice-transcribe-1.0",
+        "audio_ms": duration_ms,
+        "latency_ms": latency_ms,
+        "cost_usd": round(duration_ms / 3_600_000 * META_TRANSCRIBE_USD_PER_HOUR, 6),
+    }
+
+
 @app.get("/api/llm/models")
 async def api_llm_models(provider: str):
     s = load_settings()
