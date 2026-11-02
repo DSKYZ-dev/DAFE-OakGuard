@@ -181,7 +181,7 @@ export function createDashboard(): {
   collapseBtn.onclick = () => {
     collapsed = !collapsed;
     collapseBtn.textContent = collapsed ? '+' : '−';
-    content.style.display = collapsed ? 'none' : 'block';
+    content.style.display = collapsed ? 'none' : 'block'; header.style.padding = collapsed ? '2px 10px' : '7px 10px';
     // Hiding `content` alone left the panel stuck at its 180px minHeight —
     // the outer panel enforces that floor regardless of the inner content's
     // visibility, so collapsing only hid the plot list while leaving a big

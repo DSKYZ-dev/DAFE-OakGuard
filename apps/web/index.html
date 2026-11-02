@@ -175,8 +175,8 @@
        32px baseline. */
     :root { --dafe-glow: #2dffb3; --glow-vis: 1; }
     body.glow-sync #toolbar {
-      border-color: var(--dafe-glow);
-      box-shadow: 0 0 calc(22px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(42% * var(--glow-vis)), transparent), inset 0 0 12px color-mix(in srgb, var(--dafe-glow) 10%, transparent);
+      border-color: var(--dafe-glow) !important;
+      box-shadow: 0 0 calc(22px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(42% * var(--glow-vis)), transparent), inset 0 0 12px color-mix(in srgb, var(--dafe-glow) 10%, transparent) !important;
     }
     body.glow-sync #advisor-fab {
       border-color: var(--dafe-glow); color: var(--dafe-glow);
@@ -199,7 +199,7 @@
     body.glow-sync #oakscript-editor, body.glow-sync #dafe-dashboard, body.glow-sync #indicator-list,
     body.glow-sync #age-inputs-panel, body.glow-sync #oakscript-docs, body.glow-sync #oakscript-images,
     body.glow-sync #oakscript-backtest, body.glow-sync #oakscript-strategy-lab, body.glow-sync #oakscript-ml-lab,
-    body.glow-sync #oakscript-alerts, body.glow-sync .dafe-glow-window {
+    body.glow-sync #oakscript-alerts, body.glow-sync #oakguard-window, body.glow-sync .dafe-glow-window {
       border-color: color-mix(in srgb, var(--dafe-glow) 55%, transparent) !important;
       box-shadow: 0 0 calc(20px * var(--glow-vis)) color-mix(in srgb, var(--dafe-glow) calc(30% * var(--glow-vis)), transparent), 0 12px 40px rgba(0,0,0,0.5) !important;
     }
@@ -815,6 +815,13 @@
     .news-tag.earnings { background: rgba(0,255,136,0.1); color: rgba(0,255,136,0.5); }
     .news-tag.risk { background: rgba(255,68,119,0.1); color: rgba(255,68,119,0.5); }
     #news-body.collapsed { display: none; }
+
+    /* Minimized windows end at the header strip: no body, no height floor,
+       no leftover resize height, and tight vertical padding so every
+       collapsed bar lands at about the same 22-25px. */
+    #trading-panel.collapsed { height: auto !important; min-height: 0 !important; }
+    #trading-panel.collapsed .trading-panel-header { padding-top: 2px; padding-bottom: 2px; }
+    #news-box:has(#news-body.collapsed) #news-header { padding-top: 2px; padding-bottom: 2px; }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">

@@ -260,7 +260,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
     collapseBtn.textContent = collapsed ? '+' : '−';
     scrollArea.style.display = collapsed ? 'none' : 'block';
     webhookDiv.style.display = collapsed ? 'none' : 'block';
-    panel.style.height = collapsed ? 'auto' : '';
+    panel.style.height = collapsed ? 'auto' : ''; panel.style.minHeight = collapsed ? '0' : '200px'; header.style.padding = collapsed ? '2px 12px' : '8px 12px';
   };
 
   document.body.appendChild(panel);
