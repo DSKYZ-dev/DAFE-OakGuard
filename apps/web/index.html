@@ -822,6 +822,21 @@
     #trading-panel.collapsed { height: auto !important; min-height: 0 !important; }
     #trading-panel.collapsed .trading-panel-header { padding-top: 2px; padding-bottom: 2px; }
     #news-box:has(#news-body.collapsed) #news-header { padding-top: 2px; padding-bottom: 2px; }
+    /* OakGuard writes its header padding inline, so key the collapsed bar off
+       the hidden body instead: same 22px strip as the other windows, title
+       only, and a "+" restore button. */
+    #oakguard-window:has(> div[style*="display: none"]) > div:first-child {
+      padding-top: 2px !important; padding-bottom: 2px !important;
+    }
+    #oakguard-window:has(> div[style*="display: none"]) > div:first-child > div:first-child > span:not(:first-child) {
+      display: none;
+    }
+    #oakguard-window:has(> div[style*="display: none"]) > div:first-child > div:last-child > button:first-child {
+      font-size: 0;
+    }
+    #oakguard-window:has(> div[style*="display: none"]) > div:first-child > div:last-child > button:first-child::before {
+      content: '+'; font-size: 14px;
+    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
