@@ -1,0 +1,58 @@
+{
+  "modelNote": "coder opencode/deepseek-v4-pro (override) · advisor meta/muse-spark-1.3 (saved)",
+  "roles": {
+    "coder": {
+      "provider": "opencode",
+      "model": "deepseek-v4-pro",
+      "source": "override"
+    },
+    "advisor": {
+      "provider": "meta",
+      "model": "muse-spark-1.3",
+      "source": "saved"
+    }
+  },
+  "savedRoles": {
+    "llm_coder_provider": "meta",
+    "llm_coder_model": "muse-spark-1.3",
+    "llm_provider": "meta",
+    "llm_trade_advisor_model": "muse-spark-1.3"
+  },
+  "label": "deepseek-v4-pro",
+  "run": 1,
+  "at": "2026-10-31T16:12:13.024Z",
+  "pass": false,
+  "ms": 853609,
+  "results": [
+    {
+      "id": 1,
+      "pass": false,
+      "rounds": 0,
+      "drafts": 2,
+      "briefAttempts": 1,
+      "briefFallback": false,
+      "repairs": [],
+      "notes": [
+        "draft 1 attempt 1: empty reply",
+        "draft 1 attempt 2: empty reply",
+        "draft 2 attempt 1: empty reply",
+        "draft 2 attempt 2: empty reply",
+        "empty-reply failover: compact design-summary recovery prompt",
+        "recovery attempt 1: empty reply",
+        "recovery attempt 2: empty reply"
+      ],
+      "checks": {
+        "hasCode": false,
+        "validAndCoverageClean": false,
+        "clusterFree": true
+      },
+      "problems": [
+        "NO_CODE"
+      ],
+      "codeLen": 0,
+      "code": "",
+      "replyHead": "COVERAGE: the script has no plot()/plotshape()/plot3d() output. Every model must render at least one visible series or marker. | COVERAGE: the request asks for ATR, but the script never computes it (expected atr(high, low, close, n)). Compute ATR from the bar data and drive the signal logic with it. | COVERAGE: the request asks for two independently readable readings/channels, but the script renders fewer than two distinct series. Give each reading its own source value (raw vs smoothed, margin, count, disagreement) — do not restyle the same number.",
+      "ms": 853607
+    }
+  ]
+}

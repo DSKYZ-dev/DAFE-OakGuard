@@ -7,15 +7,9 @@
 import { CANDIDATE_CATALOGUE } from './rules';
 import { SEED_SCRIPT } from './evaluator';
 import { DEMO_TOOL, type CandidateStatus, type OakGuardRun } from './pipeline';
+import { escapeHtml } from '../escape-html';
 
-export function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
+export { escapeHtml };
 
 const STATUS_PILL: Record<CandidateStatus, { label: string; tone: 'ok' | 'warn' }> = {
   active: { label: 'Active', tone: 'ok' },

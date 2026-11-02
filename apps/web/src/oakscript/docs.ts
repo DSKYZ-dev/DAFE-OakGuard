@@ -650,8 +650,13 @@ plotchar(bar_index, price, char, color?, pane?)
   - char: any string — "B", "S", "★", "🚀", etc.
   EXAMPLE:  plotchar(bar_index, high, "S", "#ff4477")
 
+text.new(x, y, text, color?, size?, id?)
+  Places an unboxed text label (no background box). Pass the same id on
+  later bars to update that label in place instead of adding another.
+  EXAMPLE:  text.new(bar_index, high, "Swing high", "#ffd43b", 10, "swing")
+
 label.new(x, y, text, color)
-  Places a text label at a specific position.
+  Places a text label at a specific position (the boxed form; text.new is unboxed).
   - x:     number — bar index or pixel position
   - y:     number — price level or pixel position
   - text:  string — label content
@@ -1592,14 +1597,35 @@ behind UI elements for a cinematic look.`,
 How it works:
 1. Your message + chart state + current source code → sent to LLM
 2. LLM returns corrected/improved code in triple-backtick oakscript fences
-3. Code appears in editor with buttons: View Code | Test Run | Accept | Decline
-4. Test Run shows the visualization immediately without saving
-5. Accept applies and runs the code permanently
+3. In ask mode (the default), the proposal is drawn on the chart right away, marked "PREVIEW · not applied to your indicator", and a review panel offers 👁 View Diff | ▶ Test Run | ✓ Accept & Apply | ✕ Decline
+4. Preview and Test Run only draw the proposal. The editor text and the accepted indicator stay as they were, and the proposal cannot send alerts, emit live signals, or trade
+5. ✓ Accept & Apply writes the code to the editor and applies it permanently
+6. ✕ Decline discards the proposal and changes nothing
 
-Auto-Accept toggle: When ON, agent code is applied automatically.
-When OFF, you review and choose to accept/decline.
+Auto-accept agent edits (checkbox in the editor): when ON, each agent edit is applied at once, with no review step. Test Run still only previews.
 
-Keyboard: Ctrl+Alt+G = Generate | Ctrl+Alt+F = Fix | Ctrl+Alt+B = Brainstorm | Ctrl+Alt+M = Metrics`,
+Keyboard: Ctrl+Alt+G = Generate | Ctrl+Alt+F = Fix | Ctrl+Alt+B = Brainstorm | Ctrl+Alt+M = Metrics | Ctrl+Alt+V = Validate`,
+    },
+    // ═══════════════════════════════════════════════════════════════════
+    {
+      title: 'OakGuard — Verifying AI-Written Indicators',
+      content: `OakGuard is the verification layer for indicators the agent writes. It
+checks the rules that catch broken AI code, such as a length argument of 0 or
+a dotted call that does not exist. Each candidate rule is scored against the
+shipped indicator library and generated mutants. Only rules that catch real
+bugs and raise no false alarms are promoted to the live playbook, and the
+editor applies the promoted rules to what the agent writes.
+
+Open it from Settings → LLM Configuration (⬢ OAKGUARD), or add ?oakguard=1
+to the address.
+
+▶ Run OakGuard works through all 8 steps automatically and shows each step in
+plain language, with its result. ↻ Run again repeats the run.
+Download report saves a self-contained HTML report of the run.
+Reset playbook returns the rules to version 1, so you can rehearse from the start.
+
+Candidates are data, and no candidate can change how it is scored. The rules
+come from a hand-written catalogue today.`,
     },
     // ═══════════════════════════════════════════════════════════════════
     {

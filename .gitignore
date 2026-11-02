@@ -10,6 +10,7 @@ build/
 .env
 backend/settings.json
 backend/.vault_key
+backend/.lan_token
 backend/ml_models/
 backend/rl_policies/
 

@@ -11,14 +11,16 @@ import json
 import logging
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 import time
 from typing import Any, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import httpx
 
 import model_manager as mm
@@ -35,6 +37,51 @@ logger = logging.getLogger("dafe")
 # App
 # ---------------------------------------------------------------------------
 app = FastAPI(title="DAFE Charts", version="1.0.0")
+
+# ---------------------------------------------------------------------------
+# LAN pairing token. Loopback (the desktop app) is trusted; any other client
+# must send X-DAFE-Token equal to the value in backend/.lan_token (gitignored).
+# Registered before CORSMiddleware so CORS headers still decorate a 401.
+# ---------------------------------------------------------------------------
+LAN_TOKEN_FILE = os.path.join(os.path.dirname(__file__), ".lan_token")
+_LOOPBACK_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost")
+
+
+def _load_or_create_lan_token() -> str:
+    try:
+        with open(LAN_TOKEN_FILE, "r", encoding="utf-8") as f:
+            token = f.read().strip()
+    except FileNotFoundError:
+        token = ""
+    if token:
+        logger.info("LAN pairing token loaded from %s", LAN_TOKEN_FILE)
+        return token
+    token = secrets.token_urlsafe(24)
+    with open(LAN_TOKEN_FILE, "w", encoding="utf-8") as f:
+        f.write(token + "\n")
+    logger.info("LAN pairing token created at %s", LAN_TOKEN_FILE)
+    return token
+
+
+LAN_TOKEN = _load_or_create_lan_token()
+
+
+@app.middleware("http")
+async def _require_lan_token(request, call_next):
+    host = request.client.host if request.client else ""
+    if host in _LOOPBACK_HOSTS or request.method == "OPTIONS":
+        return await call_next(request)
+    if request.method == "GET" and request.url.path == "/api/ping":
+        return await call_next(request)
+    presented = request.headers.get("x-dafe-token", "")
+    if LAN_TOKEN and secrets.compare_digest(presented.encode("utf-8"), LAN_TOKEN.encode("utf-8")):
+        return await call_next(request)
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "This PC needs its pairing token from backend/.lan_token."},
+    )
+
+
 # This backend has NO authentication on any endpoint (including destructive
 # ones like /api/model/reload and /api/settings), so CORS is the only thing
 # standing between "any website open in the user's browser" and full control
@@ -121,8 +168,8 @@ LLM_PROVIDERS: dict[str, dict[str, Any]] = {
         "doc": "ollama.com",
     },
     "opencode": {
-        "label": "OpenCode", "base_url": "https://api.opencode.ai/v1", "auth": "bearer",
-        "default_model": "opencode/muse-spark-1.2-contributor-free",
+        "label": "OpenCode", "base_url": "https://opencode.ai/zen/v1", "auth": "bearer",
+        "default_model": "deepseek-v4-pro",
         "note": "Coding models with a free tier — the mobile app's default.", "doc": "opencode.ai",
     },
     "openrouter": {
@@ -160,13 +207,34 @@ HOSTED_PROVIDER_IDS = set(LLM_PROVIDERS) - {"ollama"}
 _llm_models_cache: dict[str, tuple[float, list[str]]] = {}
 
 
+def _base_url_allowed(url: str, default: str) -> bool:
+    """A stored API key is sent to its base URL, so that URL must stay on the
+    provider's own origin. A custom endpoint (no default) may use any https host,
+    or plain http on this machine only."""
+    try:
+        p = urlsplit(url)
+    except ValueError:
+        return False
+    if not p.hostname:
+        return False
+    if not default:
+        return p.scheme == "https" or (p.scheme == "http" and p.hostname in ("localhost", "127.0.0.1"))
+    d = urlsplit(default)
+    return (p.scheme, p.hostname, p.port) == (d.scheme, d.hostname, d.port)
+
+
+def _pinned_base_url(saved: str, default: str) -> str:
+    """The base URL a key may be sent to: the saved one when allowed, else the provider default."""
+    return saved if saved and _base_url_allowed(saved, default) else default
+
+
 def _provider_record(pid: str, s: dict[str, Any]) -> dict[str, Any]:
     """Provider metadata merged with the saved key/base/model for that provider."""
     meta = dict(LLM_PROVIDERS.get(pid) or {})
     entry = (s.get("llm_provider_keys") or {}).get(pid) or {}
     meta.update({
         "id": pid,
-        "base_url": (entry.get("base_url") or meta.get("base_url") or "").strip(),
+        "base_url": _pinned_base_url((entry.get("base_url") or "").strip(), (meta.get("base_url") or "").strip()),
         "api_key": entry.get("api_key", "") or "",
         "model": entry.get("model", "") or "",
     })
@@ -273,6 +341,16 @@ async def _hosted_chat(
             text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
         return re.sub(r"</?think>", "", text or "").strip()
 
+    def _budget_exhausted(data: dict[str, Any]) -> bool:
+        choice = (data.get("choices") or [{}])[0]
+        usage = data.get("usage") or {}
+        completion = usage.get("completion_tokens") or usage.get("output_tokens") or 0
+        return (
+            choice.get("finish_reason") == "length"
+            or data.get("stop_reason") == "max_tokens"
+            or completion >= max_tokens
+        )
+
     def _log_reply(data: dict[str, Any], reply: str, attempt: str) -> None:
         choice = (data.get("choices") or [{}])[0]
         usage = data.get("usage") or {}
@@ -303,13 +381,31 @@ async def _hosted_chat(
         return await _post(client, reasoning_effort=reasoning_effort)
 
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
+        # Reasoning models can legitimately spend several minutes on a hard
+        # brief before emitting a visible token. The old 300s cap turned a
+        # slow-but-working Qwen brief into an "OpenCode timed out" failure.
+        async with httpx.AsyncClient(timeout=600.0) as client:
             resp = await _post_with_retry(client)
             if resp.status_code != 200:
                 return {"ok": False, "detail": f"{label} returned {resp.status_code}: {(resp.text or '')[:300]}"}
             data = resp.json()
             reply = _extract(data)
             _log_reply(data, reply, "first")
+            # Reasoning models can spend the whole output budget on hidden
+            # reasoning and return no visible text. Give them more budget,
+            # at most twice and never past 32768. Meta keeps its own path.
+            escalations = 0
+            while (not reply and not is_meta and escalations < 2
+                   and max_tokens < 32768 and _budget_exhausted(data)):
+                escalations += 1
+                max_tokens = min(max_tokens * 2, 32768)
+                logger.info("reasoning budget exhausted: retrying with max_tokens=%d", max_tokens)
+                resp = await _post_with_retry(client)
+                if resp.status_code != 200:
+                    return {"ok": False, "detail": f"{label} returned {resp.status_code} on budget retry: {(resp.text or '')[:300]}"}
+                data = resp.json()
+                reply = _extract(data)
+                _log_reply(data, reply, f"budget{escalations}")
             if not reply:
                 # Hosted models occasionally return an empty candidate (a
                 # transient truncation or content-filter false positive).
@@ -940,6 +1036,24 @@ async def api_chat(body: dict[str, Any]):
         else:
             model = body.get("model", "") or settings.get("llm_trade_advisor_model", "auto")
 
+    # Per-request override (used by the acceptance harness): a hosted provider and
+    # optionally a model for this request only. Nothing is saved from here.
+    ov_provider_key, ov_model_key = {
+        "oakscript_coder": ("coder_provider", "coder_model"),
+        "trade_advisor": ("advisor_provider", "advisor_model"),
+    }.get(agent, ("", ""))
+    override_source = "saved"
+    if ov_provider_key and body.get(ov_provider_key) is not None:
+        ov_provider = str(body.get(ov_provider_key)).strip()
+        if ov_provider not in HOSTED_PROVIDER_IDS:
+            raise HTTPException(status_code=400, detail="Override provider must be a hosted provider with a saved key.")
+        if not _provider_record(ov_provider, settings).get("api_key"):
+            raise HTTPException(status_code=400, detail="No API key is saved for this provider on this PC.")
+        ov_model = str(body.get(ov_model_key) or "").strip()
+        provider = ov_provider
+        model = "" if ov_model in ("", "auto") else ov_model
+        override_source = "override"
+
     # Use the actual running model's port (adopt an externally-started server).
     # Hosted providers never touch the local server, so skip the probe there.
     if provider in HOSTED_PROVIDER_IDS:
@@ -1022,16 +1136,18 @@ async def api_chat(body: dict[str, Any]):
         if not chosen:
             return {"ok": False, "detail": f"Pick a model for {rec.get('label') or provider} in Settings."}
         is_coder = agent == "oakscript_coder"
-        logger.info("chat request: provider=%s hosted model=%s agent=%s", provider, chosen, agent)
+        logger.info("chat request: provider=%s hosted model=%s agent=%s source=%s", provider, chosen, agent, override_source)
         # Muse Spark consumes output budget for hidden reasoning; give the
         # advisor enough room to finish a structured design brief instead of
         # truncating to an empty candidate.
         advisor_tokens = 8192 if provider == "meta" else 2048
         return await _hosted_chat(
             rec, chosen, full_system, ollama_messages[1:],
-            max_tokens=8192 if is_coder else advisor_tokens,
+            max_tokens=((8192 if provider == "meta" else 16384) if is_coder else advisor_tokens),
             temperature=0.3 if is_coder else 0.5,
         )
+
+    logger.info("chat request: provider=%s model=%s agent=%s source=%s", provider, model, agent, override_source)
 
     # Call LLM
     if provider == "local":
@@ -1464,7 +1580,10 @@ def api_llm_provider_save(pid: str, body: dict[str, Any]):
     if api_key and "*" not in api_key:
         entry["api_key"] = api_key
     if "base_url" in body:
-        entry["base_url"] = str(body.get("base_url") or "").strip()
+        new_base = str(body.get("base_url") or "").strip()
+        if new_base and not _base_url_allowed(new_base, str((LLM_PROVIDERS.get(pid) or {}).get("base_url") or "")):
+            raise HTTPException(status_code=400, detail="The API key for this provider can only be sent to its own endpoint.")
+        entry["base_url"] = new_base
     if "model" in body:
         entry["model"] = str(body.get("model") or "").strip()
     keys[pid] = entry
@@ -1487,6 +1606,32 @@ def api_llm_provider_clear(pid: str):
     s["llm_provider_keys"] = keys
     save_settings(s)
     return {"ok": True}
+
+
+@app.post("/api/llm/hosted-chat")
+async def api_llm_hosted_chat(body: dict[str, Any]):
+    """Chat through a saved hosted provider. The key stays on this PC: a client
+    (the mobile app) sends messages here and the stored key is attached server-side."""
+    pid = str(body.get("provider") or "").strip()
+    if pid not in HOSTED_PROVIDER_IDS:
+        raise HTTPException(status_code=404, detail="Unknown provider")
+    rec = _provider_record(pid, load_settings())
+    if not rec.get("api_key"):
+        return {"ok": False, "detail": "No API key is saved for this provider on this PC."}
+    try:
+        max_tokens = max(16, min(int(body.get("max_tokens") or 1024), 8192))
+        temperature = max(0.0, min(float(body.get("temperature", 0.2)), 1.5))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="max_tokens and temperature must be numbers")
+    model = str(body.get("model") or rec.get("model") or rec.get("default_model") or "").strip()
+    messages = [
+        {"role": str(m.get("role")), "content": str(m.get("content") or "")[:20000]}
+        for m in (body.get("messages") or [])[-40:]
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+    ]
+    system = str(body.get("system") or "")[:20000]
+    result = await _hosted_chat(rec, model, system, messages, max_tokens, temperature)
+    return {**result, "provider": pid, "model": model}
 
 
 @app.get("/api/llm/models")
@@ -1736,6 +1881,12 @@ _TF_ALPACA = {"1m": "1Min", "5m": "5Min", "15m": "15Min", "30m": "30Min", "1h": 
 _TF_TWELVE = {"1m": "1min", "5m": "5min", "15m": "15min", "30m": "30min", "1h": "1h", "4h": "4h", "1d": "1day", "1wk": "1week"}
 
 
+def _data_default_base(pid: str) -> str:
+    """The origin a named data provider's key belongs to ('' for the custom template)."""
+    return {"massive": "https://api.massive.com", "polygon": "https://api.polygon.io",
+            "alpaca": "https://data.alpaca.markets", "twelvedata": "https://api.twelvedata.com"}.get(pid, "")
+
+
 def _data_provider_record(pid: str, s: dict[str, Any]) -> dict[str, Any]:
     meta = dict(DATA_PROVIDERS.get(pid) or {})
     keys = s.get("data_provider_keys") or {}
@@ -1745,7 +1896,7 @@ def _data_provider_record(pid: str, s: dict[str, Any]) -> dict[str, Any]:
     else:
         key = keys.get(pid, "") or ""
     return {**meta, "id": pid, "configured": bool(key) or not meta.get("needs_key"),
-            "masked_key": mask_key(key), "base_url": cfg.get("base_url") or meta.get("base_url") or "",
+            "masked_key": mask_key(key), "base_url": _pinned_base_url(cfg.get("base_url") or "", _data_default_base(pid)),
             "url_template": cfg.get("url_template", ""), "bars_path": cfg.get("bars_path", "results"),
             "fields": cfg.get("fields") or {"ts": "ts", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume", "ts_unit": "iso"}}
 
@@ -1821,14 +1972,14 @@ async def _fetch_via_adapter(pid: str, symbol: str, tf: str, count: int, s: dict
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         if pid in ("massive", "polygon"):
-            base = (cfg.get("base_url") or ("https://api.massive.com" if pid == "massive" else "https://api.polygon.io")).rstrip("/")
+            base = _pinned_base_url(cfg.get("base_url") or "", _data_default_base(pid)).rstrip("/")
             tk = _massive_ticker(symbol)
             r = await client.get(f"{base}/v2/aggs/ticker/{tk}/range/{mult}/{span}/{from_iso[:10]}/{to_iso[:10]}",
                                  params={"adjusted": "true", "sort": "asc", "limit": "50000", "apiKey": key})
             r.raise_for_status()
             return _rows_to_bars(r.json().get("results") or [], fields)
         if pid == "alpaca":
-            base = (cfg.get("base_url") or "https://data.alpaca.markets").rstrip("/")
+            base = _pinned_base_url(cfg.get("base_url") or "", _data_default_base(pid)).rstrip("/")
             kid, _, secret = key.partition(":")
             r = await client.get(f"{base}/v2/stocks/{symbol}/bars",
                                  params={"timeframe": _TF_ALPACA.get(tf, "1Day"), "start": from_iso, "end": to_iso, "limit": 10000, "feed": "iex", "adjustment": "split"},
@@ -1837,7 +1988,7 @@ async def _fetch_via_adapter(pid: str, symbol: str, tf: str, count: int, s: dict
             f2 = dict(fields); f2["ts_unit"] = "iso"
             return _rows_to_bars(r.json().get("bars") or [], f2)
         if pid == "twelvedata":
-            base = (cfg.get("base_url") or "https://api.twelvedata.com").rstrip("/")
+            base = _pinned_base_url(cfg.get("base_url") or "", _data_default_base(pid)).rstrip("/")
             r = await client.get(f"{base}/time_series",
                                  params={"symbol": symbol, "interval": _TF_TWELVE.get(tf, "1day"), "outputsize": max(count, 50), "apikey": key, "format": "JSON"})
             r.raise_for_status()
@@ -1885,6 +2036,10 @@ def api_data_provider_save(pid: str, body: dict[str, Any] = {}):
             s["massive_api_key"] = api_key
         else:
             keys[pid] = api_key
+    if "base_url" in body:
+        new_base = str(body.get("base_url") or "").strip()
+        if new_base and not _base_url_allowed(new_base, _data_default_base(pid)):
+            raise HTTPException(status_code=400, detail="The API key for this data provider can only be sent to its own endpoint.")
     for field_name in ("base_url", "url_template", "bars_path"):
         if field_name in body:
             entry[field_name] = str(body.get(field_name) or "").strip()

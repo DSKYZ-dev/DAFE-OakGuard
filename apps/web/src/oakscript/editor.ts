@@ -7,6 +7,7 @@ import {
   buildCartridge, cartridgeFilename, parseCartridge,
 } from './indicators';
 import { getDocumentation, type DocSection } from './docs';
+import { escapeHtml } from '../escape-html';
 import { listImageAssets, saveImageAsset, deleteImageAsset, getLibraryStats, type AssetRecord } from './image-assets';
 import { getImageCacheStats, clearImageCache } from '../image-cache';
 import { runBacktestOnBars, BacktestCancelledError, DEFAULT_ENTRY_MATCH, DEFAULT_EXIT_MATCH } from '../backtest/engine';
@@ -1606,7 +1607,7 @@ function toggleDocs(): void {
   docPanel.style.display = isVisible ? 'none' : 'block';
   if (!isVisible) {
     try { renderDocs(); } catch (e) {
-      docPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load docs: ${e}</div>`;
+      docPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load docs: ${escapeHtml(e)}</div>`;
       docPanel.style.display = 'block';
     }
   }
@@ -1683,7 +1684,7 @@ function toggleImages(): void {
   if (!isVisible) {
     renderImages().catch((e) => {
       if (!imagesPanel) return;
-      imagesPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load image assets: ${e}</div>`;
+      imagesPanel.innerHTML = `<div style="padding:10px;color:#ff4477;font-size:10px;">Failed to load image assets: ${escapeHtml(e)}</div>`;
       imagesPanel.style.display = 'block';
     });
   }

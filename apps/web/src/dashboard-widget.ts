@@ -8,6 +8,7 @@ import type { OakPlot } from './oakscript/runtime';
 import type { InputDef } from './oakscript/editor';
 import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-band';
 import { WINDOW_TOP_MIN, NEWS_BOX_BOTTOM, WINDOW_GAP, clearOfHeaderTop } from './header-band';
+import { escapeHtml } from './escape-html';
 
 export function createDashboard(): {
   panel: HTMLDivElement;
@@ -191,7 +192,7 @@ export function createDashboard(): {
   document.body.appendChild(panel);
 
   function colorBox(c: string): string {
-    return `<span style="display:inline-block;width:8px;height:8px;background:${c};border-radius:2px;margin-right:3px;"></span>`;
+    return `<span style="display:inline-block;width:8px;height:8px;background:${escapeHtml(c)};border-radius:2px;margin-right:3px;"></span>`;
   }
 
   function valColor(v: number, up: string, dn: string, neu: string): string {
@@ -242,8 +243,8 @@ export function createDashboard(): {
         // Indicator header
         html += `<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;">
           <span style="display:inline-block;width:8px;height:8px;background:${catColor};border-radius:2px;"></span>
-          <span style="color:${catColor};font-size:${fontSize}px;font-weight:600;">${inst.name}</span>
-          <span style="color:rgba(255,255,255,0.2);font-size:${fontSize - 2}px;">[${inst.category}]</span>
+          <span style="color:${catColor};font-size:${fontSize}px;font-weight:600;">${escapeHtml(inst.name)}</span>
+          <span style="color:rgba(255,255,255,0.2);font-size:${fontSize - 2}px;">[${escapeHtml(inst.category)}]</span>
         </div>`;
 
         // Group plots
@@ -290,7 +291,7 @@ export function createDashboard(): {
           for (const [n, p] of latest) {
             const v = p.value ?? (p.price ?? 0);
             const c = p.color || '#b48cff';
-            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(c)}${n}: <span style="color:${c};">${formatVal(v)}</span></div>`;
+            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(c)}${escapeHtml(n)}: <span style="color:${escapeHtml(c)};">${formatVal(v)}</span></div>`;
           }
         }
 
@@ -306,7 +307,7 @@ export function createDashboard(): {
           for (const [n, p] of latest2) {
             const v = p.value ?? 0;
             const c = p.color || '#b48cff';
-            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(c)}${n}: <span style="color:${c};">${formatVal(v)}</span></div>`;
+            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(c)}${escapeHtml(n)}: <span style="color:${escapeHtml(c)};">${formatVal(v)}</span></div>`;
           }
         }
 
@@ -330,7 +331,7 @@ export function createDashboard(): {
         if (plot3ds.length > 0) {
           html += `<div style="color:rgba(255,255,255,0.3);font-size:${fontSize - 2}px;margin:4px 0 2px 4px;">3D</div>`;
           for (const d of plot3ds) {
-            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(d.color || '#b48cff')}${d.name || '3D'}: ${((d as any).style || 'surface')}</div>`;
+            html += `<div style="font-size:${fontSize - 1}px;padding:1px 0 1px 8px;">${colorBox(d.color || '#b48cff')}${escapeHtml(d.name || '3D')}: ${escapeHtml((d as any).style || 'surface')}</div>`;
           }
         }
 
@@ -352,7 +353,7 @@ export function createDashboard(): {
         // Errors
         if (inst.errors.length > 0) {
           for (const err of inst.errors.slice(0, 2)) {
-            html += `<div style="color:rgba(255,0,110,0.5);font-size:${fontSize - 2}px;padding:1px 0 1px 8px;">⚠ ${err.slice(0, 80)}</div>`;
+            html += `<div style="color:rgba(255,0,110,0.5);font-size:${fontSize - 2}px;padding:1px 0 1px 8px;">⚠ ${escapeHtml(err.slice(0, 80))}</div>`;
           }
         }
       }

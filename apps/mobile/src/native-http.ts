@@ -80,10 +80,16 @@ export async function nativeGetWithHeaders(url: string, headers: Record<string, 
   }
 }
 
+export const LLM_PRESETS: Record<string, { label: string; baseUrl: string; model: string }> = {
+  meta: { label: 'Meta', baseUrl: 'https://api.meta.ai/v1', model: 'muse-spark-1.3' },
+  nvidia: { label: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'minimaxai/minimax-m3.1-flash' },
+  opencode: { label: 'OpenCode', baseUrl: 'https://opencode.ai/zen/v1', model: 'deepseek-v4-pro' },
+};
+
 export function resolveLlmBase(cfg: any): string {
   if (cfg?.baseUrl?.trim()) return cfg.baseUrl.trim().replace(/\/$/, '');
   const p = (cfg?.provider || '').toLowerCase();
-  if (p === 'opencode') return 'https://api.opencode.ai/v1';
+  if (LLM_PRESETS[p]) return LLM_PRESETS[p].baseUrl;
   if (p === 'openai') return 'https://api.openai.com/v1';
   if (p === 'openrouter') return 'https://openrouter.ai/api/v1';
   if (p === 'orcarouter') return 'https://orcarouter.com/api/v1';
@@ -170,10 +176,12 @@ function extractLlmText(data: any): string {
   return '';
 }
 
+export interface LlmTurn { role: 'user' | 'assistant'; content: string; }
+
 export async function llmChat(
   cfg: any,
   system: string,
-  user: string,
+  user: string | LlmTurn[],
   opts?: { maxTokens?: number; temperature?: number; timeoutMs?: number },
 ): Promise<LlmChatResult> {
   const provider = (cfg?.provider || '').toLowerCase();
@@ -182,6 +190,7 @@ export async function llmChat(
   const maxTokens = opts?.maxTokens ?? 4096;
   const temperature = opts?.temperature ?? 0.7;
   const readMs = opts?.timeoutMs ?? 180_000;
+  const turns: LlmTurn[] = typeof user === 'string' ? [{ role: 'user', content: user }] : user;
 
   try {
     let res: NativePostResult | null;
@@ -193,7 +202,7 @@ export async function llmChat(
         max_tokens: maxTokens,
         temperature,
         system,
-        messages: [{ role: 'user', content: user }],
+        messages: turns,
       };
       res = await nativePost(`${base}/messages`, body, {
         'x-api-key': key,
@@ -209,11 +218,13 @@ export async function llmChat(
       // Provider-sane fallbacks — sending 'gpt-4o' as the model id to a
       // non-OpenAI provider guarantees a 404 on every completion.
       const DEFAULT_MODELS: Record<string, string> = {
-        opencode: 'opencode/muse-spark-1.2-contributor-free',
+        opencode: 'deepseek-v4-pro',
         openrouter: 'meta-llama/llama-3.3-70b-instruct:free',
         orcarouter: 'gpt-4o-mini',
         ollama: 'llama3',
         openai: 'gpt-4o',
+        meta: LLM_PRESETS.meta.model,
+        nvidia: LLM_PRESETS.nvidia.model,
       };
       const body = {
         model: cfg.model || DEFAULT_MODELS[provider] || 'gpt-4o',
@@ -222,7 +233,7 @@ export async function llmChat(
         temperature,
         messages: [
           { role: 'system', content: system },
-          { role: 'user', content: user },
+          ...turns,
         ],
       };
       res = await nativePost(`${base}/chat/completions`, body, headers, readMs, 15_000);

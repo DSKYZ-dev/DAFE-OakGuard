@@ -2,6 +2,7 @@ import type { ExecutionEngine, TradeRecord } from './execution';
 import { SLIPPAGE_STORE, currentCostModel, costSourceLabel } from './cost-engine';
 import { state, persistSettings } from './state';
 import { submitReport } from './reports';
+import { llmChat } from './llm-router';
 
 export interface PerformanceScreen {
   dispose: () => void;
@@ -301,11 +302,9 @@ export function createPerformanceScreen(container: HTMLDivElement, engine: Execu
 
   async function callAdvisorLLM(prompt: string): Promise<string> {
     try {
-      const cfg = JSON.parse(localStorage.getItem('dafe_mobile_llm') || '{}');
-      const { llmChat } = await import('./native-http');
-      const r = await llmChat(cfg, 'You are the DAFE Trade Advisor — concise, specific, actionable.', prompt, { maxTokens: 2048, temperature: 0.7 });
+      const r = await llmChat({ system: 'You are the DAFE Trade Advisor — concise, specific, actionable.', messages: [{ role: 'user', content: prompt }], maxTokens: 2048, temperature: 0.7 });
       if (!r.ok) throw new Error(r.error || 'LLM request failed');
-      return r.text;
+      return r.text ?? '';
     } catch (e: any) { return `LLM error: ${e?.message || e}`; }
   }
   advisorRecBtn.addEventListener('click', async () => {

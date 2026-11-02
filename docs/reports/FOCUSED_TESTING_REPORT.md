@@ -50,7 +50,7 @@ Complex ATR mock `focused-test.ts:30` — `plot3d("Storm Manifold","manifold","s
 - `tsc` `SYMBOLS cat missing` `main.ts:199` → `cat:'Equities'` cast; `RuntimeBarData` import `scriptscreen.ts:4` → `parser/validator/interpreter` split; `tested-engines` excluded `tsconfig.json:19`; `lower-manifold-adapter.ts:104` `pointRadius` cast `as any`.
 
 ## 8. LLM Role Coherence
-- Unified agent `settingscreen.ts:152` `dafe_mobile_llm` pre-seeded `opencode/Q-CLI` + key `sk-UtqC…YERE` (local only, never repo) + baseUrl `https://api.opencode.ai/v1` — user can test other providers without re-adding. `oak_kb.py:830` `Domain Safeguards` + `Complex Visual Coherence` (131 corpus) injected via `retrieve()`; `scriptscreen.ts:60` system prompt now references `PANEL_GEOMETRY G1..G9` and `CLOCK`.
+- Unified agent `settingscreen.ts:152` `dafe_mobile_llm` pre-seeded `opencode/Q-CLI` + a key (redacted; local only, never repo) + baseUrl `https://api.opencode.ai/v1` — user can test other providers without re-adding. `oak_kb.py:830` `Domain Safeguards` + `Complex Visual Coherence` (131 corpus) injected via `retrieve()`; `scriptscreen.ts:60` system prompt now references `PANEL_GEOMETRY G1..G9` and `CLOCK`.
 - Dual-model `llm-dual-test.ts` — Q-CLI `plotshape+input` `noBanned` `400` plots `0` errors `PASS`; Nemotron `300` plots `PASS`; overall `PASS`. Real probe `probe-llm.py` — OpenRouter `200`, OpenAI `401` masked, opencode `200 Not Found` (endpoint to be confirmed by user via Base URL field).
 
 ## 9. Visual Dominance & Slider (New)

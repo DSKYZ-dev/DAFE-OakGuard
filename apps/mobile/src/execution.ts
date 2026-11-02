@@ -3,6 +3,7 @@ import type { RiskSettings } from './broker-store';
 import type { OrderRequest, Fill } from '../../web/src/trading/broker-port';
 import { loadBroker } from './state';
 import { currentCostModel, SLIPPAGE_STORE, sessionOf, type FeeBreakdown, type VolRegime } from './cost-engine';
+import { sealFill } from './ledger';
 
 export type ExecType =
   | 'market'
@@ -337,6 +338,8 @@ export class ExecutionEngine {
       orderType: 'paper',
     };
     this.trades.push(rec);
+    // Seal before saveTrades trims the window, so no fill can leave unsealed.
+    sealFill(rec).catch(() => undefined);
     saveTrades(this.trades);
     this.legs.delete(f.symbol);
   }

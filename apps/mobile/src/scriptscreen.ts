@@ -2,24 +2,88 @@ import { getIndicators, saveUserIndicator, parse, executeScript, validate, forma
 import { barsToRuntimeBarData } from '../../web/src/backtest/data';
 import { runBacktestOnBars } from '../../web/src/backtest/engine';
 import { generateBars, type Timeframe } from '../../web/src/data-generator';
+import { backtestCertificate, type BacktestCertificate } from '../../web/src/oakguard/honesty';
+import type { BacktestResult } from '../../web/src/backtest/types';
+import type { RuntimeBarData } from '../../web/src/oakscript/interpreter';
 import type { BaseBar } from '@dafe/types';
 import { fetchYahooBars } from './yahoo';
 import { fetchMassiveBars } from './massive';
 import { state, persistSettings, type ActiveIndicator } from './state';
+import { llmChat, llmReady } from './llm-router';
 import type { ChartScreen } from './chartscreen';
 
 export interface ScriptScreen { dispose: () => void; }
 
 const CUSTOM_SOURCE_KEY = 'dafe_mobile_custom_script';
 const SIGNAL_MODE_KEY = 'dafe_mobile_signal_mode';
+const AUTO_ACCEPT_KEY = 'dafe_mobile_auto_accept';
 
-function llmConfig(): any { try { return JSON.parse(localStorage.getItem('dafe_mobile_llm') || '{}'); } catch { return {}; } }
+function readAutoAccept(): boolean {
+  try { return localStorage.getItem(AUTO_ACCEPT_KEY) === '1'; } catch { return false; }
+}
+function writeAutoAccept(on: boolean): void {
+  try { localStorage.setItem(AUTO_ACCEPT_KEY, on ? '1' : '0'); } catch {}
+}
+
+// Line-level LCS diff: '=' unchanged, '-' only in the editor, '+' only in the proposal.
+function lineDiff(a: string[], b: string[]): { t: '=' | '-' | '+'; s: string }[] {
+  const n = a.length, m = b.length, W = m + 1;
+  const dp = new Uint32Array((n + 1) * W);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i * W + j] = a[i] === b[j] ? dp[(i + 1) * W + j + 1] + 1 : Math.max(dp[(i + 1) * W + j], dp[i * W + j + 1]);
+    }
+  }
+  const out: { t: '=' | '-' | '+'; s: string }[] = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push({ t: '=', s: a[i] }); i++; j++; }
+    else if (dp[(i + 1) * W + j] >= dp[i * W + j + 1]) { out.push({ t: '-', s: a[i] }); i++; }
+    else { out.push({ t: '+', s: b[j] }); j++; }
+  }
+  while (i < n) out.push({ t: '-', s: a[i++] });
+  while (j < m) out.push({ t: '+', s: b[j++] });
+  return out;
+}
+
 async function callLLM(system: string, user: string): Promise<string> {
-  const cfg = llmConfig();
-  const { llmChat } = await import('./native-http');
-  const r = await llmChat(cfg, system, user, { maxTokens: 8192, temperature: 0.7 });
+  const r = await llmChat({ system, messages: [{ role: 'user', content: user }], maxTokens: 8192, temperature: 0.7 });
   if (!r.ok) throw new Error(r.error || 'LLM request failed');
-  return r.text;
+  return r.text ?? '';
+}
+
+// Honesty certificate: the procedure behind a result, checked on the bars and
+// script it actually ran on. It certifies the procedure, not the outcome.
+function renderHonestyCertificate(cert: BacktestCertificate): HTMLElement {
+  const box = document.createElement('div');
+  box.style.cssText = 'font-size:10px;line-height:1.45;color:rgba(255,255,255,0.8);background:rgba(45,255,179,0.05);border:1px solid rgba(45,255,179,0.25);border-radius:6px;padding:6px 8px;margin:6px 0;';
+  const head = document.createElement('div');
+  head.textContent = cert.honest ? 'Honesty certificate: procedure checks PASS' : 'Honesty certificate: procedure checks FAIL';
+  head.style.cssText = `font-weight:700;color:${cert.honest ? 'rgba(45,255,179,0.95)' : 'rgba(255,120,120,0.95)'};`;
+  box.appendChild(head);
+  for (const c of cert.checks) {
+    const row = document.createElement('div');
+    row.style.cssText = `margin-top:3px;color:${c.passed ? 'rgba(255,255,255,0.75)' : 'rgba(255,140,140,0.95)'};`;
+    row.textContent = `${c.passed ? '✓' : '✗'} ${c.name} — ${c.detail}`;
+    box.appendChild(row);
+  }
+  const live = document.createElement('div');
+  live.style.cssText = `margin-top:5px;padding-top:4px;border-top:1px solid rgba(255,255,255,0.1);color:${cert.live.passed ? 'rgba(255,255,255,0.75)' : 'rgba(255,200,80,0.95)'};`;
+  live.textContent = `${cert.live.passed ? '✓' : '⚠'} live use — ${cert.live.detail}`;
+  box.appendChild(live);
+  const note = document.createElement('div');
+  note.style.cssText = 'margin-top:4px;font-size:9px;color:rgba(255,255,255,0.45);';
+  note.textContent = cert.disclaimer;
+  box.appendChild(note);
+  return box;
+}
+
+function honestyCertificateFor(source: string, bars: RuntimeBarData, result: BacktestResult): HTMLElement | null {
+  try {
+    return renderHonestyCertificate(backtestCertificate({ source, bars, result }));
+  } catch {
+    return null;
+  }
 }
 
 export function createScriptScreen(container: HTMLDivElement, chart: ChartScreen): ScriptScreen {
@@ -482,17 +546,35 @@ ${working.slice(0, 3500)}
             localStorage.setItem(LK, JSON.stringify(bank.slice(-25)));
           } catch {}
         }
+        // The editor text is NOT touched here. The proposal waits for Accept &
+        // Apply in the review dialog, or is applied at once when auto-accept is on.
         const finalCheck = verifyScript(working);
-        customEditor.value = working; localStorage.setItem(CUSTOM_SOURCE_KEY, working);
         mem.lastScript = working;
         mem.errors = finalCheck.ok ? [] : finalCheck.errors.slice(0, 10);
         saveMem(mem);
-        if (finalCheck.ok) {
-          chatStatus.textContent = `✓ Script verified${round > 0 ? ` after ${round} self-fix round${round > 1 ? 's' : ''}` : ''} — Test on chart or Save`;
+        if (readAutoAccept()) {
+          // Auto-accept matches desktop: apply at once. Verification issues are
+          // reported as a notice and kept in memory; they never block the apply.
+          acceptProposal(working, true);
+          if (finalCheck.ok) {
+            chatStatus.textContent = '✓ Script verified and auto-accepted — applied to your indicator';
+          } else {
+            mem.errors = finalCheck.errors.slice(0, 10);
+            saveMem(mem);
+            chatStatus.textContent = `⚠ Auto-accepted and applied with ${finalCheck.errors.length} verification issue(s) — see chat`;
+            const notice = document.createElement('div');
+            notice.textContent = 'Editor: applied with open verification issues — ' + finalCheck.errors.slice(0, 3).join(' | ').slice(0, 300);
+            notice.style.color = 'var(--warn)';
+            chatLog.appendChild(notice);
+          }
         } else {
-          chatStatus.textContent = `⚠ ${mem.errors.length} issue(s) remain after ${MAX_FIX_ROUNDS} self-fix rounds — errors are in memory; ask the editor to fix them`;
+          if (finalCheck.ok) {
+            chatStatus.textContent = `✓ Script verified${round > 0 ? ` after ${round} self-fix round${round > 1 ? 's' : ''}` : ''} — review it in the proposal dialog`;
+          } else {
+            chatStatus.textContent = `⚠ ${mem.errors.length} issue(s) remain after ${MAX_FIX_ROUNDS} self-fix rounds — errors are in memory; ask the editor to fix them`;
+          }
+          showGeneratedScriptDialog(working, finalCheck.ok, finalCheck.errors);
         }
-        showGeneratedScriptDialog(working);
       }
       // Record this exchange (condensed) for the next turn.
       mem.history.push({ role: 'user', text: prompt.slice(0, 300) });
@@ -517,7 +599,29 @@ ${working.slice(0, 3500)}
   function syncSignalToggle(){ signalToggle.textContent = signalAsStrategy ? 'Signals: Strategy' : 'Signals: Indicator'; signalToggle.classList.toggle('on', signalAsStrategy); }
   syncSignalToggle();
   signalToggle.addEventListener('click', ()=>{ signalAsStrategy=!signalAsStrategy; localStorage.setItem(SIGNAL_MODE_KEY, signalAsStrategy?'strategy':'indicator'); syncSignalToggle(); });
+  // Auto-accept checkbox — one stored flag, mirrored in every open copy (editor bar + review dialog).
+  let autoBoxes: HTMLInputElement[] = [];
+  function syncAutoBoxes(on: boolean): void {
+    autoBoxes = autoBoxes.filter((b) => b.isConnected);
+    for (const b of autoBoxes) b.checked = on;
+  }
+  function autoAcceptControl(): HTMLLabelElement {
+    const lab = document.createElement('label');
+    lab.className = 'auto-accept-toggle';
+    lab.title = 'Apply agent edits at once, without the review step.';
+    lab.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);cursor:pointer;';
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.title = 'Apply agent edits at once, without the review step.';
+    box.checked = readAutoAccept();
+    box.addEventListener('change', () => { writeAutoAccept(box.checked); syncAutoBoxes(box.checked); });
+    autoBoxes.push(box);
+    lab.appendChild(box);
+    lab.appendChild(document.createTextNode('Auto-accept agent edits'));
+    return lab;
+  }
   editorBar.appendChild(runBtn); editorBar.appendChild(saveBtn); editorBar.appendChild(delBtn); editorBar.appendChild(signalToggle);
+  editorBar.appendChild(autoAcceptControl());
   const status = document.createElement('div'); status.id='editor-status';
 
   // Backtest / Optimizer page
@@ -681,7 +785,11 @@ ${working.slice(0, 3500)}
     const suggested = (source.match(/^\/\/\s*(.{3,48})$/m)?.[1] || `Signal ${new Date().toLocaleDateString()}`).trim();
     const name = prompt('Save to indicator library as:', suggested);
     if (!name || !name.trim()) { status.textContent='Save cancelled'; return; }
-    const finalName = name.trim();
+    commitSignal(source, name.trim());
+  });
+
+  // Shared by Save Signal and Accept & Apply: library upsert, chart inventory, memory snapshot.
+  function commitSignal(source: string, finalName: string): void {
     // 1) The LIBRARY (persists across restarts — this is the entry the user
     //    looks for): saveUserIndicator upserts by name in localStorage and
     //    feeds getIndicators() → the Scripts tab's preset list, backtest
@@ -724,7 +832,7 @@ ${working.slice(0, 3500)}
     wiped.textContent = 'Editor: session snapshot saved to memory — conversation cleared.';
     wiped.style.color = 'var(--cyan)';
     chatLog.appendChild(wiped);
-  });
+  }
   delBtn.addEventListener('click', ()=>{
     if(!confirm('Delete this Signal Generator from inventory?')) return;
     const idx=state.indicators.findIndex(i=>i.id==='custom'); if(idx>=0){ state.indicators.splice(idx,1); persistSettings(); status.textContent='Deleted'; refreshEngineList(); }
@@ -732,7 +840,47 @@ ${working.slice(0, 3500)}
   });
 
   // ── Generated script dialog (closable) ───────────────────────────
-  function showGeneratedScriptDialog(code: string): void {
+  // ── Review preview (desktop "PREVIEW · not applied") ─────────────
+  // The chart runs state.preview as an overlay only; indicators stay as they are.
+  // While a preview runs, its review collapses into a floating bar (previewPill).
+  let previewPill: HTMLDivElement | null = null;
+  function removePreviewPill(): void {
+    previewPill?.remove();
+    previewPill = null;
+  }
+  function setPreview(source: string): void {
+    state.preview = { source, name: 'Proposed script' };
+    chart.refreshIndicators();
+  }
+  function clearPreview(): void {
+    removePreviewPill();
+    if (!state.preview) return;
+    state.preview = null;
+    chart.refreshIndicators();
+  }
+  function proposalName(code: string): string {
+    return (code.match(/^\/\/\s*(.{3,48})$/m)?.[1] || `Signal ${new Date().toLocaleDateString()}`).trim();
+  }
+
+  // Accept & Apply / auto-accept: the ONLY place the proposal enters the editor.
+  function acceptProposal(code: string, silent: boolean): boolean {
+    let finalName = proposalName(code);
+    if (!silent) {
+      const n = prompt('Accept and save to indicator library as:', finalName);
+      if (!n || !n.trim()) { status.textContent = 'Accept cancelled — proposal still in review'; status.className = 'error'; return false; }
+      finalName = n.trim();
+    }
+    clearPreview();
+    customEditor.value = code; localStorage.setItem(CUSTOM_SOURCE_KEY, code);
+    commitSignal(code, finalName);
+    return true;
+  }
+
+  function showGeneratedScriptDialog(code: string, verified: boolean, issues: string[]): void {
+    // A new proposal replaces any preview still running from an earlier one.
+    clearPreview();
+    let closed = false;
+    let previewing = false;
     const backdrop = document.createElement('div');
     backdrop.className = 'modal-backdrop';
     const panel = document.createElement('div');
@@ -740,36 +888,136 @@ ${working.slice(0, 3500)}
     const head = document.createElement('div');
     head.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;';
     const title = document.createElement('div');
-    title.textContent = '✓ Script ready';
-    title.style.cssText = 'font-size:14px;font-weight:800;color:var(--green);';
+    title.textContent = verified ? '✓ Script ready for review' : '⚠ Script needs review';
+    title.style.cssText = `font-size:14px;font-weight:800;color:${verified ? 'var(--green)' : 'var(--warn)'};`;
     const close = document.createElement('button');
     close.textContent = '×';
     close.style.cssText = 'background:var(--bg-raised);border:1px solid var(--border);color:var(--text);width:32px;height:32px;border-radius:8px;font-size:18px;cursor:pointer;';
-    close.addEventListener('click', () => backdrop.remove());
     head.appendChild(title); head.appendChild(close);
+
+    // Ending the review clears the preview and drops the proposal.
+    const closeDialog = (): void => {
+      if (closed) return;
+      closed = true;
+      backdrop.remove();
+      clearPreview();
+    };
+    // While a preview runs, the review collapses into the bar instead of ending.
+    const collapseToPill = (): void => {
+      backdrop.remove();
+      removePreviewPill();
+      previewPill = pill;
+      document.body.appendChild(pill);
+    };
+    const dismiss = (): void => { if (previewing) collapseToPill(); else closeDialog(); };
+    close.addEventListener('click', dismiss);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) dismiss(); });
+
+    const note = document.createElement('div');
+    note.textContent = verified
+      ? 'Not applied yet. Preview it on the chart, or accept it.'
+      : `Verification found ${issues.length} issue(s). Accepting applies it anyway.`;
+    note.style.cssText = `font-size:11px;margin-bottom:8px;color:${verified ? 'var(--text-dim)' : 'var(--warn)'};`;
+
+    const autoRow = autoAcceptControl();
+    autoRow.style.marginBottom = '8px';
 
     const preview = document.createElement('pre');
     preview.textContent = code.slice(0, 1200) + (code.length > 1200 ? '\n…' : '');
     preview.style.cssText = 'max-height:200px;overflow:auto;font-size:10px;font-family:monospace;white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text-dim);';
 
-    const btns = document.createElement('div');
-    btns.style.cssText = 'display:flex;gap:8px;margin-top:12px;';
-    const testBtn = document.createElement('button');
-    testBtn.className = 'editor-run';
-    testBtn.textContent = 'Test on Chart';
-    testBtn.style.background = 'var(--green)'; testBtn.style.color = 'var(--bg)'; testBtn.style.borderColor = 'var(--green)'; testBtn.style.flex = '1';
-    testBtn.addEventListener('click', () => { backdrop.remove(); runCustom(); });
-    const laterBtn = document.createElement('button');
-    laterBtn.className = 'btn-ghost';
-    laterBtn.textContent = 'Later';
-    laterBtn.style.flex = '1';
-    laterBtn.addEventListener('click', () => backdrop.remove());
-    btns.appendChild(testBtn); btns.appendChild(laterBtn);
+    const diffBox = document.createElement('div');
+    diffBox.style.cssText = 'display:none;max-height:240px;overflow:auto;font-size:10px;font-family:monospace;white-space:pre;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:8px;';
 
-    panel.appendChild(head); panel.appendChild(preview); panel.appendChild(btns);
+    const dlgStatus = document.createElement('div');
+    dlgStatus.style.cssText = 'font-size:11px;margin-top:8px;color:var(--cyan);min-height:14px;';
+
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;';
+    const mkBtn = (label: string, cls: string): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.className = cls;
+      b.textContent = label;
+      b.style.flex = '1 1 45%';
+      return b;
+    };
+    const diffBtn = mkBtn('👁 View Diff', 'btn-ghost');
+    diffBtn.addEventListener('click', () => {
+      const rows = lineDiff(customEditor.value.split('\n'), code.split('\n'));
+      diffBox.replaceChildren();
+      if (rows.every((r) => r.t === '=')) {
+        diffBox.textContent = 'No differences — the proposal matches the editor.';
+      } else {
+        for (const r of rows) {
+          const line = document.createElement('div');
+          line.textContent = (r.t === '+' ? '+ ' : r.t === '-' ? '- ' : '  ') + r.s;
+          line.style.color = r.t === '+' ? 'var(--green)' : r.t === '-' ? 'var(--red)' : 'var(--text-dim)';
+          diffBox.appendChild(line);
+        }
+      }
+      diffBox.style.display = '';
+    });
+    const acceptReview = (): void => {
+      if (!verified && !confirm('This proposal has unresolved verification issues. Accept anyway?')) return;
+      if (acceptProposal(code, false)) closeDialog();
+    };
+    const declineReview = (): void => {
+      closeDialog();
+      status.textContent = 'Proposal declined — nothing changed';
+      status.className = '';
+    };
+    const testBtn = mkBtn('▶ Test Run', 'editor-run');
+    testBtn.addEventListener('click', () => {
+      setPreview(code);
+      previewing = true;
+      dlgStatus.textContent = 'Preview is on the chart — not applied. Use the bar to review, accept or decline it.';
+      collapseToPill();
+    });
+    const acceptBtn = mkBtn('✓ Accept & Apply', 'editor-run');
+    acceptBtn.style.background = 'var(--green)'; acceptBtn.style.color = 'var(--bg)'; acceptBtn.style.borderColor = 'var(--green)';
+    acceptBtn.addEventListener('click', acceptReview);
+    const declineBtn = mkBtn('✕ Decline', 'btn-ghost');
+    declineBtn.addEventListener('click', declineReview);
+    btns.appendChild(diffBtn); btns.appendChild(testBtn); btns.appendChild(acceptBtn); btns.appendChild(declineBtn);
+
+    // Floating bar shown while the preview runs. Only the bar takes pointer
+    // events, so the chart underneath stays fully usable.
+    const pill = document.createElement('div');
+    pill.className = 'preview-pill';
+    const pillInfo = document.createElement('div');
+    pillInfo.className = 'preview-pill-info';
+    const pillTag = document.createElement('div');
+    pillTag.className = 'preview-pill-tag';
+    pillTag.textContent = 'PREVIEW · not applied';
+    const pillName = document.createElement('div');
+    pillName.className = 'preview-pill-name';
+    pillName.textContent = proposalName(code);
+    pillInfo.appendChild(pillTag); pillInfo.appendChild(pillName);
+    const pillBtns = document.createElement('div');
+    pillBtns.className = 'preview-pill-btns';
+    const pillReview = document.createElement('button');
+    pillReview.className = 'btn-ghost';
+    pillReview.textContent = '⤢ Review';
+    pillReview.addEventListener('click', () => {
+      removePreviewPill();
+      document.body.appendChild(backdrop);
+    });
+    const pillAccept = document.createElement('button');
+    pillAccept.className = 'editor-run';
+    pillAccept.textContent = '✓ Accept & Apply';
+    pillAccept.style.background = 'var(--green)'; pillAccept.style.color = 'var(--bg)'; pillAccept.style.borderColor = 'var(--green)';
+    pillAccept.addEventListener('click', acceptReview);
+    const pillDecline = document.createElement('button');
+    pillDecline.className = 'btn-ghost';
+    pillDecline.textContent = '✕ Decline';
+    pillDecline.addEventListener('click', declineReview);
+    pillBtns.appendChild(pillReview); pillBtns.appendChild(pillAccept); pillBtns.appendChild(pillDecline);
+    pill.appendChild(pillInfo); pill.appendChild(pillBtns);
+
+    panel.appendChild(head); panel.appendChild(note); panel.appendChild(autoRow); panel.appendChild(preview);
+    panel.appendChild(diffBox); panel.appendChild(dlgStatus); panel.appendChild(btns);
     backdrop.appendChild(panel);
     document.body.appendChild(backdrop);
-    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
   }
 
   // Backtest / Optimizer logic
@@ -881,7 +1129,9 @@ ${working.slice(0, 3500)}
       };
       const res: any = await runBacktestOnBars(cfg, engine.src, barsData as any, { inputOverrides: engine.overrides.size ? engine.overrides : undefined });
       btResult.textContent = summarizeResult(res, sym, tf);
-      if(llmConfig().apiKey || llmConfig().provider==='ollama'){
+      const certificate = honestyCertificateFor(engine.src, barsData, res);
+      if (certificate) btResult.appendChild(certificate);
+      if(await llmReady()){
         const prompt=`Backtest result for ${sym} ${tf}: ${btResult.textContent}. Focus ${focSel.value}. Advise how to tune.`;
         callLLM('You are the optimizer advisor. Give 2-3 specific tuning suggestions.', prompt).then(a=>{
           const d=document.createElement('div'); d.style.color='var(--cyan)'; d.style.marginTop='6px'; d.textContent='Advisor: '+a.slice(0,600); btResult.appendChild(d);

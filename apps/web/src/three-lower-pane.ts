@@ -2,9 +2,8 @@
  * 3D Lower Pane — DAFE-3D Quantitative Instrument Deck
  *
  * Combines three synchronized instrument views in the lower pane:
- *   1. Left Telemetry Column: live SPOT values, Δ bar change, σ dispersion,
- *      z-score, and regime status pill (WATCH / BULL FLOW / BEAR FLOW / EXTREME).
- *   2. Center 3D Isometric Instrument Cube (Three.js WebGL + Bloom):
+ *   The lower pane is the 3D Isometric Instrument Cube (Three.js WebGL + Bloom).
+ *   Metrics live in the floating Dashboard window, not on this canvas:
  *      - 3D wireframe bounding cage with vertical scale posts & tick labels
  *      - Translucent mid-level reference plane with glowing perimeter rail
  *      - Horizon & layer axis labels (-80b..-20b..SPOT, layer names along Z)
@@ -14,10 +13,6 @@
  *        ribbon / line3d / trail layers
  *      - Aerodynamic 3D vector arrows + wireframe octahedral diamond cores
  *        with tilted concentric orbital rings at SPOT and key extrema
- *   3. Right Stacked 2D Instrument Sub-Panels:
- *      - Top: Horizon Cross-Section Profile with glowing node dots & SPOT tag
- *      - Bottom: Bar-by-Bar Impulse / Delta Strip with numeric bar labels &
- *        regime classification banner
  */
 import * as THREE from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -28,7 +23,6 @@ import type { OakPlot3D, OakPlot } from './oakscript/runtime';
 import { resolveImage } from './image-cache';
 
 const ID = 'three-lower-scene';
-const HUD_ID = 'three-lower-hud';
 let _ok = false;
 let _rafId = 0;
 let _renderer: THREE.WebGLRenderer | null = null;
@@ -36,7 +30,6 @@ let _scene: THREE.Scene | null = null;
 let _camera: THREE.PerspectiveCamera | null = null;
 let _composer: EffectComposer | null = null;
 let _bloomPass: UnrealBloomPass | null = null;
-let _hudCanvas: HTMLCanvasElement | null = null;
 let _lastPlots: OakPlot3D[] = [];
 let _lastShapes: OakPlot[] = [];
 let _lastMin = 0;
@@ -305,12 +298,6 @@ function ensure(): { renderer: THREE.WebGLRenderer; scene: THREE.Scene; camera: 
       _hostFallback.appendChild(c);
     }
   }
-  if (!_hudCanvas || !document.getElementById(HUD_ID)) {
-    _hudCanvas = document.createElement('canvas');
-    _hudCanvas.id = HUD_ID;
-    _hudCanvas.style.cssText = 'position:fixed;pointer-events:none;z-index:25;display:block;';
-    document.body.appendChild(_hudCanvas);
-  }
   if (_renderer && _scene && _camera) {
     const liveH = (window as any).__dafeLowerHeight;
     const effH = (typeof liveH === 'number' && liveH > 30) ? liveH : h;
@@ -359,279 +346,6 @@ export function setLowerPaneBackground(mode: string): void {
     _renderer.setClearColor(col, 1);
     if (_scene) _scene.background = new THREE.Color(col);
   }
-}
-
-/**
- * Render the 2D Quantitative Instrument Deck HUD overlay:
- *   - Left Telemetry Column + Regime Status Pill
- *   - Right Top Sub-Panel: Horizon Cross-Section Profile with glowing nodes
- *   - Right Bottom Sub-Panel: Bar-by-Bar Impulse / Delta Strip with numeric callouts & Regime Banner
- */
-function renderInstrumentHUD(canvas3d: HTMLCanvasElement): void {
-  if (!_hudCanvas || !_ok) return;
-  const rect = canvas3d.getBoundingClientRect();
-  if (rect.width < 40 || rect.height < 40) {
-    _hudCanvas.style.display = 'none';
-    return;
-  }
-  _hudCanvas.style.display = 'block';
-  _hudCanvas.style.left = `${Math.round(rect.left)}px`;
-  _hudCanvas.style.top = `${Math.round(rect.top)}px`;
-  _hudCanvas.style.width = `${Math.round(rect.width)}px`;
-  _hudCanvas.style.height = `${Math.round(rect.height)}px`;
-
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.round(rect.width);
-  const h = Math.round(rect.height);
-  if (_hudCanvas.width !== Math.round(w * dpr) || _hudCanvas.height !== Math.round(h * dpr)) {
-    _hudCanvas.width = Math.round(w * dpr);
-    _hudCanvas.height = Math.round(h * dpr);
-  }
-  const ctx = _hudCanvas.getContext('2d');
-  if (!ctx) return;
-  ctx.save();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-
-  const plots = _lastPlots;
-  if (plots.length === 0) { ctx.restore(); return; }
-
-  const primary = plots[0];
-  const fin0 = primary.series.filter(v => isFinite(v) && !isNaN(v));
-  const last0 = fin0.length ? fin0[fin0.length - 1] : 0;
-  const prev0 = fin0.length > 1 ? fin0[fin0.length - 2] : last0;
-  const delta0 = last0 - prev0;
-  const mean0 = fin0.length ? fin0.reduce((a, b) => a + b, 0) / fin0.length : 0;
-  const variance0 = fin0.length > 1
-    ? fin0.reduce((acc, v) => acc + (v - mean0) * (v - mean0), 0) / fin0.length
-    : 1;
-  const std0 = Math.sqrt(variance0) || 1;
-  const zScore0 = (last0 - mean0) / std0;
-
-  const regime = zScore0 > 1.15
-    ? { label: 'BULL EXPANSION', pill: 'ACTIVE · +σ', col: '#00e599', bg: 'rgba(0,229,153,0.18)' }
-    : zScore0 < -1.15
-      ? { label: 'STEEP CONTRACTION', pill: 'WATCH · -σ', col: '#ff2a85', bg: 'rgba(255,42,133,0.18)' }
-      : Math.abs(delta0) > std0 * 0.45
-        ? { label: 'TURBULENCE WATCH', pill: 'WATCH', col: '#ffb800', bg: 'rgba(255,184,0,0.18)' }
-        : { label: 'NEUTRAL EQUILIBRIUM', pill: 'BALANCED', col: '#38d0ff', bg: 'rgba(56,208,255,0.16)' };
-
-  const fmt = (v: number) => Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(2);
-
-  // ── 1. Left Telemetry Column (SVV-3D / SKR-3D / FVL-3D style) ─────────
-  const leftX = 10, topY = 8;
-  ctx.font = '700 9.5px ui-monospace, Menlo, Consolas, monospace';
-  const badgeText = `◆ DAFE-3D [${(primary.name || 'MODEL').toUpperCase().slice(0, 18)}] · ${plots.length}L · BAR-DERIVED · ${regime.label}`;
-  const badgeW = Math.min(w * 0.56, ctx.measureText(badgeText).width + 16);
-  ctx.fillStyle = 'rgba(18, 24, 48, 0.85)';
-  ctx.strokeStyle = 'rgba(0, 229, 255, 0.35)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.roundRect(leftX, topY, badgeW, 17, 3);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = '#7ce8ff';
-  ctx.fillText(badgeText, leftX + 8, topY + 12);
-
-  let rowY = topY + 30;
-  for (let i = 0; i < Math.min(plots.length, 5); i++) {
-    const p = plots[i];
-    const fin = p.series.filter(v => isFinite(v) && !isNaN(v));
-    if (!fin.length) continue;
-    const cur = fin[fin.length - 1];
-    const prv = fin.length > 1 ? fin[fin.length - 2] : cur;
-    const chg = cur - prv;
-    const pMin = Math.min(...fin), pMax = Math.max(...fin);
-    ctx.fillStyle = typeof p.color === 'string' ? p.color : '#38d0ff';
-    ctx.fillRect(leftX, rowY - 7, 5, 8);
-    ctx.font = '600 9.5px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = 'rgba(220, 234, 255, 0.92)';
-    ctx.fillText(`${(p.name || `L${i + 1}`).slice(0, 14)}: ${fmt(cur)}`, leftX + 9, rowY);
-    ctx.fillStyle = chg >= 0 ? '#00e599' : '#ff4d88';
-    ctx.font = '500 9px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillText(`Δ${chg >= 0 ? '+' : ''}${fmt(chg)}  [${fmt(pMin)}..${fmt(pMax)}]`, leftX + 9, rowY + 11);
-    rowY += 24;
-  }
-
-  // Bottom-left Regime Status Pill (matches WATCH / IDLE pill in Images 3, 4, 6)
-  const pillH = 20, pillY = h - pillH - 8;
-  ctx.fillStyle = regime.col;
-  ctx.beginPath();
-  ctx.roundRect(leftX, pillY, 96, pillH, 3);
-  ctx.fill();
-  ctx.font = '800 9.5px ui-monospace, Menlo, Consolas, monospace';
-  ctx.fillStyle = '#050711';
-  ctx.fillText(`⚡ ${regime.pill}`, leftX + 8, pillY + 13.5);
-
-  ctx.font = '600 9px ui-monospace, Menlo, Consolas, monospace';
-  ctx.fillStyle = 'rgba(180, 205, 240, 0.8)';
-  ctx.fillText(`SPOT ${fmt(last0)}  ·  z=${zScore0 >= 0 ? '+' : ''}${zScore0.toFixed(2)}σ  ·  σ=${fmt(std0)}`, leftX + 104, pillY + 13.5);
-
-  // ── 2. Right Stacked 2D Cross-Section & Impulse Sub-Panels ─────────────
-  if (w >= 760 && h >= 130) {
-    const rightX = Math.round(w * 0.62);
-    const rightW = w - rightX - 12;
-    const gap = 8;
-    const botBannerH = 22;
-    const availH = h - 18 - botBannerH - gap;
-    const topPanelH = Math.max(46, Math.floor(availH * 0.50));
-    const botPanelH = Math.max(46, availH - topPanelH);
-    const topPanelY = 8;
-    const botPanelY = topPanelY + topPanelH + gap;
-
-    // ── Top Sub-Panel: HORIZON CROSS-SECTION PROFILE @ SPOT ──
-    ctx.fillStyle = 'rgba(7, 10, 22, 0.88)';
-    ctx.strokeStyle = 'rgba(80, 130, 210, 0.28)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(rightX, topPanelY, rightW, topPanelH, 4);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.font = '700 8.5px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = 'rgba(165, 195, 240, 0.85)';
-    ctx.fillText(`HORIZON PROFILE @ SPOT · ${plots.map(p => (p.name || 'Series').slice(0, 12)).slice(0, 3).join(' / ')}`, rightX + 8, topPanelY + 11);
-    ctx.fillStyle = '#ffd43b';
-    const spotTag = `SPOT ${fmt(last0)}`;
-    ctx.fillText(spotTag, rightX + rightW - ctx.measureText(spotTag).width - 8, topPanelY + 11);
-
-    const padL = 36, padR = 12, padT = 17, padB = 14;
-    const plotW = Math.max(40, rightW - padL - padR);
-    const plotH = Math.max(20, topPanelH - padT - padB);
-    const px0 = rightX + padL, py0 = topPanelY + padT;
-
-    // Horizontal grid lines + Y labels
-    ctx.strokeStyle = 'rgba(90, 130, 200, 0.14)';
-    ctx.fillStyle = 'rgba(140, 170, 215, 0.65)';
-    ctx.font = '500 8px ui-monospace, Menlo, Consolas, monospace';
-    for (let g = 0; g <= 2; g++) {
-      const gy = py0 + (plotH * g) / 2;
-      ctx.beginPath(); ctx.moveTo(px0, gy); ctx.lineTo(px0 + plotW, gy); ctx.stroke();
-      const gv = _lastMax - ((_lastMax - _lastMin) * g) / 2;
-      ctx.fillText(fmt(gv), rightX + 4, gy + 3);
-    }
-
-    // Plot up to 3 smoothed series curves + node dots
-    const horizonNodes = 12;
-    plots.slice(0, 3).forEach((p, idx) => {
-      const raw = p.series.filter(v => isFinite(v) && !isNaN(v)).slice(-48);
-      if (raw.length < 2) return;
-      const sm = smoothSeries(raw, 2);
-      const col = idx === 0 ? '#ffd43b' : idx === 1 ? '#00e5ff' : (typeof p.color === 'string' ? p.color : '#b48cff');
-      const span = (_lastMax - _lastMin) || 1;
-
-      ctx.strokeStyle = col;
-      ctx.lineWidth = idx === 0 ? 1.8 : 1.3;
-      ctx.beginPath();
-      const nodeCoords: Array<{ x: number; y: number; v: number }> = [];
-      for (let k = 0; k < horizonNodes; k++) {
-        const si = Math.floor((k / (horizonNodes - 1)) * (sm.length - 1));
-        const v = sm[si];
-        const nx = px0 + (k / (horizonNodes - 1)) * plotW;
-        const ny = py0 + plotH - Math.max(0, Math.min(1, (v - _lastMin) / span)) * plotH;
-        nodeCoords.push({ x: nx, y: ny, v });
-        if (k === 0) ctx.moveTo(nx, ny);
-        else ctx.lineTo(nx, ny);
-      }
-      ctx.stroke();
-
-      // Subtle fill under primary curve
-      if (idx === 0 && nodeCoords.length >= 2) {
-        const grad = ctx.createLinearGradient(0, py0, 0, py0 + plotH);
-        grad.addColorStop(0, 'rgba(255, 212, 59, 0.18)');
-        grad.addColorStop(1, 'rgba(255, 212, 59, 0.01)');
-        ctx.fillStyle = grad;
-        ctx.beginPath();
-        ctx.moveTo(nodeCoords[0].x, py0 + plotH);
-        for (const pt of nodeCoords) ctx.lineTo(pt.x, pt.y);
-        ctx.lineTo(nodeCoords[nodeCoords.length - 1].x, py0 + plotH);
-        ctx.closePath();
-        ctx.fill();
-      }
-
-      // Glowing node dots
-      ctx.fillStyle = col;
-      for (const pt of nodeCoords) {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, idx === 0 ? 2.2 : 1.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    });
-
-    // Horizon X labels along bottom of top sub-panel
-    ctx.fillStyle = 'rgba(140, 170, 215, 0.65)';
-    ctx.font = '500 7.5px ui-monospace, Menlo, Consolas, monospace';
-    const hLabels = ['-45b', '-35b', '-25b', '-15b', '-5b', 'SPOT'];
-    hLabels.forEach((lbl, idx) => {
-      const lx = px0 + (idx / (hLabels.length - 1)) * (plotW - 18);
-      ctx.fillStyle = lbl === 'SPOT' ? '#ffd43b' : 'rgba(140, 170, 215, 0.65)';
-      ctx.fillText(lbl, lx, topPanelY + topPanelH - 3);
-    });
-
-    // ── Bottom Sub-Panel: BAR-BY-BAR IMPULSE / CHANNEL DELTA STRIP ──
-    ctx.fillStyle = 'rgba(7, 10, 22, 0.88)';
-    ctx.strokeStyle = 'rgba(80, 130, 210, 0.28)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(rightX, botPanelY, rightW, botPanelH, 4);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.font = '700 8.5px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = 'rgba(165, 195, 240, 0.85)';
-    ctx.fillText('IMPULSE / DELTA STRIP · + EXPANSION (EMERALD) / - CONTRACTION (MAGENTA)', rightX + 8, botPanelY + 11);
-
-    const bpx0 = rightX + padL, bpy0 = botPanelY + 16;
-    const bPlotH = Math.max(20, botPanelH - 26);
-    const zeroY = bpy0 + bPlotH * 0.5;
-
-    ctx.strokeStyle = 'rgba(255, 212, 59, 0.28)';
-    ctx.beginPath(); ctx.moveTo(bpx0, zeroY); ctx.lineTo(bpx0 + plotW, zeroY); ctx.stroke();
-
-    const barSlots = 12;
-    const recent = fin0.slice(-(barSlots + 1));
-    const deltas: number[] = [];
-    for (let i = 1; i < recent.length; i++) {
-      deltas.push(recent[i] - mean0);
-    }
-    while (deltas.length < barSlots) deltas.unshift(0);
-    const maxAbsDelta = Math.max(...deltas.map(Math.abs), 1e-6);
-    const slotW = plotW / barSlots;
-    const barW = Math.max(8, slotW * 0.62);
-
-    ctx.font = '600 7.5px ui-monospace, Menlo, Consolas, monospace';
-    for (let i = 0; i < barSlots; i++) {
-      const d = deltas[i];
-      const frac = Math.max(-1, Math.min(1, d / maxAbsDelta));
-      const bh = Math.max(2, Math.abs(frac) * (bPlotH * 0.44));
-      const bx = bpx0 + i * slotW + (slotW - barW) * 0.5;
-      const by = d >= 0 ? zeroY - bh : zeroY;
-      const isSpot = i === barSlots - 1;
-      ctx.fillStyle = isSpot ? '#ffb800' : d >= 0 ? '#00e599' : '#ff2a85';
-      ctx.fillRect(bx, by, barW, bh);
-
-      // Numeric value callout above/below bar
-      const vTxt = `${d >= 0 ? '+' : ''}${Math.abs(d) >= 10 ? d.toFixed(0) : d.toFixed(1)}`;
-      ctx.fillStyle = isSpot ? '#ffd43b' : 'rgba(220, 234, 255, 0.82)';
-      const ty = d >= 0 ? Math.max(botPanelY + 19, by - 2) : Math.min(botPanelY + botPanelH - 3, by + bh + 8);
-      ctx.fillText(vTxt, bx + Math.max(0, (barW - ctx.measureText(vTxt).width) * 0.5), ty);
-    }
-
-    // Bottom-Right Regime Banner Pill (matches NEUTRAL / STEEP DOWN / CONTANGO banner in Images 3, 4, 6)
-    const bannerW = Math.min(200, Math.round(rightW * 0.42));
-    const bannerX = rightX + rightW - bannerW;
-    const bannerY = h - pillH - 6;
-    ctx.fillStyle = regime.col;
-    ctx.beginPath();
-    ctx.roundRect(bannerX, bannerY, bannerW, pillH - 1, 3);
-    ctx.fill();
-    ctx.font = '800 9.5px ui-monospace, Menlo, Consolas, monospace';
-    ctx.fillStyle = '#050711';
-    const btw = ctx.measureText(regime.label).width;
-    ctx.fillText(regime.label, bannerX + Math.max(6, (bannerW - btw) * 0.5), bannerY + 13);
-  }
-
-  ctx.restore();
 }
 
 export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: number): void {
@@ -1175,8 +889,6 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
     legend.title = legend.textContent;
   }
 
-  renderInstrumentHUD(r.canvas);
-
   if (_rafId) cancelAnimationFrame(_rafId);
   let lastW = w, lastH = h;
   const loop = () => {
@@ -1192,7 +904,6 @@ export function show3D(plots: OakPlot3D[], shapePlots?: OakPlot[], totalBars?: n
         _bloomPass?.setSize(cw, ch);
       }
       if (_composer) _composer.render(); else r.renderer.render(r.scene, r.camera);
-      renderInstrumentHUD(r.canvas);
     }
     _rafId = requestAnimationFrame(loop);
   };
@@ -1243,7 +954,6 @@ export function hide3D(): void {
   _ok = false;
   const legend = document.getElementById('lower-pane-legend');
   if (legend) legend.style.display = 'none';
-  if (_hudCanvas) _hudCanvas.style.display = 'none';
   if (_rafId) { cancelAnimationFrame(_rafId); _rafId = 0; }
   _composer?.dispose();
   _composer = null; _bloomPass = null;

@@ -4,7 +4,7 @@
 this project without re-deriving anything. It covers what exists, what was built during the
 hackathon, what is verified, what is broken/known-limited, what remains, and what comes after.
 
-**Last updated:** Oct 30, 2026 · **Deadline: Nov 4, 2026, 9:00 PM ET** · Repo: this directory
+**Last updated:** Oct 31, 2026 · **Deadline: Nov 4, 2026, 9:00 PM ET** · Repo: this directory
 (`C:\DAFECharts-META-Hackathon`, git initialized locally, **not yet pushed public**)
 
 ---
@@ -24,9 +24,11 @@ hackathon, what is verified, what is broken/known-limited, what remains, and wha
   - Team max 4. No financial-advice promises (we carry "analysis software, not financial
     advice" disclaimers everywhere).
 - **Meta model usage (Stage One insurance):** development with Muse Code (Muse Wonder);
-  runtime roles set to **Meta Model API · `muse-spark-1.3`** for both Trade Advisor and
-  OakScript Coder (Settings → LLM Configuration). The $150 participant credits should be
-  claimed (form in the participant guide) and the key lives encrypted in the backend vault.
+  the runtime OakScript Coder is **Meta Model API · `muse-spark-1.3`** (Settings → LLM
+  Configuration). The $150 participant credits should be claimed (form in the participant
+  guide) and the key lives encrypted in the backend vault. The Trade Advisor is OpenCode
+  `qwen3.8-flash`; the cross-model acceptance runs use per-request overrides without
+  changing either saved role.
 
 ## 2. What the product is
 
@@ -87,7 +89,7 @@ hackathon, what is verified, what is broken/known-limited, what remains, and wha
 | Perf tricks made real | 20 measured (not simulated) tricks, `npm run verify:tricks` (5,000-iteration harness, 0 failures on `b64e0e7`) | `perf-trick-test-engine.ts`, `tools/verify/perf-tricks-test.ts` |
 | Platform fixes | Divider drag (both directions), lower-pane Shift-pan, lower-pane generated legend, lower-pane background follows Display setting | `main.ts`, `three-lower-pane.ts` |
 | Editor-agent test suite | 20 prompts: bad draft must be flagged, good draft must be clean/valid/executing/aligned. **ALL 20 PASS** | `tools/verify/editor-agent-test.ts` |
-| Meta Model API | Provider preset (`meta`, `muse-spark-1.3`), both roles set to it and verified with live completions | `backend/main.py`, Settings |
+| Meta Model API | Provider preset (`meta`, `muse-spark-1.3`), OakScript Coder role set to it and verified with live completions; Trade Advisor is OpenCode `qwen3.8-flash` | `backend/main.py`, Settings |
 | Repo | git initialized, secrets verified untracked (`.gitignore` covers `settings.json`, `.vault_key`, `*.gguf`) | `.git` |
 
 ## 4. Verified status (run these; all currently green)
@@ -118,16 +120,22 @@ npm run verify:intent        # requested-family mutants — 6 of 6 caught, 0 fal
 | NVIDIA · Nemotron 3.5 Lightning 30B | 0/5 | Reflexive ATR additions, request drift; **every failure caught by the gates** |
 | NVIDIA · Nemotron 3 Super 120B | — | 404: in catalogue, not callable on this account |
 | NVIDIA · DeepSeek V4.1 Flash | — | NVIDIA endpoint 500s/timeouts (verified provider-side with a direct minimal call) |
-| OpenCode · Flint 40B | untested | Needs an OpenCode API key (none saved) |
+| OpenCode · DeepSeek V4 Pro (editor, 5-prompt final set) | 1/5 | Prompt 1, the hardest case, passed every editor check (valid, coverage-clean, executes) in both the 440s run (4,971 chars) and the 600s-timeout rerun (3,442 chars, 2 briefs, 2 drafts, 2 repairs). Prompt 2's Qwen brief and DeepSeek replies completed (8,210, 7,561 and 6,319 chars) with backend HTTP 200, but the local harness lost every 5+ minute response to `read ECONNRESET`; prompt 2 is therefore **ungraded, not a code failure**. See `docs/reports/CROSS_MODEL_ACCEPTANCE.md` |
+| OpenCode · Qwen 3.8 Flash (editor, 11-prompt set) | 0/1 | The Qwen coder call exceeded the old 300s provider timeout; the advisor briefs themselves completed (155s and 167s, 3,019 and 2,865 chars). The 600s backend timeout was added after this run |
+| OpenCode · Qwen 3.8 Flash (editor, prompt 2 only, 600s timeout) | 0/1 (no code) | Faster-coder test on the prompt the DeepSeek resets made ungradeable. The advisor brief completed (2,433 chars, 229s), but the coder call returned the backend's `OpenCode timed out — try again.` error **sub-second** with no provider call logged, so it was neither a 600s timeout nor a code-quality failure. A direct Qwen coder probe right after answered in 2.4s. **Indeterminate for code quality: no code produced, not a gate failure.** Evidence: `tools/verify/final-limit-results-qwen-p2-600-run-1.json` |
+| OpenCode · Flint 40B | untested | The OpenCode key is saved and DeepSeek/Qwen run through it; Flint was not part of the acceptance |
 
 The **10/10 (110/110)** acceptance pass on the final 11-prompt set was achieved with `npx tsx tools/verify/final-limit-run.ts acceptance --set all --repeat 10 --fail-fast` on commit `b64e0e7`. The run drives the shared pipeline the app uses (`generateIndicatorWithGates` and `editScriptWithGates`) and checks every output with the validator, the request-coverage gate, the signal-clustering probe, and interpreter execution. The attempts before it, and what failed in each, are in §5 item 6.
 
-Current role config: **both roles = Meta · `muse-spark-1.3`** (verified live; 10/10 acceptance on `b64e0e7`).
+Cross-model standing: the honest headline is **DeepSeek V4 Pro passed prompt 1, the hardest prompt in the 5-prompt final set, twice** (4,971 chars in 440.2s; 3,442 chars, 2 briefs, 2 drafts, 2 repair rounds, 935.9s). Prompt 2 is **ungraded**: its replies completed at the provider with HTTP 200 (8,210 / 7,561 / 6,319 chars) but were lost to a local `read ECONNRESET` at the 5+ minute mark, and the faster-coder retry with Qwen produced no code because of a sub-second provider error. Both are verification-client facts, not code failures. The remaining cross-model candidate not yet tried is NVIDIA MiniMax-M3.1-Flash.
+
+Current role config: **Trade Advisor = OpenCode · `qwen3.8-flash`; OakScript Coder = Meta · `muse-spark-1.3`** (Stage One keeps Meta on the coder). The cross-model acceptance run uses per-request overrides, so the harness never changes either saved role. Cross-model commands, results, and failure analysis: `docs/reports/CROSS_MODEL_ACCEPTANCE.md`.
 
 ## 5. Still needs to be completed (priority order)
 
 1. **Push the repo public on GitHub** (judging requirement). Local git history is ready;
-   needs the owner's GitHub account. Then put the URL in `docs/HACKATHON.md` + submission form.
+   GitHub CLI is authenticated as `DSKYZ-dev` and no remote is configured yet. Then put
+   the URL in `docs/HACKATHON.md` + submission form.
 2. **Claim the $150 Meta Model API credits** (participant-guide form) if not done; confirm
    the Meta key in Settings is the credited account's key.
 3. **Record the 3-minute demo video** from the script in `docs/HACKATHON.md`
@@ -135,9 +143,13 @@ Current role config: **both roles = Meta · `muse-spark-1.3`** (verified live; 1
    Rehearse once with **Reset Playbook** so the demo starts at v1.
 4. **Fill the submission form**: track = Indie Developer, theme = Push the Frontier,
    contributions list = §3 of this doc / top of `docs/HACKATHON.md`, team members, video link.
-5. **Rotate both pasted API keys after the event** (Meta + NVIDIA keys were pasted in chat
-   during development). They're stored encrypted (`backend/.vault_key` + vault blob), but
-   rotation is one paste in Settings → Provider API Keys / Universal Data Providers.
+5. **No key material in the repository.** The only 23-character literal in the old
+   `apps/mobile/src/state.ts` history was the localStorage key name
+   `dafe_mobile_massive_key`, not a credential. Runtime provider keys are stored only in
+   the encrypted backend vault (`backend/.vault_key` + vault blob), which is gitignored.
+   Any provider key shared in chat during development (the OpenCode key was) should be
+   revoked and re-issued at the provider before publishing, then pasted in
+   Settings → Provider API Keys.
 6. **Live acceptance — COMPLETED on the final 11-prompt set (10/10 runs, 110/110 prompts):**
    `npx tsx tools/verify/final-limit-run.ts acceptance --set all --repeat 10 --fail-fast` on
    commit `b64e0e7`: 10 consecutive runs, all 11 prompts passing in each. Records:
@@ -151,9 +163,21 @@ Current role config: **both roles = Meta · `muse-spark-1.3`** (verified live; 1
    - Attempt 4 (cf095eb): runs 1–5 passed; run 6 failed on prompt 10 (`atan2` was not an OakScript builtin; fixed in 398f25a).
    - Attempt 5 (398f25a): runs 1–4 passed; run 5 failed on prompt 11 (a marker on the separate pane inside a 3D scene, and state-keyed markers; fixed in b64e0e7).
    Records: `final-limit-results-acceptance-attempt1` to `attempt5` and `final-limit-results-dryrun-*`, all in `tools/verify/`.
-7. Optional if time: **Flint test** (needs OpenCode key) via
-   `npx tsx tools/verify/final-limit-run.ts flint` after setting the coder role.
-8. Optional: sync or retire the older `C:\DAFECharts` copy so nobody launches the wrong tree
+7. Optional if time: **cross-model depth.** The provider-neutrality evidence is already
+   sufficient (DeepSeek V4 Pro passed the hardest final prompt twice; see §4). Two things
+   would strengthen it, in this order:
+   - Give the harness a job/poll or streaming-keepalive transport so it can receive a
+     reply that takes more than about five minutes. That is the only reason prompt 2 is
+     ungraded; the backend logged HTTP 200 for every long DeepSeek reply.
+   - Run the next faster coder on prompt 2 with `--only 2`. Qwen 3.8 Flash was tried and
+     produced no code (sub-second provider error, not a gate failure); NVIDIA
+     MiniMax-M3.1-Flash is the untried candidate:
+     `npx tsx tools/verify/final-limit-run.ts minimax-p2-600 --set final --only 2 --repeat 1 --fail-fast --base http://127.0.0.1:8788 --coder-provider nvidia --coder-model minimaxai/minimax-m3.1-flash --advisor-provider opencode --advisor-model qwen3.8-flash`.
+     Neither run changes the saved roles; both use per-request overrides.
+8. Optional if time: **Flint test** via
+   `npx tsx tools/verify/final-limit-run.ts flint` using the saved OpenCode key
+   and per-request overrides; it is not needed for the cross-model claim.
+9. Optional: sync or retire the older `C:\DAFECharts` copy so nobody launches the wrong tree
    (it lacks OakGuard entirely — several "not working" reports traced to mixed processes).
 
 ## 6. Known issues and honest limitations
@@ -168,7 +192,7 @@ Current role config: **both roles = Meta · `muse-spark-1.3`** (verified live; 1
   twice). `start.bat -reset` clears stale processes.
 - **No local model window** when roles are on hosted providers — expected; llama.cpp only
   runs when a role is set to Local. The RTX 5050 (8GB) runs the bundled GGUF fine if switched back.
-- **OakGuard manifest changed**: four shipped scripts were gated with `barstate.isconfirmed`, so the corpus hash is now `8eee75b7` (it was `e1b5c0f4`). Promotions made against the old manifest need re-certification before they count.
+- **OakGuard manifest changed**: four shipped scripts were gated with `barstate.isconfirmed`, so the corpus hash became `8eee75b7` (it was `e1b5c0f4`). Removing the background dashboards from the library changed it again, to `a97f439e`, the current hash (`npm run verify:oakguard` prints it). Promotions made against an older manifest need re-certification before they count.
 - **The certificate certifies the procedure, not the returns.** A strategy can pass every historical check and still lose money. It does not model queue position, partial fills or market impact.
 - **The requested-family check is a presence check.** It accepts the family's builtin and the operation that defines it (`highest`/`lowest` for %K, `cum` for VWAP). A hand-written form that matches neither is flagged for review, which can cost a fix round. Moving-average and Bollinger families are not checked, since each has several equivalent forms.
 - **Pane law is a static heuristic**: `pane-law.ts` reads each 3D series expression and the
@@ -179,8 +203,13 @@ Current role config: **both roles = Meta · `muse-spark-1.3`** (verified live; 1
   execution, signal discipline and 2D/3D twins (`npm run verify:signals`), and the changed
   engines (Wind Velocity Vector 3D, AGE, Nova, Echo Chamber) were spot-checked in the app. Each
   engine's own visual design was not individually redesigned; that is the next pass.
-- **Mobile is not the same core**: it shares `@dafe/types` only and reimplements screens.
-  Keep it in the repo as evidence; do not demo it live. Its build is green.
+- **Mobile covers the desktop feature list.** The Android app imports the OakScript core and the OakGuard pipeline from the web code and sends AI calls through the PC backend, so keys stay on the PC. It has the agent review flow (View Diff, Test Run, Accept and Decline, and auto-accept, which applies at once), the OakGuard sheet, the honesty certificate under backtests, a regime strip, Active Signal Models (enabled models only), news, a ledger sealed at fill time, a storyboard, paper auto-trade arming, the Widgets menu, touch drawing tools, voice input, a background particle field, and PC hardware telemetry. The live tick simulator stays removed on mobile by design.
+  Caveats: auto-trade is paper-only on mobile. Drawing has no keyboard shortcuts or hover preview. A debug APK builds successfully at `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk` (5.4 MB) with the synced web assets and `RECORD_AUDIO` in the manifest, but voice still needs a device check. Not confirmed on a device: voice, the 3D observatory, the honesty certificate render, and the regime strip on a long history.
+  Tested live in a browser: AI routing through the backend to Qwen 3.8 Flash (Trade Advisor reply in 5.0s) and previously to MiniMax-M3.1-Flash, the OakGuard sheet, news, the storyboard, the Widgets sheet, the draw toolbar, and PC hardware telemetry (RTX 5050 Laptop, 8 GB VRAM, 12 cores, 15.3 GB RAM). The particle field paints behind the chart after the resize-start fix. Not tested live: a Scripts generation on the phone (a MiniMax generation did not return within about six minutes in one test, so it needs a visible timeout), the review dialog's generation path, the honesty certificate render, the regime strip on a long history, and the 3D observatory on a device.
+- **LAN pairing token.** The backend trusts loopback (the desktop app) with no token. Any other client, including the phone on the LAN, needs the `X-DAFE-Token` header set to the value in `backend/.lan_token`. The file is created on first start and is gitignored. `GET /api/ping` stays open for discovery. The running backend must be restarted to apply this. Phones are paired in Settings → PC Backend Pairing.
+- **Per-request editor override.** `POST /api/chat` accepts `coder_provider` and `coder_model` for `oakscript_coder`, and `advisor_provider` and `advisor_model` for `trade_advisor`. These apply to one request and never change the saved roles. The acceptance harness uses them through `--coder-provider`, `--coder-model`, `--advisor-provider` and `--advisor-model`.
+- **The verification client loses very long replies.** `tools/verify/final-limit-run.ts` posts with `node:http` and a 20-minute cap, but a single reply that takes more than about five minutes still fails locally as `read ECONNRESET` while the backend logs HTTP 200 and holds the full text. Every DeepSeek reply over 6,000 characters hit this. It is the reason prompt 2 is recorded as ungraded instead of scored, and the reason a faster coder was tried on that prompt. Fix: a job/poll transport or a streaming keepalive in the harness.
+- **A sub-second provider failure reports as a timeout.** `backend/main.py` maps every `httpx.TimeoutException` (including connect and pool timeouts) to the same detail, `OpenCode timed out — try again.`, regardless of how long the caller waited. The Qwen coder call returned that detail in under a second with no provider request in the log, so the message read like a 600s timeout when nothing had waited. Two improvements: report the exception class in the detail, and retry once in the harness before grading `NO_CODE`. Until then, treat a `NO_CODE` whose backend log shows no provider call as an ungraded run, not a model failure.
 - **3D legibility is improved, not solved**: oscillator terrain in the lower pane now has a
   generated legend; a full visual-compiler (deterministic appearance from metric roles) is
   designed in `docs/design/VISUAL_COMPILER_PLAN.md` but not implemented.
@@ -199,7 +228,7 @@ Current role config: **both roles = Meta · `muse-spark-1.3`** (verified live; 1
 4. **OakGuard growth**: more rule families (computed future-index, Pine-signature traps as
    specs), live LLM proposal hookup (the catalogue becomes model-proposed specs through
    the same evaluator), re-certification badges on model/DSL change.
-5. **Mobile parity**: shared OakScript core into mobile; 3D + ML surfaces.
+5. **Mobile parity, remaining**: device checks for voice, the 3D observatory, the honesty certificate render, and the regime strip on long history; a visible timeout with a faster path for long hosted generations; 3D + ML surfaces.
 6. **Ops**: code-split the 1.3MB web bundle (lazy Three.js/OakGuard), render-on-demand mode.
 
 ## 8. Partner quickstart

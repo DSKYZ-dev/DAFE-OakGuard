@@ -14,6 +14,7 @@ import type { InputDef } from './oakscript/editor';
 import { setWebhookUrl, getWebhookUrl, getStoredOverrides, setStoredOverrides, sendAlert } from './oakscript/editor';
 import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-band';
 import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, WINDOW_GAP, clearOfHeaderTop } from './header-band';
+import { escapeHtml } from './escape-html';
 
 export interface DashboardToggleState {
   visible: boolean;
@@ -309,7 +310,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
       // Guard against a null/undefined inputs list — `undefined.length` used to
       // throw here, leaving the panel completely blank (no rows, no message).
       if (!inputs || inputs.length === 0) {
-        scrollArea.innerHTML += `<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">${name ? `“${name}” has` : 'This script has'} no configurable inputs. Add <code style="color:#b48cff">input(...)</code> calls to your script to expose parameters here.</div>`;
+        scrollArea.innerHTML += `<div style="color:rgba(255,255,255,0.3);font-size:10px;padding:10px;">${name ? `“${escapeHtml(name)}” has` : 'This script has'} no configurable inputs. Add <code style="color:#b48cff">input(...)</code> calls to your script to expose parameters here.</div>`;
         return;
       }
 

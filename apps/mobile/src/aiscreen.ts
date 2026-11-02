@@ -1,6 +1,12 @@
 import type { BaseBar } from '@dafe/types';
 import { state } from './state';
-import { llmChat, nativePost } from './native-http';
+import { nativePost } from './native-http';
+import { backendHeaders } from './backend';
+import { llmChat, llmReady } from './llm-router';
+import {
+  VoiceInput, voiceInputSupported, speechOutputSupported, handsFreeSaved, speakRepliesSaved,
+  setSpeakRepliesSaved, speakText, stopSpeaking,
+} from './voice';
 
 export interface AiScreen {
   dispose: () => void;
@@ -171,8 +177,45 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
   const msgEl = document.createElement('div');
   msgEl.id = 'ai-messages';
 
+  const voiceRow = document.createElement('div');
+  voiceRow.className = 'ai-voice-row';
+  const voiceStatus = document.createElement('span');
+  voiceStatus.className = 'ai-voice-status';
+  const voiceNote = document.createElement('span');
+  voiceNote.className = 'ai-voice-note';
+  voiceNote.textContent = 'Voice input is not available on this device.';
+  const handsLabel = document.createElement('label');
+  handsLabel.className = 'ai-voice-toggle';
+  const handsBox = document.createElement('input');
+  handsBox.type = 'checkbox';
+  handsBox.checked = handsFreeSaved();
+  handsLabel.appendChild(handsBox);
+  handsLabel.appendChild(document.createTextNode(' Hands-free'));
+  const speakLabel = document.createElement('label');
+  speakLabel.className = 'ai-voice-toggle';
+  const speakBox = document.createElement('input');
+  speakBox.type = 'checkbox';
+  speakBox.checked = speakRepliesSaved();
+  speakLabel.appendChild(speakBox);
+  speakLabel.appendChild(document.createTextNode(' Speak replies'));
+  const micSupported = voiceInputSupported();
+  if (!micSupported) {
+    handsLabel.style.display = 'none';
+  } else {
+    voiceRow.appendChild(handsLabel);
+  }
+  if (speechOutputSupported()) voiceRow.appendChild(speakLabel);
+  else speakLabel.style.display = 'none';
+  if (!micSupported) voiceRow.appendChild(voiceNote);
+  voiceRow.appendChild(voiceStatus);
+
   const inputRow = document.createElement('div');
   inputRow.className = 'ai-input-row';
+  const micBtn = document.createElement('button');
+  micBtn.id = 'ai-mic';
+  micBtn.title = 'Hold to talk';
+  micBtn.textContent = '🎤';
+  if (!micSupported) micBtn.style.display = 'none';
   const input = document.createElement('textarea');
   input.id = 'ai-input';
   input.rows = 1;
@@ -180,11 +223,13 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
   const sendBtn = document.createElement('button');
   sendBtn.id = 'ai-send';
   sendBtn.textContent = '↑';
+  inputRow.appendChild(micBtn);
   inputRow.appendChild(input);
   inputRow.appendChild(sendBtn);
 
   container.appendChild(pillsBar);
   container.appendChild(context);
+  container.appendChild(voiceRow);
   container.appendChild(msgEl);
   container.appendChild(inputRow);
 
@@ -214,18 +259,13 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
     return div;
   }
 
-  function llmConfig(): any { try { return JSON.parse(localStorage.getItem('dafe_mobile_llm') || '{}'); } catch { return {}; } }
-
   async function tryLlmAdvisor(userMsg: string): Promise<{ reply: string; ok: boolean }> {
-    const cfg = llmConfig();
-    const hasKey = !!cfg.apiKey?.trim();
-    const provider = (cfg.provider || '').toLowerCase();
-    // If no LLM configured, don't attempt — fall back to offline immediately
-    if (!hasKey && provider !== 'ollama') return { reply: '', ok: false };
+    // No device key and no PC-held key — fall back to offline immediately
+    if (!(await llmReady())) return { reply: '', ok: false };
     const system = `You are DAFE Trade Advisor — the best on the planet. You give concise, actionable trading advice grounded in the chart summary. Always reference the provided SMA/RSI/level context. Be specific, not generic. If asked about volume/VPI/ATR, use the supplied stats.`;
     const user = `${userMsg}\n\nChart context:\n${chartSummary()}`;
-    const r = await llmChat(cfg, system, user, { maxTokens: 2048, temperature: 0.55 });
-    return r.ok ? { reply: r.text, ok: true } : { reply: r.error || 'LLM unavailable', ok: false };
+    const r = await llmChat({ system, messages: [{ role: 'user', content: user }], maxTokens: 2048, temperature: 0.55 });
+    return r.ok ? { reply: r.text ?? '', ok: true } : { reply: r.error || 'LLM unavailable', ok: false };
   }
 
   async function send(q: string): Promise<void> {
@@ -239,7 +279,7 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
     try {
       let reply: string;
       let tag: string | undefined;
-      // 1) Try unified LLM (Advisor + Editor) via CapacitorHttp — this is what Settings tests
+      // 1) Try unified LLM (Advisor + Editor) — PC backend when it holds the key, else direct
       const llm = await tryLlmAdvisor(text);
       if (llm.ok) {
         reply = llm.reply;
@@ -251,7 +291,7 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
             agent: 'trade_advisor',
             message: text,
             messages: [{ role: 'system-context', content: chartSummary() }],
-          }, {}, 12000);
+          }, backendHeaders(), 12000);
           if (!res || res.status < 200 || res.status >= 300) throw new Error(`HTTP ${res?.status ?? 'no response'}`);
           const data: any = res.data;
           if (data?.ok && data?.reply) {
@@ -277,6 +317,7 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
       messages.push({ role: 'assistant', content: reply });
       typing.remove();
       appendMsg('assistant', reply, tag);
+      speakText(reply);
     } catch (err) {
       typing.remove();
       appendMsg('error', err instanceof Error ? err.message : String(err));
@@ -295,6 +336,33 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
     input.style.height = Math.min(90, input.scrollHeight) + 'px';
   });
 
+  const voice = new VoiceInput({
+    onTranscript: (text) => { input.value = text; void send(text); },
+    onStatus: (text) => { voiceStatus.textContent = text; },
+    onListening: (on) => micBtn.classList.toggle('listening', on),
+    onHandsFreeChange: (on) => { handsBox.checked = on; },
+  });
+  const tabObserver = new MutationObserver(() => voice.setActive(container.classList.contains('active')));
+  tabObserver.observe(container, { attributes: true, attributeFilter: ['class'] });
+  voice.setActive(container.classList.contains('active'));
+  const pttEnd = (): void => voice.pressEnd();
+  micBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    micBtn.setPointerCapture?.(e.pointerId);
+    voice.pressStart();
+  });
+  micBtn.addEventListener('pointerup', pttEnd);
+  micBtn.addEventListener('pointercancel', pttEnd);
+  micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+  handsBox.addEventListener('change', () => {
+    voice.setHandsFree(handsBox.checked);
+    voiceStatus.textContent = handsBox.checked ? 'Hands-free on — say "Advisor", then your question.' : '';
+  });
+  speakBox.addEventListener('change', () => {
+    setSpeakRepliesSaved(speakBox.checked);
+    if (!speakBox.checked) stopSpeaking();
+  });
+
   function updateContext(): void {
     const b = state.bars;
     const close = b.length ? b[b.length - 1].close : 0;
@@ -308,6 +376,6 @@ export function createAiScreen(container: HTMLDivElement): AiScreen {
   const interval = setInterval(updateContext, 2000);
 
   return {
-    dispose: () => { clearInterval(interval); container.replaceChildren(); },
+    dispose: () => { clearInterval(interval); tabObserver.disconnect(); voice.dispose(); stopSpeaking(); container.replaceChildren(); },
   };
 }

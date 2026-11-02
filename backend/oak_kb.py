@@ -73,14 +73,59 @@ SECTIONS: list[dict] = [
         "keywords": ["if", "else", "for", "while", "loop", "break", "continue", "indentation", "control flow"],
     },
     {
-        "title": "Arrays",
+        "title": "Arrays — Complete Reference",
         "content": (
-            "Literal: arr = [1, 2, 3]. Pre-allocate: arr = array(10).\n"
-            "Operations: array.get(arr, index), array.set(arr, index, val), "
-            "array.push(arr, val), array.pop(arr), array.size(arr).\n"
-            "Index access: value = arr[0], arr[1] = 42."
+            "Literal: arr = [1, 2, 3]. Pre-allocate: arr = array(10). Index access: value = arr[0], arr[1] = 42.\n"
+            "Read and write: array.get(arr, index), array.set(arr, index, value).\n"
+            "Grow and shrink: array.push(arr, value), array.pop(arr) removes the last element, "
+            "array.shift(arr) removes the first, array.unshift(arr, value) inserts at the start, "
+            "array.insert(arr, index, value), array.remove(arr, index), array.clear(arr), array.size(arr).\n"
+            "Search: array.includes(arr, value), array.indexOf(arr, value).\n"
+            "Copy and slice: array.copy(arr), array.slice(arr, from, to), array.head(arr, count), "
+            "array.tail(arr, count), array.fill(arr, value, from, to).\n"
+            "Order: array.reverse(arr) reverses in place, array.sort(arr, order).\n"
+            "Statistics: array.sum, array.avg, array.min, array.max, array.median, array.stdev, "
+            "array.percentile(arr, percent).\n"
+            "Build and join: array.range(start, end, step) makes a numeric range, array.join(arr, separator)."
         ),
-        "keywords": ["array", "list", "push", "pop", "get", "set", "size", "index"],
+        "keywords": [
+            "array", "list", "push", "pop", "get", "set", "size", "index", "shift", "unshift",
+            "insert", "remove", "clear", "includes", "indexOf", "slice", "join", "copy", "reverse",
+            "sort", "fill", "sum", "avg", "median", "stdev", "percentile", "head", "tail", "range",
+        ],
+    },
+    {
+        "title": "Consensus Gate — Multi-Condition Confirmation",
+        "content": (
+            "Require several independent conditions to agree on the same bar before you alert. "
+            "consensus.vote(name, condition) registers a named boolean vote and returns the condition unchanged, "
+            "so it composes inline: trendUp = consensus.vote(\"trend\", close > sma(close, 50)). "
+            "consensus.ratio() is the fraction of this bar's votes that were true (0-1). "
+            "consensus.count() counts the true votes. consensus.total() counts all votes. "
+            "Votes reset every bar. The gate is deterministic: every vote is a plain condition the same script evaluates."
+        ),
+        "keywords": ["consensus", "vote", "ratio", "count", "total", "confirm", "agree", "gate", "confluence"],
+    },
+    {
+        "title": "OakRing — Circular Buffer",
+        "content": (
+            "oakring(capacity) makes a fixed-size ring buffer; oakring() defaults to capacity 10. "
+            "A full ring overwrites its oldest value, so memory stays bounded. "
+            "Methods: ring.push(value), ring.pop(), ring.clear(), ring.fill(value), ring.toArray() (oldest to newest). "
+            "Accessors: ring.first() is the oldest, ring.last() the newest, ring[0] the newest. "
+            "Properties: ring.size, ring.capacity."
+        ),
+        "keywords": ["oakring", "ring", "buffer", "rolling", "window", "circular", "capacity", "stream"],
+    },
+    {
+        "title": "Matrix — 2D Grid",
+        "content": (
+            "matrix(rows, cols) makes a zero matrix; matrix(rows, cols, initialValue) fills it. "
+            "Methods: m.get(row, col), m.set(row, col, value), m.row(r), m.col(c), m.sum(), "
+            "m.transpose(), m.multiply(other), m.add(other), m.subtract(other), m.toArray(). "
+            "Properties: m.rows, m.cols."
+        ),
+        "keywords": ["matrix", "grid", "covariance", "transpose", "multiply", "2d", "table"],
     },
     {
         "title": "Input Parameters",
@@ -124,11 +169,12 @@ SECTIONS: list[dict] = [
             "\"square\", \"diamond\", \"arrowup\", \"arrowdown\", \"label\".\n"
             "plotarrow(bar_index, price, title, direction, color?, pane?)\n"
             "plotchar(bar_index, price, char, color?, pane?)\n"
-            "label.new(x, y, text, color)\n\n"
+            "label.new(x, y, text, color) is the boxed label. text.new(x, y, text, color?, size?, id?) is the unboxed "
+            "label; the same id updates it in place.\n\n"
             "TIPS: buy shapes below bar, sell above. Gap adapts to zoom."
         ),
         "keywords": [
-            "plotshape", "plotarrow", "plotchar", "label", "marker", "shape",
+            "plotshape", "plotarrow", "plotchar", "label", "text", "marker", "shape",
             "triangle", "diamond", "arrow", "signal", "buy", "sell",
         ],
     },
@@ -261,11 +307,13 @@ SECTIONS: list[dict] = [
         "content": (
             "Math: abs, min, max, floor, ceil, round, sqrt, log, log10, exp, "
             "pow(base, exp), sign, avg(a, b, ...), sin, cos, tan\n"
+            "Inverse trig, in radians: asin(x), acos(x), atan(x), atan2(y, x) is the angle of the vector (x, y), from -pi to pi.\n"
             "Conversion: tostring(x), tonumber(x)\n"
             "Format: str.format(\"Price: {}\", close), \"Value: \" + tostring(close)"
         ),
         "keywords": ["math", "abs", "sqrt", "pow", "sign", "log10", "avg",
-                     "sin", "cos", "tan", "tostring", "tonumber", "format"],
+                     "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+                     "tostring", "tonumber", "format"],
     },
     {
         "title": "Execution Model (Bar-by-Bar)",

@@ -14,8 +14,8 @@ import {
 } from '../../web/src/chart-renderer';
 import { computeVolumeProfileBins, DEFAULT_VP_SETTINGS, type VPComputed } from '../../web/src/volume-profile';
 const MOBILE_VP_SETTINGS = { ...DEFAULT_VP_SETTINGS, mode: '2D-Side' as const };
-import { parse, executeScript } from '../../web/src/oakscript';
-import type { OakPlot3D } from '../../web/src/oakscript/runtime';
+import { parse, executeScript, validate, formatValidationIssues } from '../../web/src/oakscript';
+import type { OakPlot3D, OakPlot } from '../../web/src/oakscript/runtime';
 import { barsToRuntimeBarData } from '../../web/src/backtest/data';
 import { draw3DScene } from '../../web/src/iso3d';
 import { renderMain3DScene, mark3DSceneDirty, dispose3DScene, getRenderTime, renderIsoOverlay3D, setIsoCompositeHost, isIsoCompositeActive } from '../../web/src/three-indicators';
@@ -26,8 +26,14 @@ import { fetchYahooBars } from './yahoo';
 import { getDataSourceForSymbol } from './data-adapter';
 import { LiveMarketEngine } from './live-engine';
 import { deriveMetrics } from './metrics-adapter';
-import { state, persistSettings, loadBroker, cacheBars, loadCachedBars, syncMarkersForSymbol, DEMO_MODE, type DataProvider } from './state';
+import { state, persistSettings, loadBroker, cacheBars, loadCachedBars, syncMarkersForSymbol, DEMO_MODE, widgetHidden, saveWidgetHidden, type DataProvider, type WidgetKey } from './state';
 import { TouchEngine } from './touch';
+import { createRegimeStrip } from './regime-ribbon';
+import { particlesEnabled } from './particles';
+import {
+  renderDrawings, getDrawings, addDrawing, undoDrawing, clearDrawings, screenToPoint,
+  TOOL_POINTS, type Drawing, type DrawPick, type DrawPoint, type DrawTool,
+} from './drawings';
 
 const TIMEFRAME_MS: Record<Timeframe, number> = {
   '1s': 1000, '5s': 5000, '10s': 10000, '30s': 30000,
@@ -40,6 +46,7 @@ export interface ChartScreenCallbacks {
   onDataSource: (provider: DataProvider) => void;
   onEngineBars: (bars: BaseBar[]) => void;
   onEngineTick: (price: number, ts: number) => void;
+  onIndicatorsRun?: (bars: BaseBar[]) => void;
 }
 
 export interface ChartScreen {
@@ -51,10 +58,19 @@ export interface ChartScreen {
   setVpEnabled: (on: boolean) => void;
   setLive: (on: boolean) => void;
   set3D: (on: boolean) => void;
+  setDrawMode: (on: boolean) => void;
+  isDrawMode: () => boolean;
+  setWidgetHidden: (key: WidgetKey, hidden: boolean) => void;
   reload: () => void;
   resetView: () => void;
   refreshIndicators: () => void;
   dispose: () => void;
+}
+
+// With the particle backdrop on, the chart leaves its background clear so the field shows through.
+function paintChartBackground(ctx: CanvasRenderingContext2D, time: number, w: number, h: number): void {
+  if (particlesEnabled()) ctx.clearRect(0, 0, w, h);
+  else drawBackground(ctx, time);
 }
 
 export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCallbacks): ChartScreen {
@@ -70,7 +86,11 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   canvas.style.width = '100%';
   canvas.style.display = 'block';
   container.appendChild(canvas);
+  const regimeStrip = createRegimeStrip();
+  container.insertBefore(regimeStrip.el, canvas);
   const ctx = canvas.getContext('2d')!;
+  let dashHidden = widgetHidden('dash');
+  let regimeHidden = widgetHidden('regime');
 
   let rafId = 0;
   let lastTs = 0;
@@ -119,6 +139,31 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   const dashWin = document.createElement('div');
   dashWin.id = 'dashboard-win';
   container.appendChild(dashWin);
+
+  // ── Preview overlay (review only) ────────────────────────────────────
+  // state.preview runs as an extra overlay. Its plots live in previewPlots,
+  // never in state.indicators, so the accepted set and saved source are untouched.
+  let previewPlots: OakPlot[] = [];
+  let previewErrors: string[] = [];
+  const previewBadge = document.createElement('div');
+  previewBadge.id = 'preview-badge';
+  previewBadge.style.cssText = 'position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;display:none;pointer-events:none;max-width:90%;font-size:10px;font-weight:700;letter-spacing:0.3px;padding:3px 8px;border-radius:6px;background:rgba(255,190,60,0.14);border:1px solid rgba(255,190,60,0.6);color:rgba(255,200,90,0.98);text-align:center;';
+  const previewLabel = document.createElement('div');
+  previewLabel.textContent = 'PREVIEW · not applied to your indicator';
+  const previewErrEl = document.createElement('div');
+  previewErrEl.style.cssText = 'font-weight:400;color:rgba(255,160,160,0.95);';
+  previewBadge.appendChild(previewLabel);
+  previewBadge.appendChild(previewErrEl);
+  container.appendChild(previewBadge);
+
+  function updatePreviewBadge(): void {
+    previewBadge.style.display = state.preview ? '' : 'none';
+    previewErrEl.textContent = previewErrors.length ? `⚠ ${previewErrors[0].slice(0, 120)}` : '';
+  }
+
+  function activePlots(): OakPlot[] {
+    return [...state.indicators.filter((i) => i.enabled).flatMap((i) => i.plots), ...previewPlots];
+  }
   let dashLastRender = 0;
   let dashLastSig = '';
   const DASH_KEY = 'dafe_mobile_dash_disabled';
@@ -136,6 +181,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   }
 
   function renderDashboardWindow(): void {
+    if (dashHidden) { dashWin.style.display = 'none'; return; }
     const now = performance.now();
     if (now - dashLastRender < 900) return;
     dashLastRender = now;
@@ -518,6 +564,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   }
 
   function set3D(on: boolean): void {
+    if (on) setDrawMode(false);
     state.is3D = on;
     if (!on) {
       // Tearing down 3D: drop the GL overlay (composite OR unified) so the
@@ -546,6 +593,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
         const program = parse(ind.source);
         const result = executeScript(program, barData, new Map());
         ind.plots = result.plots;
+        ind.strategyOrders = result.strategyOrders;
         ind.errors = result.errors;
         // Tag every plot with its OWNING indicator so the dashboard window
         // can group sections and offer per-indicator on/off toggles.
@@ -555,12 +603,46 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
         }
       } catch (err) {
         ind.plots = [];
+        ind.strategyOrders = [];
         ind.errors = [err instanceof Error ? err.message : String(err)];
         (window as any).__dafeEditorChat?.('error', `[${ind.name}] ${ind.errors[0].slice(0, 600)}`);
       }
     }
+    previewPlots = [];
+    previewErrors = [];
+    if (state.preview) {
+      try {
+        const v = validate(state.preview.source);
+        if (!v.valid) {
+          previewErrors = formatValidationIssues(v.issues).split('\n').filter(Boolean);
+        } else {
+          const result = executeScript(parse(state.preview.source), barData, new Map());
+          previewPlots = result.plots;
+          previewErrors = result.errors ?? [];
+        }
+      } catch (err) {
+        previewErrors = [err instanceof Error ? err.message : String(err)];
+      }
+    }
+    updatePreviewBadge();
     lastIndicatorRun = performance.now();
     mark3DSceneDirty();
+    try { cb.onIndicatorsRun?.(state.transformed); } catch { /* listener failure must not break the chart */ }
+  }
+
+  function setWidgetHidden(key: WidgetKey, hidden: boolean): void {
+    saveWidgetHidden(key, hidden);
+    if (key === 'dash') {
+      dashHidden = hidden;
+      dashLastSig = '';
+      dashLastRender = 0;
+      if (hidden) dashWin.style.display = 'none';
+      else renderDashboardWindow();
+    } else {
+      regimeHidden = hidden;
+      // The strip paints only on its own 3s recompute; show the last paint at once.
+      regimeStrip.el.style.display = hidden || !regimeStrip.el.textContent ? 'none' : 'flex';
+    }
   }
 
 
@@ -592,6 +674,141 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   // otherwise). The user never manages a play/pause again.
   setLive(true);
 
+  // ── Draw mode (touch drawing tools) ──────────────────────────────
+  // OFF by default: every touch path below is the pre-existing one. ON: the
+  // toolbar appears above the canvas and a single-finger gesture places the
+  // active tool's points. Tool 'none' (Pan) keeps single-finger panning.
+  // Two fingers always cancel the drawing gesture so pinch zoom still works.
+  const DRAW_TOOLS: { id: DrawPick; label: string }[] = [
+    { id: 'none', label: 'Pan' }, { id: 'trend', label: 'Trend' }, { id: 'ray', label: 'Ray' },
+    { id: 'hline', label: 'H-Line' }, { id: 'rect', label: 'Rect' }, { id: 'fib', label: 'Fib' },
+    { id: 'channel', label: 'Channel' }, { id: 'text', label: 'Text' },
+  ];
+  let drawMode = false;
+  let drawTool: DrawPick = 'none';
+  const drawPending: DrawPoint[] = [];
+  let drawGesture: { sx: number; sy: number; cx: number; cy: number; moved: boolean } | null = null;
+  const ghostDrawing: Drawing = { id: 'ghost', tool: 'trend', points: [] };
+  let ghost: Drawing | null = null;
+  let listSym = '';
+  let listTf = '';
+  let listCur: Drawing[] = [];
+
+  const drawBar = document.createElement('div');
+  drawBar.id = 'draw-toolbar';
+  drawBar.className = 'draw-toolbar';
+  drawBar.style.display = 'none';
+  const toolBtns = new Map<DrawPick, HTMLButtonElement>();
+  function drawBtn(label: string, cls: string, fn: () => void): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
+    return b;
+  }
+  for (const t of DRAW_TOOLS) {
+    const b = drawBtn(t.label, 'draw-tool-btn', () => setDrawTool(t.id));
+    toolBtns.set(t.id, b);
+    drawBar.appendChild(b);
+  }
+  drawBar.appendChild(drawBtn('Undo', 'draw-tool-btn draw-action', () => { undoDrawing(state.symbol, state.timeframe); }));
+  drawBar.appendChild(drawBtn('Clear', 'draw-tool-btn draw-action', () => {
+    if (window.confirm(`Clear all drawings on ${state.symbol} ${state.timeframe}?`)) clearDrawings(state.symbol, state.timeframe);
+  }));
+  drawBar.appendChild(drawBtn('Done', 'draw-tool-btn draw-action', () => setDrawMode(false)));
+  container.insertBefore(drawBar, canvas);
+
+  function syncDrawToolbar(): void {
+    for (const [id, b] of toolBtns) b.classList.toggle('active', id === drawTool);
+  }
+
+  function canvasSize(): { w: number; h: number } {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    return { w: canvas.width / dpr, h: canvas.height / dpr };
+  }
+
+  function screenPoint(x: number, y: number): DrawPoint {
+    const { w, h } = canvasSize();
+    return screenToPoint(x, y, state.transformed, state.view, w, h);
+  }
+
+  // The list for the current symbol+timeframe. Reads state each frame but only
+  // re-resolves the cached list when the key changes (no per-frame allocation).
+  function currentDrawings(): Drawing[] {
+    if (state.symbol !== listSym || state.timeframe !== listTf) {
+      listSym = state.symbol;
+      listTf = state.timeframe;
+      listCur = getDrawings(listSym, listTf);
+      drawPending.length = 0;
+      drawGesture = null;
+      refreshGhost();
+    }
+    return listCur;
+  }
+
+  function refreshGhost(): void {
+    if (!drawMode || drawTool === 'none') { ghost = null; return; }
+    const tool: DrawTool = drawTool;
+    const req = TOOL_POINTS[tool];
+    const pts = ghostDrawing.points;
+    pts.length = 0;
+    for (const pt of drawPending) pts.push(pt);
+    if (drawGesture && drawGesture.moved && req >= 2) {
+      if (drawPending.length === 0) pts.push(screenPoint(drawGesture.sx, drawGesture.sy));
+      pts.push(screenPoint(drawGesture.cx, drawGesture.cy));
+    }
+    ghostDrawing.tool = tool;
+    ghost = pts.length > 0 ? ghostDrawing : null;
+  }
+
+  function addDrawPoint(pt: DrawPoint): void {
+    if (!drawMode || drawTool === 'none') return;
+    const tool: DrawTool = drawTool;
+    drawPending.push(pt);
+    if (drawPending.length >= TOOL_POINTS[tool]) {
+      let text: string | undefined;
+      if (tool === 'text') {
+        const input = window.prompt('Text label:');
+        if (!input || !input.trim()) { drawPending.length = 0; refreshGhost(); return; }
+        text = input.trim();
+      }
+      addDrawing(state.symbol, state.timeframe, tool, drawPending, text);
+      drawPending.length = 0;
+    }
+    refreshGhost();
+  }
+
+  // A drag places its start and end (1-point tools place only the start).
+  // Once a point is pending, a later drag places just its end point.
+  function finishDrawGesture(): void {
+    const g = drawGesture;
+    drawGesture = null;
+    if (!g || !drawMode || drawTool === 'none') { refreshGhost(); return; }
+    const req = TOOL_POINTS[drawTool];
+    if (req === 1) addDrawPoint(screenPoint(g.sx, g.sy));
+    else if (drawPending.length === 0) {
+      addDrawPoint(screenPoint(g.sx, g.sy));
+      addDrawPoint(screenPoint(g.cx, g.cy));
+    } else addDrawPoint(screenPoint(g.cx, g.cy));
+    refreshGhost();
+  }
+
+  function setDrawTool(t: DrawPick): void {
+    drawTool = t;
+    drawPending.length = 0;
+    drawGesture = null;
+    syncDrawToolbar();
+    refreshGhost();
+  }
+
+  function setDrawMode(on: boolean): void {
+    const next = on && !state.is3D;
+    if (next === drawMode) return;
+    drawMode = next;
+    drawBar.style.display = next ? 'flex' : 'none';
+    setDrawTool('none');
+  }
+
   function draw(ts: number): void {
     if (disposed) return;
     const dt = Math.min(50, ts - lastTs || 16);
@@ -612,13 +829,14 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     const h = canvas.height / dpr;
     const view: ViewState = state.view;
     const bars = state.transformed;
+    if (!regimeHidden) regimeStrip.update(bars, Date.now());
     // Clamp vertical pan/fling inside a sane band so candles can't be flung
     // fully off-canvas (the "bars flattened out / went invisible" symptom when
     // a fling carried offsetY to an extreme).
     state.view.offsetY = Math.max(-h * 2, Math.min(h * 2, state.view.offsetY));
 
     if (state.is3D) {
-      const enabledPlots = state.indicators.filter((i) => i.enabled).flatMap((i) => i.plots);
+      const enabledPlots = activePlots();
       const pl3d = enabledPlots.filter((p: any) => p.type === 'plot3d') as OakPlot3D[];
       const shape3d = enabledPlots.filter((p: any) => p.type === 'plot3d_shape' || p.type === 'plot3d_label');
       const canWebGL = detectWebGL();
@@ -652,7 +870,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       }
 
       // ── Iso-3D candle scene — the BASE, always rendered in 3D mode ──
-      drawBackground(ctx, time);
+      paintChartBackground(ctx, time, w, h);
       let vp: ReturnType<typeof computeVolumeProfileBins> | undefined;
       if (state.vpEnabled && bars.length > 0) {
         const { start, end } = getVisibleRange(view, w, bars.length);
@@ -694,7 +912,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     // Leaving 3D mode entirely — tear down any composite overlay.
     try { if (isIsoCompositeActive()) setIsoCompositeHost(null); } catch { /* noop */ }
 
-    drawBackground(ctx, time);
+    paintChartBackground(ctx, time, w, h);
     drawGrid(ctx, bars, view, time);
 
     if (state.vpEnabled && bars.length > 0) {
@@ -715,8 +933,9 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     }
 
     drawBars(ctx, bars, view, time, state.barType, perBarVols);
+    renderDrawings(ctx, view, bars, currentDrawings(), ghost);
 
-    const enabledPlots = state.indicators.filter((i) => i.enabled).flatMap((i) => i.plots);
+    const enabledPlots = activePlots();
     // Dashboard readouts (table/label) render ONLY in the dashboard window.
     if (enabledPlots.length > 0) drawOakScriptPlots(ctx, enabledPlots.filter((p: any) => p.type !== 'table' && p.type !== 'label'), bars, view);
 
@@ -796,7 +1015,17 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
   }
 
   const touch = new TouchEngine(canvas, {
+    onTouchDown: (x, y, count) => {
+      drawGesture = null;
+      if (!drawMode || drawTool === 'none') return;
+      if (count === 1) {
+        const c = toCanvasXY(x, y);
+        drawGesture = { sx: c.x, sy: c.y, cx: c.x, cy: c.y, moved: false };
+      }
+      refreshGhost();
+    },
     onPan: (dx, dy) => {
+      if (drawGesture) return;
       state.crosshair = null;
       markViewUserTouched();
       const s = state.view.barSpacing;
@@ -804,6 +1033,7 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       state.view.offsetY += dy;
     },
     onPanEnd: (vx, vy) => {
+      if (drawGesture) { finishDrawGesture(); return; }
       momentum.vx = vx;
       momentum.vy = vy;
     },
@@ -814,15 +1044,43 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       state.view.scaleY = Math.min(4, Math.max(0.3, state.view.scaleY * (1 + (scale - 1) * 0.4)));
     },
     onMove: (x, y) => {
+      if (drawGesture) {
+        const c = toCanvasXY(x, y);
+        drawGesture.cx = c.x;
+        drawGesture.cy = c.y;
+        drawGesture.moved = true;
+        refreshGhost();
+        return;
+      }
       if (state.crosshair) state.crosshair = toCanvasXY(x, y);
     },
     onMoveEnd: () => { },
-    onTap: () => { state.crosshair = null; },
-    onDoubleTap: () => {
+    onTap: (x, y) => {
+      if (drawMode && drawTool !== 'none') {
+        drawGesture = null;
+        const c = toCanvasXY(x, y);
+        addDrawPoint(screenPoint(c.x, c.y));
+        return;
+      }
+      state.crosshair = null;
+    },
+    onDoubleTap: (x, y) => {
+      // A double tap is the second tap of a two-point tool. For one-point tools
+      // the first tap already placed the point, so the second is ignored.
+      if (drawMode && drawTool !== 'none') {
+        drawGesture = null;
+        if (TOOL_POINTS[drawTool] > 1) {
+          const c = toCanvasXY(x, y);
+          addDrawPoint(screenPoint(c.x, c.y));
+        }
+        return;
+      }
       viewIsFromUser = false;
       state.view = { scrollX: 0, barSpacing: DEFAULT_BAR_SPACING, offsetY: 0, scaleY: 1 };
     },
     onLongPress: (x, y) => {
+      drawGesture = null;
+      refreshGhost();
       state.crosshair = toCanvasXY(x, y);
     },
   });
@@ -915,6 +1173,9 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
     setVpEnabled,
     setLive,
     set3D,
+    setDrawMode,
+    isDrawMode: () => drawMode,
+    setWidgetHidden,
     reload: () => { void loadBars(); }, // Settings feed switches call this
     resetView: () => {
       // Pure view reset — pan/zoom/scale back to the default framing.
@@ -937,6 +1198,8 @@ export function createChartScreen(container: HTMLDivElement, cb: ChartScreenCall
       try { hide3D(); } catch { /* not initialized */ }
       setLowerPaneHost(null);
       canvas.remove();
+      drawBar.remove();
+      regimeStrip.el.remove();
     },
   };
 }

@@ -506,7 +506,7 @@ plot3d(sSlow, "Strength Ridge", "ribbon", "#22ccff", "separate", 1)`,
   },
   {
     name: 'CCI Manifold Sheet',
-    description: 'Flagship dashboard edition: CCI gradient manifold terrain + deviation sheath, MAIN-CHART reclaim/reject signals, gated 3D cones, and a live state dashboard (zone / momentum / deviation / last signal)',
+    description: 'Flagship edition: CCI gradient manifold terrain + deviation sheath, MAIN-CHART reclaim/reject signals, gated 3D cones',
     category: '3D Visualizations',
     source: `// CCI Manifold Sheet — FLAGSHIP (dashboard edition)
 // Read: is CCI extreme, and is it turning? Manifold terrain (height=CCI,
@@ -524,21 +524,13 @@ dev = stdev(c, devLen)
 upper = c + dev
 lower = c - dev
 
-zoneTxt = c > 100 ? "EXTREME HIGH" : c < -100 ? "EXTREME LOW" : "NEUTRAL"
-zoneCol = c > 100 ? "#ff4477" : c < -100 ? "#22cc88" : "#9fb8d8"
-momTxt = c > cSlow ? "MOMENTUM UP" : "MOMENTUM DOWN"
-momCol = c > cSlow ? "#22cc88" : "#ff4477"
-
 var lastSigBar = -1000
-var sigTxt = "—"
 reclaim = crossover(c, -100) and bar_index - lastSigBar > cooldown
 reject = crossunder(c, 100) and bar_index - lastSigBar > cooldown
 if reclaim
     lastSigBar := bar_index
-    sigTxt := "RECLAIM"
 if reject
     lastSigBar := bar_index
-    sigTxt := "REJECT"
 
 plot(c, "CCI", "#22aaff", 2, "separate")
 plot(cSlow, "CCI Trend", "#ffd43b", 1, "separate")
@@ -546,18 +538,6 @@ hline(100, "#ff4477", "separate")
 hline(-100, "#22cc88", "separate")
 hline(0, "rgba(255,255,255,0.18)", "separate")
 bgcolor(c > 100 ? "rgba(255,68,119,0.10)" : c < -100 ? "rgba(34,204,136,0.10)" : "rgba(0,0,0,0)", "separate")
-
-dash = table.new("top_right", 2, 5, "rgba(6,8,20,0.88)", "cciDash")
-table.cell(dash, 0, 0, "CCI MANIFOLD", "", "#6fd6ff")
-table.cell(dash, 1, 0, tostring(round(c)), "", "#ffffff")
-table.cell(dash, 0, 1, "Zone", "", "#9fb8d8")
-table.cell(dash, 1, 1, zoneTxt, "", zoneCol)
-table.cell(dash, 0, 2, "State", "", "#9fb8d8")
-table.cell(dash, 1, 2, momTxt, "", momCol)
-table.cell(dash, 0, 3, "Deviation", "", "#9fb8d8")
-table.cell(dash, 1, 3, tostring(round(dev)), "", "#ffd43b")
-table.cell(dash, 0, 4, "Signal", "", "#9fb8d8")
-table.cell(dash, 1, 4, sigTxt, "", "#ffffff")
 
 if showSignals and reclaim
     plotshape(bar_index, low, "CCI Reclaim", "triangleup", "#22cc88")
@@ -2190,32 +2170,6 @@ if trendState != lastTrendState and trendState != 0 {
 }
 lastTrendState := trendState
 
-// ─── Dashboard ──────────────────────────────────────────────────────
-dash = table.new("top_right", 2, 3, "rgba(8,8,20,0.88)", "dash")
-trendTxt = "Ranging"
-trendCol = "#ffd43b"
-if trendState == 1 {
-    trendTxt := "Bullish"
-    trendCol := "#22cc88"
-}
-if trendState == -1 {
-    trendTxt := "Bearish"
-    trendCol := "#ff4477"
-}
-table.cell(dash, 0, 0, "Structure", "", "#b48cff")
-table.cell(dash, 1, 0, trendTxt, "", trendCol)
-table.cell(dash, 0, 1, "ATR", "", "#b48cff")
-table.cell(dash, 1, 1, tostring(atrVal), "", "#ffffff")
-lpTxt = "-"
-if ph > 0 {
-    lpTxt := "High"
-}
-if pl > 0 {
-    lpTxt := "Low"
-}
-table.cell(dash, 0, 2, "Last Pivot", "", "#b48cff")
-table.cell(dash, 1, 2, lpTxt, "", "#ffffff")
-
 // ─── Candle tint by structure state ─────────────────────────────────
 if trendState == 1 {
     barcolor("#22cc88")
@@ -2332,20 +2286,6 @@ gannfan.new(bar_index - 40, gannLow, gannUnit, "#b48cff", "gann")
 // ─── Watermark logo, tracking near the top of the squeeze band ─────
 image.new(bar_index - 45, hiBand, orbIcon, 22, 22, "center", 0.85, 0, "logo")
 
-// ─── Confluence dashboard ────────────────────────────────────────────
-dash = table.new("bottom_right", 2, 5, "rgba(8,8,20,0.88)", "dash")
-table.cell(dash, 0, 0, "RSI", "", "#b48cff")
-table.cell(dash, 1, 0, tostring(r), "", "#ffffff")
-table.cell(dash, 0, 1, "Stoch", "", "#b48cff")
-table.cell(dash, 1, 1, tostring(st), "", "#ffffff")
-table.cell(dash, 0, 2, "MFI", "", "#b48cff")
-table.cell(dash, 1, 2, tostring(mf), "", "#ffffff")
-table.cell(dash, 0, 3, "CMF", "", "#b48cff")
-table.cell(dash, 1, 3, tostring(cm), "", "#ffffff")
-confCol = color.from_gradient(confluence, -4, 4, "#ff4477", "#22cc88")
-table.cell(dash, 0, 4, "Confluence", "", "#b48cff")
-table.cell(dash, 1, 4, tostring(confluence), "", confCol)
-
 // ─── Base plots ───────────────────────────────────────────────────
 plot(close, "Price", "#ffffff", 1)
 plot(r, "RSI", "#22aaff", 1, "separate")
@@ -2425,20 +2365,6 @@ if not outside and wasOutside {
 }
 wasOutside := outside
 
-// ─── Dashboard ────────────────────────────────────────────────────
-dash = table.new("top_left", 2, 3, "rgba(8,8,20,0.88)", "dash")
-table.cell(dash, 0, 0, "Channel Width", "", "#b48cff")
-table.cell(dash, 1, 0, tostring(width), "", "#ffffff")
-posCol = color.from_gradient(posInChannel, 0, 1, "#ff9900", "#22aaff")
-table.cell(dash, 0, 1, "Position", "", "#b48cff")
-table.cell(dash, 1, 1, tostring(round(posInChannel * 100)), "", posCol)
-outsideTxt = "Inside"
-if outside {
-    outsideTxt := "Outside"
-}
-table.cell(dash, 0, 2, "State", "", "#b48cff")
-table.cell(dash, 1, 2, outsideTxt, "", "#ffffff")
-
 // ─── 3D — volatility terrain + dispersion cloud ───────────────────
 plot3d(width, "Channel Width Terrain", "ribbon", "#b48cff", "separate")
 dispersion = (close - rc.mid) / (width + 0.0001) * 100
@@ -2446,10 +2372,10 @@ plot3d(dispersion, "Dispersion Cloud", "scatter", "#e0aaff", "separate")`,
   },
   {
     name: 'Liquidity Matrix',
-    description: 'OakRing volume percentiles feed a real trend×volume Matrix, rendered live as a color-graded heatmap table',
+    description: 'OakRing volume percentiles feed a real trend×volume Matrix, that drives the signal logic',
     category: 'Showcase',
     source: `// ═════════════════════════════════════════════════════════════════════
-// Liquidity Matrix — OakRing Percentiles, a Real Regime Matrix, Heatmap
+// Liquidity Matrix — OakRing Percentiles and a Real Regime Matrix
 // A rolling OakRing tracks volume percentiles to flag genuine spikes; a
 // 3×3 Matrix tallies trend×volume regime frequency and renders straight
 // into a color-graded table.new heatmap; a polyline traces the
@@ -2503,29 +2429,6 @@ while r < 3 {
         c := c + 1
     }
     r := r + 1
-}
-
-// ─── Heatmap table straight from the matrix ─────────────────────────
-heat = table.new("bottom_left", 4, 4, "rgba(8,8,20,0.9)", "heat")
-table.cell(heat, 0, 0, "", "", "#ffffff")
-table.cell(heat, 1, 0, "Lo Vol", "", "#b48cff")
-table.cell(heat, 2, 0, "Mid Vol", "", "#b48cff")
-table.cell(heat, 3, 0, "Spike", "", "#b48cff")
-rowNames = array()
-array.push(rowNames, "Down")
-array.push(rowNames, "Flat")
-array.push(rowNames, "Up")
-rr = 0
-while rr < 3 {
-    table.cell(heat, 0, rr + 1, array.get(rowNames, rr), "", "#b48cff")
-    cc = 0
-    while cc < 3 {
-        cellVal = regimeMatrix.get(rr, cc)
-        cellCol = color.from_gradient(cellVal, 0, matrixMax, "rgba(180,140,255,0.05)", "#b48cff")
-        table.cell(heat, cc + 1, rr + 1, tostring(cellVal), cellCol, "#ffffff")
-        cc := cc + 1
-    }
-    rr := rr + 1
 }
 
 // ─── Liquidity trail — polyline through spike points ────────────────
@@ -2669,18 +2572,6 @@ if close > midSession {
 if close <= midSession {
     barcolor("#4cc9f0")
 }
-
-// ─── Dashboard ─────────────────────────────────────────────────────
-dash = table.new("top_right", 2, 4, "rgba(8,8,20,0.88)", "dash")
-table.cell(dash, 0, 0, "Session #", "", "#b48cff")
-table.cell(dash, 1, 0, tostring(sessionCount), "", "#ffffff")
-table.cell(dash, 0, 1, "Bars Elapsed", "", "#b48cff")
-table.cell(dash, 1, 1, tostring(barsElapsed), "", "#ffffff")
-table.cell(dash, 0, 2, "Range", "", "#b48cff")
-table.cell(dash, 1, 2, tostring(sessionRange), "", "#ffffff")
-rangeCol = color.from_gradient(rangeVsAvg, 0, 2, "#4cc9f0", "#ff4477")
-table.cell(dash, 0, 3, "Range/ATR", "", "#b48cff")
-table.cell(dash, 1, 3, tostring(rangeVsAvg), "", rangeCol)
 
 // ─── Base + temporal 3D ─────────────────────────────────────────────
 plot(close, "Price", "#ffffff", 1)

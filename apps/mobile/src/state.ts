@@ -1,10 +1,11 @@
 import type { BaseBar } from '@dafe/types';
 import type { BarType, Timeframe } from '../../web/src/data-generator';
 import type { ViewState, PerfMode, TradeMarker } from '../../web/src/chart-renderer';
-import type { OakPlot } from '../../web/src/oakscript/runtime';
+import type { OakPlot, OakStrategyOrder } from '../../web/src/oakscript/runtime';
 import { PaperBroker } from '../../web/src/trading/paper-broker';
 import { DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from '../../web/src/trading/paper-broker';
 import { detectCurrency } from '../../web/src/trading/currency';
+import { getIndicators, getUserIndicators } from '../../web/src/oakscript';
 
 export interface ActiveIndicator {
   id: string;
@@ -12,6 +13,8 @@ export interface ActiveIndicator {
   source: string;
   enabled: boolean;
   plots: OakPlot[];
+  // Explicit model.*/strategy.* order events from the last run. Not persisted.
+  strategyOrders?: OakStrategyOrder[];
   errors: string[];
 }
 
@@ -187,6 +190,9 @@ export interface AppState {
   backendMode: 'auto' | 'backend' | 'offline';
   crosshair: { x: number; y: number } | null;
   indicators: ActiveIndicator[];
+  // Non-persisted review preview (desktop "PREVIEW · not applied"). Runs as an
+  // extra chart overlay only; never written to indicators or saved source.
+  preview: { source: string; name: string } | null;
   markers: TradeMarker[];
   backendUrl: string;
   massiveApiKey: string;
@@ -241,11 +247,12 @@ export const state: AppState = {
   preferredFeed: ((localStorage.getItem('dafe_mobile_preferred_feed') as PreferredFeed) || 'auto'),
   crosshair: null,
   indicators: [],
+  preview: null,
   markers: [],
   backendUrl: localStorage.getItem(LS_KEYS.backendUrl) || '',
   // Demo mode must NEVER inherit (or persist) a real visitor's Massive key —
   // the public build ships with data locked to synthetic regardless.
-  massiveApiKey: DEMO_MODE ? '' : (localStorage.getItem(LS_KEYS.massiveApiKey) || 'NvY0RgzgZDUzncZwdGtNxyXakqMaNQm9'),
+  massiveApiKey: DEMO_MODE ? '' : (localStorage.getItem(LS_KEYS.massiveApiKey) || ''),
   perf: (localStorage.getItem(LS_KEYS.perf) as PerfMode) || 'high',
   liveEnabled: false,
   onboarded: DEMO_MODE ? true : localStorage.getItem(LS_KEYS.onboarded) === '1',
@@ -274,6 +281,18 @@ if (DEMO_MODE) {
       }),
     });
   } catch { /* Object.defineProperty can throw in older WebViews — demo still works, just persists */ }
+}
+
+// Widget visibility flags. '1' = hidden; absent or '0' = shown.
+export const WIDGET_KEYS = { dash: 'dafe_mobile_w_dash', regime: 'dafe_mobile_w_regime' } as const;
+export type WidgetKey = keyof typeof WIDGET_KEYS;
+
+export function widgetHidden(key: WidgetKey): boolean {
+  try { return localStorage.getItem(WIDGET_KEYS[key]) === '1'; } catch { return false; }
+}
+
+export function saveWidgetHidden(key: WidgetKey, hidden: boolean): void {
+  try { localStorage.setItem(WIDGET_KEYS[key], hidden ? '1' : '0'); } catch { /* storage full */ }
 }
 
 export function loadBroker(): PaperBroker {
@@ -374,14 +393,31 @@ export function loadCachedBars(symbol: string, tf: string): BaseBar[] | null {
   }
 }
 
+// Built-in library scripts ship with the app. User-saved scripts never count.
+export function isBuiltinIndicator(name: string): boolean {
+  return getIndicators().some((d) => d.name === name) && !getUserIndicators().some((d) => d.name === name);
+}
+
+// Every built-in library script keeps an entry. One missing after load comes
+// back switched off, so turning a built-in off never loses it.
+function restoreBuiltinIndicators(): void {
+  for (const def of getIndicators()) {
+    if (!isBuiltinIndicator(def.name)) continue;
+    if (state.indicators.some((i) => i.name === def.name)) continue;
+    state.indicators.push({ id: `builtin-${def.name}`, name: def.name, source: def.source, enabled: false, plots: [], errors: [] });
+  }
+}
+
 export function loadIndicators(): void {
   const saved = localStorage.getItem(LS_KEYS.indicators);
-  if (!saved) return;
-  try {
-    state.indicators = JSON.parse(saved).map((i: { id: string; name: string; source: string; enabled: boolean }) => ({
-      id: i.id, name: i.name, source: i.source, enabled: i.enabled, plots: [], errors: [],
-    }));
-  } catch { state.indicators = []; }
+  if (saved) {
+    try {
+      state.indicators = JSON.parse(saved).map((i: { id: string; name: string; source: string; enabled: boolean }) => ({
+        id: i.id, name: i.name, source: i.source, enabled: i.enabled, plots: [], errors: [],
+      }));
+    } catch { state.indicators = []; }
+  }
+  restoreBuiltinIndicators();
 }
 
 export function resetAll(): void {

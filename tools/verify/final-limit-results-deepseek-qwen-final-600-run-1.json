@@ -1,0 +1,78 @@
+{
+  "modelNote": "coder opencode/deepseek-v4-pro (override) · advisor opencode/qwen3.8-flash (override)",
+  "roles": {
+    "coder": {
+      "provider": "opencode",
+      "model": "deepseek-v4-pro",
+      "source": "override"
+    },
+    "advisor": {
+      "provider": "opencode",
+      "model": "qwen3.8-flash",
+      "source": "override"
+    }
+  },
+  "savedRoles": {
+    "llm_coder_provider": "meta",
+    "llm_coder_model": "muse-spark-1.3",
+    "llm_provider": "opencode",
+    "llm_trade_advisor_model": "qwen3.8-flash"
+  },
+  "label": "deepseek-qwen-final-600",
+  "run": 1,
+  "at": "2026-10-31T17:20:07.162Z",
+  "pass": false,
+  "ms": 1399444,
+  "results": [
+    {
+      "id": 1,
+      "pass": true,
+      "rounds": 2,
+      "drafts": 2,
+      "briefAttempts": 2,
+      "briefFallback": false,
+      "repairs": [
+        "extra 3D layer (limit 3): plot3d(predictPlane, \"Predict Threshold Plane\", \"line3d\", \"#aaaaaa\", \"separate\", 3)",
+        "extra 3D layer (limit 3): plot3d(predictPlane, \"Predict Threshold Plane\", \"wireframe\", \"#ffd43b\", \"separate\", 3)"
+      ],
+      "checks": {
+        "hasCode": true,
+        "validAndCoverageClean": true,
+        "clusterFree": true,
+        "twoIndependentReadings": true,
+        "hasMainSignals": true,
+        "layersSane": true,
+        "noTable": true,
+        "releaseGated": true,
+        "executesClean": true,
+        "shapesSparse": true,
+        "shapesAligned": true
+      },
+      "problems": [],
+      "codeLen": 3442,
+      "code": "// Volatility-Compression Release Model\n// ATR/Range coil load + vol-of-vol rise + predictability.\n// ATR: Wilder RMA via atr() — validated.\n\natrLen = input(14, \"ATR Length\", 2, 60, 1)\ncoilLen = input(20, \"Coil Length\", 5, 100, 1)\nvolLen = input(20, \"Vol-of-Vol Length\", 5, 100, 1)\npredictLen = input(20, \"Predict Length\", 2, 200, 1)\nloadThreshold = input(0.70, \"Load Threshold\", 0.0, 1.0, 0.05)\npredictThreshold = input(0.60, \"Predict Threshold\", 0.0, 1.0, 0.05)\nvolRiseThreshold = input(0.05, \"Vol-of-Vol Rise Threshold\", 0.0, 1.0, 0.01)\nrangeBreakMult = input(1.50, \"Range Breakout Mult\", 0.5, 5.0, 0.1)\natrBreakMult = input(1.05, \"ATR Breakout Mult\", 0.5, 5.0, 0.05)\nmarkerSize = input(1.0, \"Marker Size\", 0.2, 3.0, 0.1)\n\nrange = high - low\natrVal = atr(high, low, close, atrLen) // Wilder RMA ATR\n\n// Trailing windows excluding current bar\nmaxRange = highest(range[1], coilLen)\nmaxAtr = highest(atrVal[1], coilLen)\nmaxAtrVol = highest(atrVal[1], volLen)\nminAtrVol = lowest(atrVal[1], volLen)\n\nsafeMaxRange = max(maxRange, 0.0001)\nsafeMaxAtr = max(maxAtr, 0.0001)\nsafeMaxAtrVol = max(maxAtrVol, 0.0001)\n\nrangeComp = 1 - range / safeMaxRange\nrangeComp = max(0, min(1, rangeComp))\n\natrComp = 1 - atrVal / safeMaxAtr\natrComp = max(0, min(1, atrComp))\n\ncoilLoad = 0.5 * rangeComp + 0.5 * atrComp\ncoilLoad = max(0, min(1, coilLoad))\n\n// Vol-of-vol: normalized ATR dispersion over volLen (range of ATR vs its peak)\nvolOfVol = (maxAtrVol - minAtrVol) / safeMaxAtrVol\nvolOfVol = max(0, min(1, volOfVol))\n\nvolOfVolRise = (volOfVol - volOfVol[1]) >= volRiseThreshold\n\n// Predictability: fraction of last predictLen bars where ATR and range moved in the same direction.\n// Rolled from bar data so it cannot freeze at zero.\nda = atrVal - atrVal[1]\ndr = range - range[1]\nsameDir = (da > 0 and dr > 0) or (da < 0 and dr < 0) or (da == 0 and dr == 0)\npredictability = sma(sameDir, predictLen)\n\ncoilArmed = coilLoad[1] >= loadThreshold and volOfVolRise[1]\npredictable = predictability[1] >= predictThreshold\n\nrelease = range >= rangeBreakMult * maxRange and atrVal >= atrBreakMult * atrVal[1] and coilArmed\nreleaseEvent = release and not release[1]\n\nbuySig = releaseEvent and predictable and close > close[1]\nsellSig = releaseEvent and predictable and close < close[1]\nwarnSig = releaseEvent and not predictable\n\nif buySig { plotshape(bar_index, low, \"Buy Release\", \"triangleup\", \"#22cc88\") }\nif sellSig { plotshape(bar_index, high, \"Sell Release\", \"triangledown\", \"#ff4477\") }\nif warnSig { plotshape(bar_index, close, \"Warning Release\", \"triangleup\", \"#ffaa22\") }\n\nplot(coilLoad, \"Coil Load\", \"#22aaff\", 2)\nplot(predictability, \"Predictability\", \"#ff9955\", 2)\nhline(loadThreshold, \"#8899aa\")\nhline(predictThreshold, \"#99aacc\")\n\n// 3D separate-pane scene: load as bars, predictability and vol-of-vol as scatter\nplot3d(coilLoad, \"Coil Load 3D\", \"bars3d\", \"#22aaff\", \"separate\", 0)\nplot3d(predictability, \"Predictability 3D\", \"scatter\", \"#ff9955\", \"separate\", 1)\nplot3d(volOfVol, \"Vol-of-Vol 3D\", \"scatter\", \"#b48cff\", \"separate\", 2)\n\n// 3D signal markers: loaded-and-predictable = green/red cones; loaded-but-unpredictable = orange diamond\nif buySig { plotshape_3d(bar_index, low, \"Buy 3D\", \"coneup\", \"#22cc88\", markerSize, 0, \"separate\") }\nif sellSig { plotshape_3d(bar_index, high, \"Sell 3D\", \"conedown\", \"#ff4477\", markerSize, 0, \"separate\") }\nif warnSig { plotshape_3d(bar_index, close, \"Warning 3D\", \"diamond\", \"#ffaa22\", markerSize, 1, \"separate\") }",
+      "ms": 935856
+    },
+    {
+      "id": 2,
+      "pass": false,
+      "rounds": 0,
+      "drafts": 0,
+      "briefAttempts": 0,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": false,
+        "validAndCoverageClean": false,
+        "clusterFree": true
+      },
+      "problems": [
+        "NO_CODE"
+      ],
+      "codeLen": 0,
+      "code": "",
+      "replyHead": "read ECONNRESET",
+      "ms": 463587
+    }
+  ]
+}

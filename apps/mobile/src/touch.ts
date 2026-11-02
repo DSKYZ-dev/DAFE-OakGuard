@@ -7,6 +7,7 @@ export interface GestureCallbacks {
   onLongPress?: (x: number, y: number) => void;
   onMove?: (x: number, y: number) => void;
   onMoveEnd?: () => void;
+  onTouchDown?: (x: number, y: number, count: number) => void;
 }
 
 const LONG_PRESS_MS = 420;
@@ -52,6 +53,10 @@ export class TouchEngine {
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i];
       this.touches.set(t.identifier, { x: t.clientX, y: t.clientY, lastX: t.clientX, lastY: t.clientY, t: performance.now() });
+    }
+    if (e.changedTouches.length > 0) {
+      const last = e.changedTouches[e.changedTouches.length - 1];
+      this.cb.onTouchDown?.(last.clientX, last.clientY, this.touches.size);
     }
     if (this.touches.size === 1) {
       const t = this.touches.values().next().value!;

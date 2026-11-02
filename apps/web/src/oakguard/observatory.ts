@@ -80,7 +80,7 @@ export class OakGuardObservatory {
     this.renderer.setSize(w, h, false);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 0.92;
 
     this.scene.background = new THREE.Color(0x04040c);
     this.scene.fog = new THREE.FogExp2(0x05070f, 0.028);
@@ -121,7 +121,7 @@ export class OakGuardObservatory {
       new THREE.MeshBasicMaterial({ color: 0x8fe8ff }),
     );
     this.coreGroup.add(this.coreInner);
-    this.coreGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: 0x2f7fd0, transparent: true, opacity: 0.4, depthWrite: false }));
+    this.coreGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: 0x2f7fd0, transparent: true, opacity: 0.22, depthWrite: false }));
     this.coreGlow.scale.set(3.4, 3.4, 1);
     this.coreGroup.add(this.coreGlow);
     this.coreGroup.position.copy(CORE_POS);
@@ -161,7 +161,7 @@ export class OakGuardObservatory {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.8, 0.45, 0.3);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.36, 0.4, 0.55);
     this.composer.addPass(bloom);
     this.composer.addPass(new OutputPass());
 
@@ -270,8 +270,8 @@ export class OakGuardObservatory {
     this.shards.rotation.y = t * 0.05;
     const alert = this.coreAlert;
     this.coreInner.scale.setScalar(1 + this.corePulse * 0.25 + Math.sin(t * 2.2) * 0.03);
-    (this.coreInner.material as THREE.MeshBasicMaterial).color.setRGB(0.35 + alert * 2.0, 0.85 - alert * 0.5, 1 - alert * 0.5);
-    this.coreGlow.material.color.setRGB(0.25 + alert * 1.8, 0.6 - alert * 0.3, 0.9 - alert * 0.35);
+    (this.coreInner.material as THREE.MeshBasicMaterial).color.setRGB(0.24 + alert * 1.1, 0.62 - alert * 0.28, 0.82 - alert * 0.3);
+    this.coreGlow.material.color.setRGB(0.18 + alert * 0.9, 0.45 - alert * 0.18, 0.7 - alert * 0.2);
     this.corePulse = Math.max(0, this.corePulse - 0.015);
     this.coreAlert = Math.max(0, this.coreAlert - 0.008);
     this.stageNodes.forEach((n, i) => { n.rotation.y = t * (0.6 + i * 0.1); });

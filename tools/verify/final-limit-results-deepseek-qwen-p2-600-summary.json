@@ -1,0 +1,41 @@
+{
+  "label": "deepseek-qwen-p2-600",
+  "set": "final",
+  "at": "2026-10-31T17:40:59.372Z",
+  "modelNote": "coder opencode/deepseek-v4-pro (override) · advisor opencode/qwen3.8-flash (override)",
+  "roles": {
+    "coder": {
+      "provider": "opencode",
+      "model": "deepseek-v4-pro",
+      "source": "override"
+    },
+    "advisor": {
+      "provider": "opencode",
+      "model": "qwen3.8-flash",
+      "source": "override"
+    }
+  },
+  "savedRoles": {
+    "llm_coder_provider": "meta",
+    "llm_coder_model": "muse-spark-1.3",
+    "llm_provider": "opencode",
+    "llm_trade_advisor_model": "qwen3.8-flash"
+  },
+  "repeat": 1,
+  "runsCompleted": 1,
+  "allPassRuns": 0,
+  "currentStreak": 0,
+  "bestStreak": 0,
+  "perPrompt": [
+    {
+      "id": 2,
+      "passes": 0,
+      "runs": 1,
+      "notRun": 0,
+      "failures": 1
+    }
+  ],
+  "runPasses": [
+    false
+  ]
+}

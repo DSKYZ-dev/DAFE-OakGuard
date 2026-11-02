@@ -5,14 +5,18 @@ import { createChartScreen, type ChartScreen } from './chartscreen';
 import { createTradeScreen } from './tradescreen';
 import { createAiScreen } from './aiscreen';
 import { createScriptScreen } from './scriptscreen';
+import { openOakGuardSheet } from './oakguard-sheet';
+import { openPanelsSheet, type PanelsHooks } from './panels';
 import { createSettingsScreen } from './settingscreen';
+import { mountParticleBackdrop } from './particles';
 import { createPerformanceScreen } from './performance';
 import { ExecutionEngine, type NewExecOrder, type ExecOrder } from './execution';
 import { createChartDom, confirmExec } from './chartdom';
 import { showOnboarding } from './onboarding';
 import { loadBrokerSettings, saveBrokerSettings, DEFAULT_BROKER } from './broker-store';
-import { state, persistSettings, loadIndicators, loadBroker, hookFillMarkers, SYMBOLS, TIMEFRAMES, BAR_TYPES, DEMO_MODE, type DataProvider } from './state';
+import { state, persistSettings, loadIndicators, loadBroker, hookFillMarkers, isBuiltinIndicator, SYMBOLS, TIMEFRAMES, BAR_TYPES, DEMO_MODE, type DataProvider, type WidgetKey } from './state';
 import { deriveMetrics } from './metrics-adapter';
+import { runAutoTrade } from './autotrade';
 
 function showToast(msg: string, kind: 'ok' | 'warn' | 'err' = 'ok'): void {
   const t = document.createElement('div');
@@ -137,7 +141,10 @@ function boot(): void {
   // Inner flex container for chart layout — keeps .screen active toggling intact
   const chartInner = document.createElement('div');
   chartInner.style.flex='1'; chartInner.style.display='flex'; chartInner.style.flexDirection='column'; chartInner.style.minHeight='0'; chartInner.style.overflow='hidden';
+  chartInner.style.position='relative'; chartInner.style.zIndex='1';
   chartContainer.appendChild(chartInner);
+  // Particle field sits under the chart column; it is inert (pointer-events: none).
+  mountParticleBackdrop(chartContainer);
   // Dominance control
   let paneDominance: 'both'|'main'|'lower' = (localStorage.getItem('dafe_mobile_pane_dom') as any) || 'both';
   let lowerPct = parseInt(localStorage.getItem('dafe_mobile_lower_pct')||'45',10);
@@ -159,17 +166,26 @@ function boot(): void {
     indRemoveBtn.style.display='';
     for (const ind of active){ const o=document.createElement('option'); o.value=ind.id; o.textContent=(ind.id==='custom'?'⚙ Test script: ':'')+ind.name; indSel.appendChild(o); }
   }
-  indRemoveBtn.addEventListener('click', ()=>{
-    const id=indSel.value; if(!id) return;
-    const idx=state.indicators.findIndex(i=>i.id===id); if(idx>=0) state.indicators.splice(idx,1);
+  // Full cleanup: a removed indicator must leave NOTHING behind — 2D plots
+  // clear on the next draw pass, but the 3D scenes (main + lower pane)
+  // rebuild ONLY when mark3DSceneDirty() fires, which chart.refreshIndicators
+  // (→ runIndicators) does. Without this, the removed indicator's geometry
+  // kept rendering with no owner and no way to remove it.
+  function removeIndicatorById(id: string): void {
+    const idx=state.indicators.findIndex(i=>i.id===id);
+    if(idx>=0){
+      const ind=state.indicators[idx];
+      // Built-in library entries are switched off, never spliced out.
+      if(isBuiltinIndicator(ind.name)){ ind.enabled=false; ind.plots=[]; ind.errors=[]; }
+      else state.indicators.splice(idx,1);
+    }
     persistSettings(); refreshIndSel();
-    // Full cleanup: a removed indicator must leave NOTHING behind — 2D plots
-    // clear on the next draw pass, but the 3D scenes (main + lower pane)
-    // rebuild ONLY when mark3DSceneDirty() fires, which chart.refreshIndicators
-    // (→ runIndicators) does. Without this, the removed indicator's geometry
-    // kept rendering with no owner and no way to remove it.
     try { chart.refreshIndicators(); } catch {}
     try{ (window as any).__dafeChartRefresh?.(); }catch{}
+  }
+  indRemoveBtn.addEventListener('click', ()=>{
+    const id=indSel.value; if(!id) return;
+    removeIndicatorById(id);
   });
   // Live sync: indicators are added from the Scripts tab (runIndicator) and
   // by library toggles on other screens — this screen had no re-render hook,
@@ -338,22 +354,54 @@ function boot(): void {
     b.addEventListener('click', (e) => { e.stopPropagation(); fn(); });
     return b;
   }
+  const panelsHooks: PanelsHooks = {
+    getSymbol: () => state.symbol,
+    openParams: () => openIndicatorParamsSheet(),
+    openScripts: () => switchTab('scripts'),
+    refreshChart: () => { try { chart.refreshIndicators(); } catch {} },
+    persist: () => persistSettings(),
+    openTab: (id) => switchTab(id),
+    getVolumeProfile: () => state.vpEnabled,
+    setVolumeProfile: (on) => {
+      state.vpEnabled = on;
+      chart.setVpEnabled(on);
+      syncHotToggles();
+      persistSettings();
+    },
+    getLowerPane: () => paneDominance !== 'main',
+    setLowerPane: (on) => {
+      paneDominance = on ? (paneDominance === 'main' ? 'both' : paneDominance) : 'main';
+      domSel.value = paneDominance;
+      try { localStorage.setItem('dafe_mobile_pane_dom', paneDominance); } catch {}
+      applyPaneDom();
+    },
+    setWidgetHidden: (key: WidgetKey, hidden: boolean) => chart.setWidgetHidden(key, hidden),
+  };
   const hotParams = makeHotAction('⚙ Params', 'Adjust indicator parameters', () => openIndicatorParamsSheet());
+  const hotPanels = makeHotAction('⊞ Widgets', 'Chart overlays, signal models, news, ledger, storyboard and tabs', () => openPanelsSheet(panelsHooks));
   const hotReset = makeHotAction('⟲ Reset', 'Reset chart view', () => ostFab.click());
   const hotBarType = makeHotAction('◫ Bars', 'Bar type', () => openBarTypeSheet());
+  const hotDraw = makeHotAction('\u270E Draw', 'Draw on the chart (touch tools)', () => { chart.setDrawMode(!chart.isDrawMode()); syncHotToggles(); });
   const hotVP = makeHotAction('VP', 'Volume profile', () => vpFab.click());
   const hot3D = makeHotAction('3D', 'Toggle 3D mode', () => d3Fab.click());
+  const hotOakGuard = makeHotAction('⬢ OakGuard', 'Verify indicators with OakGuard', () => openOakGuardSheet());
   hotStack.appendChild(hotParams);
+  hotStack.appendChild(hotPanels);
   hotStack.appendChild(hotReset);
   hotStack.appendChild(hotBarType);
+  hotStack.appendChild(hotDraw);
   hotStack.appendChild(hotVP);
   hotStack.appendChild(hot3D);
+  hotStack.appendChild(hotOakGuard);
   let hotOpen = false;
   // Active-state sync: VP and 3D items show a live on/off chip.
   function syncHotToggles(): void {
     hotVP.classList.toggle('active', state.vpEnabled);
     hotVP.textContent = state.vpEnabled ? 'VP ✓' : 'VP';
     hot3D.classList.toggle('active', state.is3D);
+    const drawOn = chart ? chart.isDrawMode() : false;
+    hotDraw.classList.toggle('active', drawOn);
+    hotDraw.textContent = drawOn ? '\u270E Draw ON' : '\u270E Draw';
     hot3D.textContent = state.is3D ? '3D ✓' : '3D';
   }
   function syncHotMenu(): void {
@@ -682,6 +730,9 @@ function boot(): void {
       engine.onTick(price, ts);
       dom?.refresh();
     },
+    onIndicatorsRun: (bars) => {
+      if (runAutoTrade({ symbol: state.symbol, indicators: state.indicators, bars, engine, notify: showToast })) dom?.refresh();
+    },
   });
   // Global chart re-fetch hook — Settings switches (yfinance etc.) call this
   // to force an immediate reload from the NEW preferred feed. It was
@@ -689,6 +740,7 @@ function boot(): void {
   (window as any).__dafeChartRefresh = () => { try { chart?.reload(); } catch {} };
 
   syncDom();
+  void import('./backend').then((m) => m.findBackend());
 
   switchTab('chart');
 

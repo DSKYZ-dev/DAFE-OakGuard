@@ -11,16 +11,22 @@
  *
  * Usage:
  *   npx tsx tools/verify/final-limit-run.ts [label] [--set final|extreme|all] [--repeat N] [--fail-fast]
+ *       [--base <url>] [--coder-provider <id> [--coder-model <m>]] [--advisor-provider <id> [--advisor-model <m>]]
  *
  *   final    the 5 original limit prompts (default)
  *   extreme  the 6 extreme-limit prompts (extreme-limit-prompts.ts)
  *   all      both sets, 11 prompts per run
  *
+ *   Overrides apply to this run only (hosted providers with a saved key); saved
+ *   roles are never changed. Without them the saved Settings roles are used.
+ *
  * Writes:
  *   tools/verify/final-limit-results-<label>-run-<n>.json
  *   tools/verify/final-limit-results-<label>-summary.json
  */
-import { writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 import { validate } from '../../apps/web/src/oakscript/validator';
 import { parse } from '../../apps/web/src/oakscript/parser';
 import { executeScript } from '../../apps/web/src/oakscript/interpreter';
@@ -36,8 +42,6 @@ import { syntheticBars } from '../../apps/web/src/oakguard/mutants';
 import { FINAL_LIMIT_PROMPTS } from './editor-agent-test';
 import { EXTREME_LIMIT_PROMPTS } from './extreme-limit-prompts';
 
-const BASE = process.env.DAFE_BACKEND || 'http://127.0.0.1:8788';
-
 const argv = process.argv.slice(2);
 function flagValue(name: string): string | undefined {
   const eq = argv.find(a => a.startsWith(`${name}=`));
@@ -45,10 +49,18 @@ function flagValue(name: string): string | undefined {
   const idx = argv.indexOf(name);
   return idx >= 0 ? argv[idx + 1] : undefined;
 }
+const BASE = flagValue('--base') || process.env.DAFE_BACKEND || 'http://127.0.0.1:8788';
+const CODER_PROVIDER = flagValue('--coder-provider');
+const CODER_MODEL = flagValue('--coder-model');
+const ADVISOR_PROVIDER = flagValue('--advisor-provider');
+const ADVISOR_MODEL = flagValue('--advisor-model');
+if (CODER_MODEL && !CODER_PROVIDER) throw new Error('--coder-model needs --coder-provider');
+if (ADVISOR_MODEL && !ADVISOR_PROVIDER) throw new Error('--advisor-model needs --advisor-provider');
+const VALUE_FLAGS = ['--repeat', '--set', '--base', '--coder-provider', '--coder-model', '--advisor-provider', '--advisor-model'];
 let label = 'run';
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--repeat' || a === '--set') { i++; continue; }
+  if (VALUE_FLAGS.includes(a)) { i++; continue; }
   if (a.startsWith('--')) continue;
   label = a;
   break;
@@ -67,12 +79,58 @@ const BROKEN_SCRIPT = [
   'if crossover(r, 30) { plotshape(bar_index, low, "OS", "triangleup", "#22cc88") }',
 ].join('\n');
 
-async function chatAs(agent: string, message: string): Promise<string> {
-  const r = await fetch(`${BASE}/api/chat`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agent, message }),
+/**
+ * POST with node:http/https instead of fetch. Node's fetch (undici) has a
+ * default headers timeout that expired before the backend's own provider
+ * timeout (300s at the time, now 600s), which turned a slow reasoning model
+ * into a bogus "fetch failed". The backend is the authority on how long a
+ * completion may take.
+ */
+function postJson(url: string, body: unknown): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const payload = JSON.stringify(body);
+    const req = (u.protocol === 'https:' ? httpsRequest : httpRequest)({
+      hostname: u.hostname,
+      port: u.port,
+      path: `${u.pathname}${u.search}`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        try {
+          resolve(JSON.parse(text));
+        } catch {
+          reject(new Error(`HTTP ${res.statusCode}: ${text.slice(0, 200)}`));
+        }
+      });
+    });
+    // A hung backend must not hang the harness forever; this is far above the
+    // backend's 600s provider timeout and any observed reasoning-model reply.
+    req.setTimeout(20 * 60 * 1000, () => req.destroy(new Error('chat request exceeded 20 minutes')));
+    req.on('error', reject);
+    req.write(payload);
+    req.end();
   });
-  const d: any = await r.json();
+}
+
+async function chatAs(agent: string, message: string): Promise<string> {
+  const body: Record<string, string> = { agent, message };
+  if (agent === 'oakscript_coder' && CODER_PROVIDER) {
+    body.coder_provider = CODER_PROVIDER;
+    if (CODER_MODEL) body.coder_model = CODER_MODEL;
+  }
+  if (agent === 'trade_advisor' && ADVISOR_PROVIDER) {
+    body.advisor_provider = ADVISOR_PROVIDER;
+    if (ADVISOR_MODEL) body.advisor_model = ADVISOR_MODEL;
+  }
+  const d: any = await postJson(`${BASE}/api/chat`, body);
   if (!d.ok) throw new Error(d.detail || d.error || 'chat failed');
   return d.reply || '';
 }
@@ -249,12 +307,93 @@ interface PromptSpec {
 
 /** Final prompts keep ids 1-5 and their asserts. Extreme prompts use ids 6+ and
  *  only the generic checks (validation, coverage, clustering, execution, sparsity). */
+const ONLY = (flagValue('--only') ?? '')
+  .split(',')
+  .map(s => Number(s.trim()))
+  .filter(n => Number.isInteger(n) && n > 0);
+
 const PROMPT_SET: PromptSpec[] = [
   ...(SET === 'extreme' ? [] : FINAL_LIMIT_PROMPTS.map((prompt, i) => ({ id: i + 1, prompt, asserts: ASSERTS[i] }))),
   ...(SET === 'final' ? [] : EXTREME_LIMIT_PROMPTS.map((prompt, i) => ({ id: 6 + i, prompt, asserts: (): Record<string, boolean> => ({}) }))),
-];
+].filter(p => ONLY.length === 0 || ONLY.includes(p.id));
+if (PROMPT_SET.length === 0) throw new Error('--only selected no prompts in this set');
 
-interface RunRecord {
+type Role = { provider: string; model: string; source: 'override' | 'saved' };
+interface Roles { coder: Role; advisor: Role }
+interface SavedRoles {
+  llm_coder_provider: string | null;
+  llm_coder_model: string | null;
+  llm_provider: string | null;
+  llm_trade_advisor_model: string | null;
+}
+interface RunContext { modelNote: string; roles: Roles; savedRoles: SavedRoles }
+interface ProviderInfo { id: string; configured: boolean; model: string; default_model: string }
+
+async function getJson(path: string): Promise<any> {
+  const r = await fetch(`${BASE}${path}`);
+  if (!r.ok) throw new Error(`GET ${path} failed: HTTP ${r.status}`);
+  return r.json();
+}
+
+function hostedModel(providers: ProviderInfo[], pid: string, model: string): string {
+  if (model && model !== 'auto') return model;
+  const p = providers.find(x => x.id === pid);
+  return p ? p.model || p.default_model || '' : model;
+}
+
+function overrideRole(name: string, provider: string, model: string | undefined, providers: ProviderInfo[]): Role {
+  const p = providers.find(x => x.id === provider);
+  if (!p) throw new Error(`--${name}-provider must be a hosted provider (got "${provider}")`);
+  if (!p.configured) throw new Error(`No API key is saved for "${provider}" on this PC.`);
+  return { provider, model: hostedModel(providers, provider, model ?? ''), source: 'override' };
+}
+
+function savedRole(provider: string, model: string, providers: ProviderInfo[]): Role {
+  return { provider, model: hostedModel(providers, provider, model), source: 'saved' };
+}
+
+async function resolveRoles(): Promise<{ roles: Roles; savedRoles: SavedRoles }> {
+  const s = await getJson('/api/settings');
+  const { providers } = await getJson('/api/llm/providers') as { providers: ProviderInfo[] };
+  const roles: Roles = {
+    coder: CODER_PROVIDER
+      ? overrideRole('coder', CODER_PROVIDER, CODER_MODEL, providers)
+      : savedRole(String(s.llm_coder_provider || s.llm_provider || 'local'), String(s.llm_coder_model || 'auto'), providers),
+    advisor: ADVISOR_PROVIDER
+      ? overrideRole('advisor', ADVISOR_PROVIDER, ADVISOR_MODEL, providers)
+      : savedRole(String(s.llm_provider || 'local'), String(s.llm_trade_advisor_model || 'auto'), providers),
+  };
+  const savedRoles: SavedRoles = {
+    llm_coder_provider: s.llm_coder_provider ?? null,
+    llm_coder_model: s.llm_coder_model ?? null,
+    llm_provider: s.llm_provider ?? null,
+    llm_trade_advisor_model: s.llm_trade_advisor_model ?? null,
+  };
+  return { roles, savedRoles };
+}
+
+function describeRoles(roles: Roles): string {
+  const d = (name: string, r: Role) => `${name} ${r.provider}/${r.model || 'auto'} (${r.source})`;
+  return `${d('coder', roles.coder)} · ${d('advisor', roles.advisor)}`;
+}
+
+/** Refuses to overwrite a result file that records a different label. */
+function guardFile(file: string): void {
+  if (!existsSync(file)) return;
+  let prior: any;
+  try { prior = JSON.parse(readFileSync(file, 'utf8')); } catch { throw new Error(`${file} exists and is not valid JSON; refusing to overwrite it.`); }
+  if (prior?.label !== undefined && prior.label !== label) {
+    throw new Error(`${file} belongs to label "${prior.label}"; refusing to overwrite it with label "${label}".`);
+  }
+}
+
+function writeResult(file: string, data: unknown): void {
+  guardFile(file);
+  writeFileSync(file, JSON.stringify(data, null, 2));
+}
+
+interface RunRecord extends RunContext {
+  label: string;
   run: number;
   at: string;
   pass: boolean;
@@ -262,11 +401,10 @@ interface RunRecord {
   results: Grade[];
 }
 
-interface Summary {
+interface Summary extends RunContext {
   label: string;
   set: string;
   at: string;
-  modelNote: string;
   repeat: number;
   runsCompleted: number;
   allPassRuns: number;
@@ -276,7 +414,7 @@ interface Summary {
   runPasses: boolean[];
 }
 
-function summarize(labelName: string, runs: RunRecord[]): Summary {
+function summarize(labelName: string, runs: RunRecord[], ctx: RunContext): Summary {
   let current = 0;
   let best = 0;
   for (const run of runs) {
@@ -291,7 +429,9 @@ function summarize(labelName: string, runs: RunRecord[]): Summary {
     label: labelName,
     set: SET,
     at: new Date().toISOString(),
-    modelNote: 'live Meta / muse-spark-1.3 via configured backend roles',
+    modelNote: ctx.modelNote,
+    roles: ctx.roles,
+    savedRoles: ctx.savedRoles,
     repeat: REPEAT,
     runsCompleted: runs.length,
     allPassRuns: runs.filter(r => r.pass).length,
@@ -309,7 +449,15 @@ function summarize(labelName: string, runs: RunRecord[]): Summary {
 }
 
 async function main(): Promise<void> {
+  const runFile = (n: number) => `tools/verify/final-limit-results-${label}-run-${n}.json`;
+  const summaryFile = `tools/verify/final-limit-results-${label}-summary.json`;
+  for (let n = 1; n <= REPEAT; n++) guardFile(runFile(n));
+  guardFile(summaryFile);
+
+  const { roles, savedRoles } = await resolveRoles();
+  const ctx: RunContext = { modelNote: describeRoles(roles), roles, savedRoles };
   console.log(`[${label}] live acceptance · set=${SET} (${PROMPT_SET.length} prompts) · repeat=${REPEAT} · backend=${BASE}${FAIL_FAST ? ' · fail-fast' : ''}`);
+  console.log(`[${label}] models: ${ctx.modelNote}`);
   const runs: RunRecord[] = [];
 
   for (let runNo = 1; runNo <= REPEAT; runNo++) {
@@ -338,10 +486,10 @@ async function main(): Promise<void> {
     }
 
     const pass = results.length === PROMPT_SET.length && results.every(r => r.pass);
-    const record: RunRecord = { run: runNo, at: new Date().toISOString(), pass, ms: Date.now() - runStarted, results };
+    const record: RunRecord = { ...ctx, label, run: runNo, at: new Date().toISOString(), pass, ms: Date.now() - runStarted, results };
     runs.push(record);
-    const file = `tools/verify/final-limit-results-${label}-run-${runNo}.json`;
-    writeFileSync(file, JSON.stringify(record, null, 2));
+    const file = runFile(runNo);
+    writeResult(file, record);
     console.log(`[${label}] run ${runNo}: ${pass ? `PASS ${PROMPT_SET.length}/${PROMPT_SET.length}` : `FAIL ${results.filter(r => r.pass).length}/${PROMPT_SET.length}`} · ${(record.ms / 1000).toFixed(1)}s · → ${file}`);
 
     if (FAIL_FAST && !pass) {
@@ -350,9 +498,8 @@ async function main(): Promise<void> {
     }
   }
 
-  const summary = summarize(label, runs);
-  const summaryFile = `tools/verify/final-limit-results-${label}-summary.json`;
-  writeFileSync(summaryFile, JSON.stringify(summary, null, 2));
+  const summary = summarize(label, runs, ctx);
+  writeResult(summaryFile, summary);
   console.log(`\n[${label}] all-pass runs ${summary.allPassRuns}/${summary.runsCompleted} · current streak ${summary.currentStreak} · best ${summary.bestStreak}`);
   console.log(`[${label}] per-prompt: ${summary.perPrompt.map(p => `#${p.id} ${p.passes}/${p.runs}`).join(' · ')}`);
   console.log(`[${label}] summary → ${summaryFile}`);

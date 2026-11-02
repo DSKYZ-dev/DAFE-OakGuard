@@ -58,7 +58,8 @@ import {
 import { PerfGovernor, recommendInitialTier, tierParticleCount, type PerfTier } from './perf-governor';
 import { createInputsPanel } from './age-inputs-panel';
 import { createDashboard } from './dashboard-widget';
-import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, clearOfHeaderTop } from './header-band';
+import { WINDOW_TOP_MIN, WINDOW_GAP, HEADER_BAR_HEIGHT, TRADING_LEFT, LEFT_COLUMN_LEFT, LEFT_COLUMN_WIDTH, SECOND_COLUMN_LEFT, clearOfHeaderTop } from './header-band';
+import { escapeHtml } from './escape-html';
 import { registerWidget, initWidgetMenu } from './widget-registry';
 import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
 import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
@@ -1429,20 +1430,64 @@ async function analyzeChart(): Promise<void> {
 }
 
 // ─── UI Setup ──────────────────────────────────────────────────────
+const LIST_POS_KEY = 'dafe_indicator_list_pos';
+const TRADING_POS_KEY = 'dafe_trading_pos';
+
+function readSavedPosition(key: string): { left: number; top: number } | null {
+  try {
+    const p = JSON.parse(localStorage.getItem(key) || 'null');
+    return p && Number.isFinite(p.left) && Number.isFinite(p.top) ? p : null;
+  } catch { return null; }
+}
+
+// The left column: Active Signal Models at the top, with the draw-tool rail and
+// the Trading panel beneath it. A window the user dragged keeps its position.
+function placeLeftColumn(): void {
+  const listBottom = indicatorListEl?.isConnected ? indicatorListEl.getBoundingClientRect().bottom : HEADER_BAR_HEIGHT;
+  const left = indicatorListEl?.isConnected ? indicatorListEl.offsetLeft : LEFT_COLUMN_LEFT;
+  const top = Math.min(clearOfHeaderTop(Math.round(listBottom + WINDOW_GAP)), window.innerHeight - 160);
+  const rail = document.getElementById('draw-rail');
+  if (rail) { rail.style.left = `${left}px`; rail.style.top = `${top}px`; rail.style.transform = 'none'; }
+  const trading = document.getElementById('trading-panel');
+  if (trading && !readSavedPosition(TRADING_POS_KEY)) {
+    trading.style.left = `${left + TRADING_LEFT - LEFT_COLUMN_LEFT}px`;
+    trading.style.top = `${top}px`;
+  }
+}
+
+let listDrag: { dx: number; dy: number } | null = null;
+function startListDrag(e: MouseEvent): void {
+  if (!indicatorListEl || (e.target as HTMLElement).tagName === 'BUTTON') return;
+  listDrag = { dx: e.clientX - indicatorListEl.offsetLeft, dy: e.clientY - indicatorListEl.offsetTop };
+  e.preventDefault();
+}
+document.addEventListener('mousemove', (e) => {
+  if (!listDrag || !indicatorListEl) return;
+  indicatorListEl.style.left = `${Math.max(0, Math.min(window.innerWidth - 120, e.clientX - listDrag.dx))}px`;
+  indicatorListEl.style.top = `${clearOfHeaderTop(Math.min(window.innerHeight - 40, e.clientY - listDrag.dy))}px`;
+});
+document.addEventListener('mouseup', () => {
+  if (!listDrag || !indicatorListEl) return;
+  listDrag = null;
+  localStorage.setItem(LIST_POS_KEY, JSON.stringify({ left: indicatorListEl.offsetLeft, top: indicatorListEl.offsetTop }));
+  placeLeftColumn();
+});
+
 let indicatorListEl: HTMLDivElement | null = null;
 function buildIndicatorList() {
   if (indicatorListEl) indicatorListEl.remove();
   const active = getActiveInstances();
-  if (active.length === 0) return;
+  if (active.length === 0) { placeLeftColumn(); return; }
 
+  const savedPos = readSavedPosition(LIST_POS_KEY);
   indicatorListEl = document.createElement('div');
   indicatorListEl.id = 'indicator-list';
   indicatorListEl.className = 'dafe-glow-window';
   Object.assign(indicatorListEl.style, {
-    position: 'fixed', top: `${WINDOW_TOP_MIN}px`, left: `${SECOND_COLUMN_LEFT}px`, zIndex: '90',
+    position: 'fixed', top: `${savedPos?.top ?? WINDOW_TOP_MIN}px`, left: `${savedPos?.left ?? LEFT_COLUMN_LEFT}px`, zIndex: '90',
     background: 'rgba(8, 8, 20, 0.85)', border: '1px solid rgba(180, 140, 255, 0.15)',
     borderRadius: '8px', padding: '8px 10px', backdropFilter: 'blur(12px)',
-    boxShadow: '0 4px 20px rgba(0,0,0,0.4)', minWidth: '180px', maxWidth: '280px',
+    boxShadow: '0 4px 20px rgba(0,0,0,0.4)', width: `${LEFT_COLUMN_WIDTH}px`, minWidth: '240px', maxWidth: `${LEFT_COLUMN_WIDTH}px`,
     fontSize: '11px', color: 'rgba(255,255,255,0.7)',
   });
 
@@ -1471,6 +1516,8 @@ function buildIndicatorList() {
 
   titleRow.appendChild(title);
   titleRow.appendChild(ogBtn);
+  titleRow.style.cursor = 'move';
+  titleRow.addEventListener('mousedown', startListDrag);
   indicatorListEl.appendChild(titleRow);
 
   for (const inst of active) {
@@ -1662,6 +1709,7 @@ function buildIndicatorList() {
   }
 
   document.body.appendChild(indicatorListEl);
+  placeLeftColumn();
 }
 
 function updateUI() {
@@ -1950,9 +1998,6 @@ function orientToolbarPopover(menu: HTMLElement): void {
 
 /** currentSymbol is free-typed user text, not a fixed enum — it must be
  * escaped before landing in innerHTML (trade lists render it directly). */
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
 
 function renderTradePositions(): void {
   const list = document.getElementById('tradePositionsList');
@@ -1981,7 +2026,7 @@ function renderTradeOrders(): void {
   list.innerHTML = working.map(o => {
     const priceLabel = o.type === 'trailing-stop' ? `trail ${o.trailAmount}${o.trailIsPercent ? '%' : ''}`
       : o.limitPrice !== undefined ? `@ ${o.limitPrice}` : o.stopPrice !== undefined ? `stop ${o.stopPrice}` : '';
-    return `<div class="trade-list-row"><span>${o.side.toUpperCase()} ${o.qty} ${escapeHtml(o.symbol)} ${o.type} ${escapeHtml(priceLabel)}</span><button class="cancel-order" data-order-id="${o.id}">✕</button></div>`;
+    return `<div class="trade-list-row"><span>${o.side.toUpperCase()} ${o.qty} ${escapeHtml(o.symbol)} ${escapeHtml(o.type)} ${escapeHtml(priceLabel)}</span><button class="cancel-order" data-order-id="${escapeHtml(o.id)}">✕</button></div>`;
   }).join('');
   list.querySelectorAll('.cancel-order').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -3146,7 +3191,7 @@ CRITICAL RULES:
     const qty = parseFloat((document.getElementById('tradeQuantity') as HTMLInputElement)?.value || '1') || 1;
     const c = describeCommission(cfg.commission, qty);
     const sl = describeSlippage(cfg.slippage, lastPrice);
-    preview.innerHTML = `Commission: ${c.formula}<br>Slippage: ${sl.formula}`;
+    preview.innerHTML = `Commission: ${escapeHtml(c.formula)}<br>Slippage: ${escapeHtml(sl.formula)}`;
   }
   function applyTradeSettingsFromForm(): void {
     const cashEl = document.getElementById('set-trade-cash') as HTMLInputElement;
@@ -3784,15 +3829,20 @@ CRITICAL RULES:
       }
       const eventTime = fedEventTitle ? extractEventTime(fedEventTitle) : '';
       const fedBanner = hasFedWarning
-        ? `<div style="background:rgba(255,200,0,0.15);border:1px solid rgba(255,200,0,0.4);color:#ffcc00;padding:6px 8px;margin-bottom:6px;border-radius:4px;font-size:11px;font-weight:600"><span style="float:right;font-size:9px;opacity:0.6;font-weight:400">${fetchTimeStr}</span>⚠ FED EVENT${eventTime ? ' — ' + eventTime : ''} — Expect volatility</div>`
+        ? `<div style="background:rgba(255,200,0,0.15);border:1px solid rgba(255,200,0,0.4);color:#ffcc00;padding:6px 8px;margin-bottom:6px;border-radius:4px;font-size:11px;font-weight:600"><span style="float:right;font-size:9px;opacity:0.6;font-weight:400">${escapeHtml(fetchTimeStr)}</span>⚠ FED EVENT${eventTime ? ' — ' + escapeHtml(eventTime) : ''} — Expect volatility</div>`
         : '';
       const html = fedBanner + items.map(i =>
-        `<div class="news-item" onclick="window.open('${i.url.replace(/'/g,'')}','_blank')">
-          <div class="news-title">${i.title}</div>
-          <div class="news-meta"><span class="news-tag${i.tag === 'earnings' ? ' earnings' : i.tag === 'fed' ? ' risk' : ''}">${i.tag}</span><span style="margin-left:auto;opacity:0.4;font-size:9px">${i.fetchedAt}</span></div>
+        `<div class="news-item" data-url="${escapeHtml(i.url)}">
+          <div class="news-title">${escapeHtml(i.title)}</div>
+          <div class="news-meta"><span class="news-tag${i.tag === 'earnings' ? ' earnings' : i.tag === 'fed' ? ' risk' : ''}">${escapeHtml(i.tag)}</span><span style="margin-left:auto;opacity:0.4;font-size:9px">${escapeHtml(i.fetchedAt)}</span></div>
         </div>`
       ).join('');
       newsList.innerHTML = html;
+      newsList.querySelectorAll<HTMLElement>('.news-item').forEach(el => {
+        el.onclick = () => {
+          if (/^https?:\/\//i.test(el.dataset.url || '')) window.open(el.dataset.url, '_blank', 'noopener');
+        };
+      });
     } catch {
       if (!isSilent) newsList.innerHTML = '<div style="text-align:center;color:rgba(255,255,255,0.2);padding:12px;min-height:40px">News unavailable</div>';
     }
@@ -3964,6 +4014,8 @@ CRITICAL RULES:
     isVisible: () => !!tradingPanel && tradingPanel.style.display !== 'none',
   });
   initWidgetMenu('widgets-toggle', 'widgets-menu');
+  placeLeftColumn();
+  window.addEventListener('resize', placeLeftColumn);
 
   if (tradingPanel && tradingPanelHeader) {
     let tOffX = 0, tOffY = 0;
@@ -3979,6 +4031,7 @@ CRITICAL RULES:
       };
       const onUp = () => {
         tradingPanel.classList.remove('dragging');
+        localStorage.setItem(TRADING_POS_KEY, JSON.stringify({ left: tradingPanel.offsetLeft, top: tradingPanel.offsetTop }));
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       };

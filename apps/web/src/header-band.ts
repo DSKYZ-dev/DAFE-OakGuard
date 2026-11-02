@@ -17,6 +17,12 @@ export const WINDOW_TOP_MIN = HEADER_BAR_HEIGHT + WINDOW_GAP;
 /** Left edge of the Trading panel: the draw-tool rail sits on the screen edge (left 12, 48px wide). */
 export const TRADING_LEFT = 12 + 48 + WINDOW_GAP;
 
+/** Left edge of the left column: Active Signal Models, the draw-tool rail and Trading share it. */
+export const LEFT_COLUMN_LEFT = 12;
+
+/** Width of the left column: the 48px rail, the gap, and the 240px Trading panel. */
+export const LEFT_COLUMN_WIDTH = TRADING_LEFT + 240 - LEFT_COLUMN_LEFT;
+
 /** Left edge of the second top-row window: Trading is 240px wide. */
 export const SECOND_COLUMN_LEFT = TRADING_LEFT + 240 + WINDOW_GAP;
 

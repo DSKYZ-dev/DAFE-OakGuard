@@ -1,0 +1,49 @@
+{
+  "modelNote": "coder opencode/qwen3.8-flash (override) · advisor opencode/qwen3.8-flash (override)",
+  "roles": {
+    "coder": {
+      "provider": "opencode",
+      "model": "qwen3.8-flash",
+      "source": "override"
+    },
+    "advisor": {
+      "provider": "opencode",
+      "model": "qwen3.8-flash",
+      "source": "override"
+    }
+  },
+  "savedRoles": {
+    "llm_coder_provider": "meta",
+    "llm_coder_model": "muse-spark-1.3",
+    "llm_provider": "opencode",
+    "llm_trade_advisor_model": "qwen3.8-flash"
+  },
+  "label": "qwen-crossmodel",
+  "run": 1,
+  "at": "2026-10-31T16:42:01.362Z",
+  "pass": false,
+  "ms": 622121,
+  "results": [
+    {
+      "id": 1,
+      "pass": false,
+      "rounds": 0,
+      "drafts": 0,
+      "briefAttempts": 0,
+      "briefFallback": false,
+      "repairs": [],
+      "checks": {
+        "hasCode": false,
+        "validAndCoverageClean": false,
+        "clusterFree": true
+      },
+      "problems": [
+        "NO_CODE"
+      ],
+      "codeLen": 0,
+      "code": "",
+      "replyHead": "OpenCode timed out — try again.",
+      "ms": 622118
+    }
+  ]
+}

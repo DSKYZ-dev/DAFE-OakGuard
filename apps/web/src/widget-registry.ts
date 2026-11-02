@@ -1,3 +1,5 @@
+import { escapeHtml } from './escape-html';
+
 /**
  * Central registry so every closable widget can be reopened from one menu
  * instead of being lost once its own close button is clicked.
@@ -33,7 +35,7 @@ export function initWidgetMenu(toggleId: string, menuId: string): void {
       item.onmouseenter = () => { item.style.background = 'rgba(180,140,255,0.12)'; };
       item.onmouseleave = () => { item.style.background = 'transparent'; };
       const visible = w.isVisible();
-      item.innerHTML = `<span>${w.name}</span><span style="opacity:${visible ? '1' : '0.3'}">${visible ? '●' : '○'}</span>`;
+      item.innerHTML = `<span>${escapeHtml(w.name)}</span><span style="opacity:${visible ? '1' : '0.3'}">${visible ? '●' : '○'}</span>`;
       item.onclick = () => {
         if (w.isVisible()) w.hide(); else w.show();
         render();

@@ -6,6 +6,10 @@ import { loadBrokerSettings, saveBrokerSettings, DEFAULT_RISK } from './broker-s
 import { tradovateLogin, syncTradovateProfile } from './tradovate';
 import { showOnboarding } from './onboarding';
 import { probeMassiveKey, invalidateMassiveProbe, MASSIVE_PROBE_EVENT, type MassiveProbe } from './live-engine';
+import { LLM_PRESETS, nativeGetWithHeaders, nativePost } from './native-http';
+import { llmRoute, llmListModels, llmProbe } from './llm-router';
+import { findBackend, backendHeaders, BACKEND_TOKEN_KEY } from './backend';
+import { particlesSupported, particlesEnabled, setParticlesEnabled } from './particles';
 
 export interface SettingsScreen {
   dispose: () => void;
@@ -76,7 +80,7 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
       backendStatus.textContent = 'Enter a server address first';
       return;
     }
-    fetch(`${url.replace(/\/$/, '')}/api/ping`, { signal: AbortSignal.timeout(5000) })
+    fetch(`${url.replace(/\/$/, '')}/api/ping`, { headers: backendHeaders(), signal: AbortSignal.timeout(5000) })
       .then(async (res) => {
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.ok !== false) {
@@ -167,6 +171,166 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     persistSettings();
   });
 
+  // ── PC backend pairing ───────────────────────────────────────────
+  const pairInput = document.createElement('input');
+  pairInput.type = 'password';
+  pairInput.autocomplete = 'off';
+  pairInput.placeholder = 'Paste from backend/.lan_token';
+  pairInput.value = localStorage.getItem(BACKEND_TOKEN_KEY) || '';
+  const pairStatus = document.createElement('div');
+  pairStatus.className = 'set-status';
+  pairStatus.textContent = pairInput.value ? 'Token saved on this device' : 'Only needed when this phone reaches the PC over Wi-Fi';
+  const pairBtn = document.createElement('button');
+  pairBtn.className = 'editor-run';
+  pairBtn.textContent = 'TEST PAIRING';
+  const savePairToken = (): void => {
+    const v = pairInput.value.trim();
+    try {
+      if (v) localStorage.setItem(BACKEND_TOKEN_KEY, v);
+      else localStorage.removeItem(BACKEND_TOKEN_KEY);
+    } catch { /* storage unavailable */ }
+  };
+  pairInput.addEventListener('change', savePairToken);
+  pairBtn.addEventListener('click', async () => {
+    savePairToken();
+    pairStatus.className = 'set-status wait';
+    pairStatus.textContent = 'Testing pairing...';
+    const base = (state.backendUrl || (await findBackend(true)) || '').replace(/\/$/, '');
+    if (!base) {
+      pairStatus.className = 'set-status err';
+      pairStatus.textContent = 'Backend not reachable';
+      return;
+    }
+    try {
+      const res = await nativeGetWithHeaders(`${base}/api/llm/providers`, backendHeaders(), 5000);
+      if (!res) {
+        pairStatus.className = 'set-status err';
+        pairStatus.textContent = 'Backend not reachable';
+      } else if (res.status === 200) {
+        pairStatus.className = 'set-status ok';
+        pairStatus.textContent = 'Paired';
+      } else if (res.status === 401) {
+        pairStatus.className = 'set-status err';
+        pairStatus.textContent = 'Token rejected. Copy it again from backend/.lan_token';
+      } else {
+        pairStatus.className = 'set-status err';
+        pairStatus.textContent = 'Backend not reachable';
+      }
+    } catch {
+      pairStatus.className = 'set-status err';
+      pairStatus.textContent = 'Backend not reachable';
+    }
+  });
+  scroll.appendChild(card('PC Backend Pairing', [
+    row('Pairing token', pairInput),
+    pairStatus,
+    pairBtn,
+  ]));
+
+  // ── PC hardware & local model ────────────────────────────────────
+  const hwBody = document.createElement('div');
+  hwBody.className = 'hw-body';
+  const hwMsg = document.createElement('div');
+  hwMsg.className = 'set-status';
+  const hwRefreshBtn = document.createElement('button');
+  hwRefreshBtn.className = 'editor-run';
+  hwRefreshBtn.textContent = 'REFRESH';
+  const hwReloadBtn = document.createElement('button');
+  hwReloadBtn.className = 'editor-run';
+  hwReloadBtn.textContent = 'RELOAD LOCAL MODEL';
+
+  const HW_NOT_CONNECTED = 'Backend not connected. Pair it above.';
+  const hwBase = async (): Promise<string> => (state.backendUrl || (await findBackend(true)) || '').replace(/\/$/, '');
+  const hwGet = async (base: string, path: string): Promise<any | null> => {
+    const res = await nativeGetWithHeaders(`${base}${path}`, backendHeaders(), 5000);
+    return res && res.status >= 200 && res.status < 300 && res.data && typeof res.data === 'object' ? res.data : null;
+  };
+  const hwLine = (text: string): HTMLElement => {
+    const d = document.createElement('div');
+    d.textContent = text;
+    return d;
+  };
+  const hwNotConnected = (): void => {
+    hwBody.replaceChildren();
+    hwMsg.className = 'set-status err';
+    hwMsg.textContent = HW_NOT_CONNECTED;
+  };
+
+  async function refreshHardware(quiet = false): Promise<void> {
+    hwRefreshBtn.disabled = true;
+    if (!quiet) {
+      hwMsg.className = 'set-status wait';
+      hwMsg.textContent = 'Checking PC…';
+    }
+    const base = await hwBase();
+    const hw = base ? await hwGet(base, '/api/hardware') : null;
+    const model = hw ? await hwGet(base, '/api/model/status') : null;
+    hwRefreshBtn.disabled = false;
+    if (!hw?.ok || !hw.hardware) { hwNotConnected(); return; }
+    const info = hw.hardware;
+    const modelLine = !model
+      ? 'status unavailable'
+      : model.running ? `${model.model || 'loaded'} (ctx ${model.ctx || '?'})` : 'not loaded';
+    hwBody.replaceChildren(
+      hwLine(`GPU: ${info.gpu ? (info.gpu_name || 'detected') : 'none detected'}`),
+      hwLine(`VRAM: ${info.vram_mb ? `${(info.vram_mb / 1024).toFixed(1)} GB` : 'unknown'}`),
+      hwLine(`CPU: ${info.cpu_cores ?? '?'} cores`),
+      hwLine(`RAM: ${info.ram_gb ? `${info.ram_gb} GB` : 'unknown'}`),
+      hwLine(`Local model: ${modelLine}`),
+    );
+    if (!quiet) {
+      hwMsg.className = 'set-status ok';
+      hwMsg.textContent = 'Connected to PC backend';
+    }
+  }
+
+  hwRefreshBtn.addEventListener('click', () => { void refreshHardware(); });
+  hwReloadBtn.addEventListener('click', async () => {
+    if (!window.confirm('Reload the local model on this PC?')) return;
+    const base = await hwBase();
+    if (!base) { hwNotConnected(); return; }
+    hwReloadBtn.disabled = true;
+    hwRefreshBtn.disabled = true;
+    hwMsg.className = 'set-status wait';
+    hwMsg.textContent = 'Stopping current model and loading... (may take 30-60s)';
+    try {
+      const res = await nativePost(`${base}/api/model/reload`, { model: 'auto' }, backendHeaders(), 180000);
+      if (!res || res.status === 401) { hwNotConnected(); return; }
+      const data: any = res.data || {};
+      if (data.ok) {
+        hwMsg.className = 'set-status ok';
+        hwMsg.textContent = `✓ ${data.model || 'Model'} loaded (ctx: ${data.ctx || '?'})`;
+      } else if (data.loading) {
+        hwMsg.className = 'set-status warn';
+        hwMsg.textContent = `${data.model || 'Model'} still warming up…`;
+        for (let i = 0; i < 60; i++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          const m = await hwGet(base, '/api/model/status');
+          if (m?.running) break;
+        }
+      } else {
+        hwMsg.className = 'set-status err';
+        hwMsg.textContent = `✕ ${data.detail || 'Failed to load'}`;
+      }
+    } catch {
+      hwNotConnected();
+    } finally {
+      hwReloadBtn.disabled = false;
+      hwRefreshBtn.disabled = false;
+      void refreshHardware(true);
+    }
+  });
+  const hwActions = document.createElement('div');
+  hwActions.className = 'hw-actions';
+  hwActions.appendChild(hwRefreshBtn);
+  hwActions.appendChild(hwReloadBtn);
+  scroll.appendChild(card('PC hardware & local model', [
+    hwBody,
+    hwMsg,
+    hwActions,
+  ]));
+  void refreshHardware();
+
   scroll.appendChild(card('Data Feeds', [
     row('Massive API key', massiveInput),
     massiveStatus,
@@ -236,7 +400,7 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
 
   // ── Cloud LLM (unified agent) ────────────────────────────────────
   const LLM_KEY = 'dafe_mobile_llm';
-  const OPENCODE_DEFAULT = { provider: 'opencode', baseUrl: 'https://api.opencode.ai/v1', apiKey: '', model: '' };
+  const OPENCODE_DEFAULT = { provider: 'opencode', baseUrl: 'https://opencode.ai/zen/v1', apiKey: '', model: 'deepseek-v4-pro' };
   const llmSaved = (() => {
     try {
       const cur = JSON.parse(localStorage.getItem(LLM_KEY) || '{}');
@@ -251,15 +415,19 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     } catch { return { ...OPENCODE_DEFAULT }; }
   })();
   const llmProv = document.createElement('select');
-  (['ollama','opencode','orcarouter','openrouter','openai','anthropic','custom'] as const).forEach(p => {
-    const o = document.createElement('option'); o.value = p; o.textContent = p[0].toUpperCase()+p.slice(1);
+  (['ollama','opencode','meta','nvidia','orcarouter','openrouter','openai','anthropic','custom'] as const).forEach(p => {
+    const o = document.createElement('option'); o.value = p; o.textContent = LLM_PRESETS[p]?.label ?? p[0].toUpperCase()+p.slice(1);
     llmProv.appendChild(o);
   });
   llmProv.value = llmSaved.provider || 'opencode';
   const llmUrl = document.createElement('input'); llmUrl.type = 'text'; llmUrl.placeholder = 'https://api.openai.com/v1  (or custom URL)';
   llmUrl.value = llmSaved.baseUrl || '';
-  const llmKey = document.createElement('input'); llmKey.type = 'password'; llmKey.placeholder = 'API key (stored locally)';
+  const llmKey = document.createElement('input'); llmKey.type = 'password'; llmKey.placeholder = 'API key (stored on this device)';
   llmKey.value = llmSaved.apiKey || '';
+  const llmRouteLine = document.createElement('div'); llmRouteLine.className = 'set-status';
+  llmRouteLine.textContent = 'Checking where AI calls go…';
+  const llmDeviceNote = document.createElement('div'); llmDeviceNote.className = 'set-info';
+  llmDeviceNote.textContent = 'Stored on this device. Only used when the PC backend has no saved key for this provider.';
   const llmModel = document.createElement('select'); llmModel.style.flex='1';
   let availableModels: string[] = Array.isArray(llmSaved.cachedModels) ? llmSaved.cachedModels : [];
   function currentCfg(): any {
@@ -283,16 +451,16 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
   }
   populateModels(availableModels, llmSaved.model || undefined);
 
+  async function showRoute(): Promise<void> {
+    const r = await llmRoute(currentCfg());
+    llmRouteLine.className = 'set-status ' + (r.via === 'backend' ? 'ok' : '');
+    llmRouteLine.textContent = r.via === 'backend' ? 'Using the key saved on your PC' : 'Direct from this device';
+  }
+
   async function refreshModels(): Promise<void> {
     const cfg = currentCfg();
-    if (!cfg.apiKey && cfg.provider !== 'ollama') {
-      llmStatus.className = 'set-status err';
-      llmStatus.textContent = 'Enter an API key first — then models load automatically';
-      return;
-    }
     llmStatus.className = 'set-status wait'; llmStatus.textContent = 'Fetching model list...';
-    const { fetchLlmModels } = await import('./native-http');
-    const r = await fetchLlmModels(cfg);
+    const r = await llmListModels(cfg);
     if (!r.ok) {
       llmStatus.className = 'set-status err';
       llmStatus.textContent = `Model list failed — ${r.error}. You can still type a model manually.`;
@@ -316,7 +484,7 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
   llmModelCustom.style.display='none';
   llmModelCustom.value = llmSaved.model || '';
   const llmStatus = document.createElement('div'); llmStatus.className = 'set-status';
-  llmStatus.textContent = llmSaved.apiKey ? `Provider: ${llmSaved.provider || 'opencode'} — tap LOAD MODELS` : 'Connect any OpenAI-compatible API (Ollama local, OpenRouter, OpenAI, Anthropic native, etc.) — models pull straight from the provider';
+  llmStatus.textContent = llmSaved.apiKey ? `Provider: ${llmSaved.provider || 'opencode'} — tap LOAD MODELS` : 'Connect any OpenAI-compatible API (Meta, NVIDIA NIM, OpenCode, OpenRouter, OpenAI, Anthropic native, etc.) — models pull straight from the provider';
   const llmTest = document.createElement('button'); llmTest.className = 'editor-run'; llmTest.textContent = 'TEST CONNECTION';
 
   function persistLLM(cfg: any): void {
@@ -325,10 +493,19 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
   const saveLLM = (quiet = false): void => {
     const cfg = currentCfg();
     persistLLM(cfg);
+    void showRoute();
     if (!quiet) { llmStatus.className = 'set-status ok'; llmStatus.textContent = `Saved — ${cfg.provider} / ${cfg.model || 'default model'}`; }
   };
 
-  llmProv.addEventListener('change', ()=>{ availableModels = []; populateModels([], ''); saveLLM(); void refreshModels(); });
+  llmProv.addEventListener('change', ()=>{
+    // Presets set their own endpoint and default model; a preset URL left over
+    // from another provider is cleared so it cannot leak across providers.
+    const preset = LLM_PRESETS[llmProv.value];
+    const presetUrls = Object.values(LLM_PRESETS).map(p => p.baseUrl);
+    llmUrl.value = preset ? preset.baseUrl : (presetUrls.includes(llmUrl.value.trim()) ? '' : llmUrl.value);
+    llmModelCustom.value = preset?.model || '';
+    availableModels = []; populateModels([], ''); saveLLM(); void refreshModels();
+  });
   llmUrl.addEventListener('change', ()=>saveLLM());
   llmKey.addEventListener('change', ()=>{ saveLLM(); void refreshModels(); });
   llmModel.addEventListener('change', ()=>{ llmModelCustom.value=llmModel.value; saveLLM(); });
@@ -337,14 +514,12 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
   llmTest.addEventListener('click', async () => {
     saveLLM();
     const cfg = currentCfg();
-    if (!cfg.apiKey && cfg.provider !== 'ollama') { llmStatus.className = 'set-status err'; llmStatus.textContent = 'API key required for this provider'; return; }
     llmStatus.className = 'set-status wait'; llmStatus.textContent = 'Testing connection + loading models...';
     await refreshModels();
     if (llmStatus.className === 'set-status ok') {
       // Real generation probe — /models can succeed where chat fails (wrong
       // model id, quota). A tiny completion is the honest test.
-      const { llmChat } = await import('./native-http');
-      const probe = await llmChat(cfg, 'Reply with the single word: OK', 'ping', { maxTokens: 8, temperature: 0 });
+      const probe = await llmProbe(cfg);
       if (probe.ok) {
         llmStatus.textContent += ' — chat verified ✓';
       } else {
@@ -356,12 +531,15 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
   scroll.appendChild(card('AI — Unified Agent (Advisor + Editor)', [
     row('Provider', llmProv),
     row('Base URL', llmUrl),
-    row('API key', llmKey),
+    row('Device API key', llmKey),
+    llmDeviceNote,
+    llmRouteLine,
     row('Model (auto)', llmModel),
     refreshBtn,
     llmStatus, llmTest,
-    (() => { const i=document.createElement('div'); i.className='set-info'; i.textContent='Model list pulls live from your provider — free tiers sort first. TEST CONNECTION now sends a real 1-token chat so "connected" means the Editor and Advisor will actually answer.'; return i; })(),
+    (() => { const i=document.createElement('div'); i.className='set-info'; i.textContent='Model list pulls live from your provider — free tiers sort first. TEST CONNECTION now sends a real 1-token chat so "connected" means the Editor and Advisor will actually answer. When the PC backend is connected and holds a key for this provider, the phone uses it and stores none.'; return i; })(),
   ]));
+  void showRoute();
 
   // ── Trading / risk ─────────────────────────────────────────────
   const settings = loadBrokerSettings();
@@ -478,11 +656,22 @@ export function createSettingsScreen(container: HTMLDivElement): SettingsScreen 
     try { (window as any).__dafeSyncOneClick?.(s.oneClick); } catch {}
   });
 
-  scroll.appendChild(card('Display', [
+  const displayRows: HTMLElement[] = [
     row('Performance', perfSel),
     row('Default bar type', barSel),
     row('One-Click Trading', octSel),
-  ]));
+  ];
+  if (particlesSupported()) {
+    const particlesToggle = document.createElement('button');
+    particlesToggle.className = 'toggle' + (particlesEnabled() ? ' on' : '');
+    particlesToggle.addEventListener('click', () => {
+      const on = !particlesEnabled();
+      setParticlesEnabled(on);
+      particlesToggle.classList.toggle('on', on);
+    });
+    displayRows.push(row('Background particles', particlesToggle));
+  }
+  scroll.appendChild(card('Display', displayRows));
 
   // ── Performance Tricks ───────────────────────────────────────────
   const matrix = { ...DEFAULT_MATRIX };

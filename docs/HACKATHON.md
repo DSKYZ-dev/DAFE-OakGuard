@@ -107,6 +107,16 @@ so no credential ever reaches the browser.
    bars, extreme prices (0.0005 → 1e6), zero volume, NaNs, ATR storms, adapter
    movement classes G1–G9 — with the findings written up in `docs/reports/`
    (math audit, backtest/optimizer addendum, focused testing report).
+6. **The editor is not tied to one model vendor.** The saved coder is Meta
+   `muse-spark-1.3`; the same pipeline also ran DeepSeek V4 Pro through OpenCode.
+   DeepSeek passed the hardest prompt twice with valid, coverage-clean, executing
+   code (4,971 chars in 440s, then 3,442 chars under the 600s limit). The next
+   prompt's long DeepSeek replies completed with backend HTTP 200 but were lost
+   to a local harness connection reset, so it is recorded as **ungraded, not a
+   code failure**. A faster-coder retry on that prompt (Qwen 3.8 Flash) produced
+   no code because of a sub-second provider error, not a gate failure — recorded
+   as indeterminate. Commands, evidence and the honest limits are in
+   `docs/reports/CROSS_MODEL_ACCEPTANCE.md`.
 
 ## By the numbers
 
@@ -140,8 +150,9 @@ so no credential ever reaches the browser.
    holdout. Say it plainly: it certifies the procedure, not the returns.
 5. **Close (2:35–3:00)** — "Candidate rules, from a catalogue today and a model next, are only as good as the referee.
    This one records every promotion and rejection, and it certifies procedure, not
-   profit." End on the Settings → Meta Model API preset: the Meta frame is part of
-   Stage One.
+   profit." End on Settings: the OakScript Coder is on the Meta Model API preset
+   (`muse-spark-1.3`), part of Stage One; the Trade Advisor is on OpenCode
+   `qwen3.8-flash`, showing the same pipeline is provider-agnostic.
 
 Presenter notes: say "candidate rules," not "the model proposed them" — the catalogue
 supplies candidates today, and the live proposer is the next step. Never show an equity
@@ -172,8 +183,10 @@ numbers and the uncomfortable ones.
   Probe once, cache per provider, and stop offering slugs a key cannot reach.
 - **More 2D twins, fewer dead ends** — every `plot3d` style should degrade to a
   designed 2D form rather than disappearing when 3D is off.
-- **Mobile parity** — the Android build shares the core; the 3D and ML surfaces
-  should follow.
+- **Mobile parity** - the Android build now covers the desktop feature list, with AI
+  routed through the PC backend and paired with a token. The particle field is verified
+  in the browser; voice and the 3D view still need a check on a device. The 3D and ML
+  surfaces should follow.
 
 ## Submission checklist
 
@@ -182,7 +195,8 @@ numbers and the uncomfortable ones.
 - [ ] Repository PUBLIC on GitHub; in-event contributions listed (see top)
 - [ ] Meta Model API key tested (Settings → Provider API Keys → Meta), credits claimed
 - [ ] Third-party licences checked (GGUF model, Three.js, Capacitor, fonts)
-- [ ] API keys tested on the demo machine, then rotated afterwards
+- [ ] Revoke/re-issue the OpenCode key shared in chat; no key material is in the repo (runtime keys are encrypted and gitignored)
+- [x] Android debug APK builds successfully: `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk` (5.4 MB, `RECORD_AUDIO`, synced assets)
 - [x] `npm run lint && npm test && npm run verify:oakguard && npm run verify:pipeline && npm run build` green
 - [x] Live generation acceptance: `npx tsx tools/verify/final-limit-run.ts acceptance --set all --repeat 10 --fail-fast`
       — **10/10 consecutive runs, 11 of 11 prompts in each (110/110)**, on Meta `muse-spark-1.3`, commit `b64e0e7` (`tools/verify/final-limit-results-acceptance-attempt6-summary.json`)

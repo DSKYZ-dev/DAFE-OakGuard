@@ -34,8 +34,8 @@
     #secondary-canvas:active { cursor: grabbing; }
 
     #draw-rail {
-      position: fixed; left: 12px; top: 50%; /* screen edge; Trading sits to its right (see header-band.ts) */
-      transform: translateY(-50%); z-index: 100;
+      position: fixed; left: 12px; top: 38px; /* screen edge; main.ts placeLeftColumn stacks it under the Active Signal Models box */
+      transform: none; z-index: 100;
       display: flex; flex-direction: column; gap: 4px;
       background: rgba(12, 12, 28, 0.88);
       border: 1px solid rgba(180, 140, 255, 0.15);
