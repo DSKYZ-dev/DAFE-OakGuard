@@ -841,13 +841,22 @@ canvas.addEventListener('wheel', (e: WheelEvent) => {
 }, { passive: false });
 
 let scaleYDragging = false;
+// False while a 3D pane owns the canvas; set each frame in frame().
+let drawingsVisible = true;
+/** Pointer position in CSS pixels relative to the chart canvas. */
+function canvasPoint(e: MouseEvent): { x: number; y: number } {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
 canvas.addEventListener('mousedown', (e) => {
-  if (draw.isDrawing() && !is3DMode) {
-    draw.onClick(e.clientX, e.clientY, transformed, view, canvas.clientWidth, canvas.clientHeight);
-    visualAdapter.logAction('draw', `Placed ${draw.getTool()} at (${e.clientX}, ${e.clientY})`);
+  const p = canvasPoint(e);
+  if (drawingsVisible && draw.isDrawing()) {
+    draw.onClick(p.x, p.y, transformed, view, canvas.clientWidth, canvas.clientHeight, is3DMode);
+    visualAdapter.logAction('draw', `Placed ${draw.getTool()} at (${Math.round(p.x)}, ${Math.round(p.y)})`);
     return;
   }
-  if (e.clientX > chartRight(canvas.clientWidth)) {
+  if (drawingsVisible && draw.pointerDown(p.x, p.y, transformed, view, canvas.clientWidth, canvas.clientHeight, is3DMode)) return;
+  if (p.x > chartRight(canvas.clientWidth)) {
     scaleYDragging = true;
     canvas.style.cursor = 'ns-resize';
     lastMY = e.clientY;
@@ -856,13 +865,14 @@ canvas.addEventListener('mousedown', (e) => {
   mouseDown = true; lastMX = e.clientX; lastMY = e.clientY;
 });
 canvas.addEventListener('mousemove', (e) => {
-  mouseX = e.clientX; mouseY = e.clientY;
+  const p = canvasPoint(e);
+  mouseX = p.x; mouseY = p.y;
   // Show tooltip only after 2s of mouse stillness
   if (tooltipTimer) clearTimeout(tooltipTimer);
   showTooltip = false;
   tooltipTimer = setTimeout(() => { showTooltip = true; }, 2000);
-  if (draw.isDrawing() && !is3DMode) {
-    draw.onMove(e.clientX, e.clientY, transformed, view, canvas.clientWidth, canvas.clientHeight);
+  if (drawingsVisible && draw.isDrawing()) {
+    draw.onMove(p.x, p.y, transformed, view, canvas.clientWidth, canvas.clientHeight, is3DMode);
   }
   if (scaleYDragging) {
     const dy = e.clientY - lastMY;
@@ -923,6 +933,7 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
       case '+': setDrawTool(draw.getTool() === 'text' ? 'none' : 'text'); break;
       case '-': draw.undoDrawing(); break;
       case '*': draw.clearDrawings(); break;
+      case '/': setDrawTool(draw.getTool() === 'erase' ? 'none' : 'erase'); break;
       case '.': setDrawTool('none'); break;
     }
     return;
@@ -937,8 +948,8 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
 
   const typing = (e.target as HTMLElement)?.tagName === 'TEXTAREA' || (e.target as HTMLElement)?.tagName === 'INPUT';
   if (typing) return;
-  if (e.key === 'Escape') { setDrawTool('none'); }
-  if (e.key === 'Delete' || e.key === 'Backspace') { draw.undoDrawing(); }
+  if (e.key === 'Escape') { setDrawTool('none'); draw.clearSelection(); }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && drawingsVisible) draw.deleteSelected();
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     // The only way to change which bars are in view while chart 3D mode is
     // active (pane="3d" indicators like ChronoSphere) — its canvas claims
@@ -957,13 +968,8 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
 });
 
 function setDrawTool(t: DrawTool): void {
-  if (t !== 'none' && is3DMode) {
-    is3DMode = false;
-    visualAdapter.logAction('mode', 'Switched to 2D mode for drawing');
-    updateUI();
-  }
   draw.setTool(t);
-  canvas.style.cursor = t === 'none' ? 'grab' : 'crosshair';
+  canvas.style.cursor = t === 'none' ? 'grab' : t === 'erase' ? 'cell' : 'crosshair';
   document.querySelectorAll('.draw-btn').forEach((btn) => {
     btn.classList.toggle('active', (btn as HTMLElement).dataset.tool === t);
   });
@@ -975,6 +981,8 @@ function setDrawTool(t: DrawTool): void {
 const loadLiveData = async function(symbol?: string, tf?: string): Promise<void> {
   const sym = (symbol || currentSymbol).toUpperCase().trim();
   const tfv = tf || timeframe;
+  // Drawings are anchored to one symbol's bars; a new symbol starts clean.
+  if (sym !== currentSymbol) draw.clearDrawings();
   currentSymbol = sym;
   // Reset regime hysteresis — a stale label from the PREVIOUS symbol must
   // never linger under the dwell timer onto a newly-switched symbol/timeframe.
@@ -1619,7 +1627,6 @@ function updateUI() {
   }
   const tb = document.getElementById('mode-toggle');
   if (tb) { tb.textContent = is3DMode ? '3D' : '2D'; tb.classList.toggle('active', is3DMode); }
-  if (is3DMode && draw.isDrawing()) setDrawTool('none');
   const bt = document.getElementById('bar-type-select') as HTMLSelectElement;
   if (bt) {
     bt.value = barType;
@@ -4528,7 +4535,9 @@ function frameBody(now: number) {
     hide3D();
   }
 
-  if (!is3DMode && !hasPane3d) draw.drawAll(ctx, transformed, view);
+  // Drawings sit on the main chart canvas, so they hide while a 3D pane owns it.
+  drawingsVisible = !hasPane3d && !main3DActive;
+  if (drawingsVisible) draw.drawAll(ctx, transformed, view, is3DMode);
 
   if (!hideTradeMarkers) drawTradeMarkers(ctx, transformed, view, tradeMarkersBySymbol.get(currentSymbol) || [], is3DMode);
 

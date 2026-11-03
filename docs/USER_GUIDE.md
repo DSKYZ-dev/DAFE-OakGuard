@@ -136,21 +136,23 @@ When live data is loaded, the backend fetches the appropriate historical period 
 
 ## Drawing Tools
 
-Access drawing tools from the vertical toolbar on the left side of the chart:
+Pick a tool from the drawing rail on the left edge of the chart, or use its numpad key (see [Hotkeys](#hotkeys)). Drawing works in 2D and in 3D (isometric) mode, and picking a tool does not change the view.
 
-| Tool | Description |
-|------|-------------|
-| **Horizontal Line** | Draw a price level |
-| **Ray / Trend Line** | Draw directional lines |
-| **Rectangle** | Mark a price/time zone |
-| **Fibonacci Retracement** | Auto-plot fib levels from high to low |
-| **Channel** | Parallel channel lines |
-| **Text** | Add a text annotation |
+| Tool | Numpad | What it does |
+|------|--------|--------------|
+| **Cursor** | Numpad . or Esc | Select a drawing; Delete removes it |
+| **Horizontal Line** | 5 | Draw a price level across the chart |
+| **Trend Line** | 4 | Two clicks: a straight line between them |
+| **Ray** | 6 | A trend line that extends to the right edge |
+| **Rectangle** | 7 | Two clicks: a price and time zone |
+| **Fibonacci Retracement** | 8 | Fib levels between the two clicks |
+| **Channel** | 9 | Two clicks: a line with a parallel line |
+| **Text** | + | Click to place a text label |
+| **Eraser** | / | Click a drawing to delete it |
 
-- Click a tool to activate it, then click/drag on the chart
-- Use the **Clear** button to remove all drawings
-- Use **Undo** to remove the last drawing
-- Use **Deselect** to deactivate the current tool
+- Select a drawing with the cursor, then press **Delete** or click its **×** handle to remove it
+- The trash button (Numpad *) removes every drawing; **Undo** (Numpad -) removes the last one
+- Drawings stay on their bars and prices as new bars arrive, and are cleared when you change symbol
 
 ---
 
@@ -413,26 +415,30 @@ Customize keyboard shortcuts for tools and modes. See the [Hotkeys](#hotkeys) se
 
 ## Hotkeys
 
-Default hotkey assignments (requires numpad):
+Numpad keys need NumLock on.
 
 | Key | Action |
 |-----|--------|
 | Numpad 0 | Toggle 3D mode |
-| Numpad 1 | Toggle volume profile |
-| Numpad 2 | Toggle timeframe |
-| Numpad 3 | Toggle OakScript |
-| Numpad 4 | Toggle trend |
+| Numpad 1 | Toggle volume profile settings |
+| Numpad 2 | Toggle the OakScript editor |
+| Numpad 3 | Frame all (reset the view) |
+| Numpad 4 | Trend line tool |
 | Numpad 5 | Horizontal line tool |
-| Numpad 6 | Ray / trend line tool |
+| Numpad 6 | Ray tool |
 | Numpad 7 | Rectangle tool |
 | Numpad 8 | Fibonacci tool |
 | Numpad 9 | Channel tool |
-| Numpad + | Text annotation |
+| Numpad + | Text tool |
+| Numpad / | Eraser tool |
 | Numpad - | Undo last drawing |
 | Numpad * | Clear all drawings |
-| Numpad . | Deselect tool |
+| Numpad . | Cursor (deselect the tool) |
+| Delete | Delete the selected drawing |
+| Esc | Cursor, and clear the selection |
+| ← / → | Pan the chart |
 
-All hotkeys can be customized in Settings.
+These keys are fixed. The hotkey fields in Settings are not read.
 
 ---
 
