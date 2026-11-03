@@ -1068,6 +1068,11 @@ window.addEventListener('keydown', (e: KeyboardEvent) => {
 });
 
 function setDrawTool(t: DrawTool): void {
+  if (t !== 'none' && is3DMode) {
+    is3DMode = false;
+    visualAdapter.logAction('mode', 'Switched to 2D mode for drawing');
+    updateUI();
+  }
   draw.setTool(t);
   canvas.style.cursor = t === 'none' ? 'grab' : 'crosshair';
   document.querySelectorAll('.draw-btn').forEach((btn) => {
@@ -1726,6 +1731,7 @@ function updateUI() {
   }
   const tb = document.getElementById('mode-toggle');
   if (tb) { tb.textContent = is3DMode ? '3D' : '2D'; tb.classList.toggle('active', is3DMode); }
+  if (is3DMode && draw.isDrawing()) setDrawTool('none');
   const bt = document.getElementById('bar-type-select') as HTMLSelectElement;
   if (bt) {
     bt.value = barType;
