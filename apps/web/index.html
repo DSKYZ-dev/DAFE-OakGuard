@@ -13,6 +13,7 @@
     (function () {
       var b = new URLSearchParams(location.search).get('backend');
       if (b === 'none') {
+        window.__DAFE_JUDGE_MODE = true;
         window.__DAFE_BACKEND_URL = 'http://127.0.0.1:9';
         var realFetch = window.fetch.bind(window);
         var localBackend = /^https?:\/\/(127\.0\.0\.1|localhost):(9|8788)(\/|$)/;
@@ -150,6 +151,7 @@
     #symbol-dropdown { bottom: 100%; margin-bottom: 2px; }
     #symbol-dropdown .sym-item:hover { background: rgba(0,204,255,0.08) !important; }
     #load-data-btn:hover { background: rgba(0,204,255,0.2); }
+    #data-status.judge { color: rgba(127,214,255,0.8); }
     #data-status {
       font-size: 10px; color: rgba(255,255,255,0.3);
       margin-left: 4px; max-width: 120px; overflow: hidden;
@@ -302,6 +304,13 @@
       align-self: center; background: transparent;
       border: none; color: rgba(255,255,255,0.2);
       font-size: 11px; text-align: center; padding: 4px;
+    }
+    .advisor-msg.demo {
+      align-self: center;
+      background: rgba(127,214,255,0.05);
+      border: 1px solid rgba(127,214,255,0.16);
+      color: rgba(127,214,255,0.8); font-size: 11px;
+      text-align: center;
     }
 
     .msg-copy-btn {

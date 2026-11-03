@@ -61,6 +61,7 @@ import { createDashboard } from './dashboard-widget';
 import { minimizeWindow, restoreWindow, forgetWindow, isMinimized } from './window-dock';
 import { WINDOW_TOP_MIN, WINDOW_GAP, HEADER_BAR_HEIGHT, TRADING_LEFT, LEFT_COLUMN_LEFT, LEFT_COLUMN_WIDTH, SECOND_COLUMN_LEFT, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
+import { isJudgeMode, JUDGE_AI_MESSAGE } from './judge-mode';
 import { registerWidget, initWidgetMenu } from './widget-registry';
 import { PaperBroker, describeCommission, describeSlippage, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE } from './trading/paper-broker';
 import type { CommissionConfig, SlippageMode, CommissionMode } from './trading/paper-broker';
@@ -1193,6 +1194,17 @@ function appendAdvisorMessage(role: string, content: string, agentLabel?: string
   return div;
 }
 
+function ensureJudgeModeNote(): void {
+  if (!isJudgeMode()) return;
+  const container = document.getElementById('advisorMessages');
+  if (!container || container.querySelector('.advisor-msg.demo')) return;
+  const note = document.createElement('div');
+  note.className = 'advisor-msg demo';
+  note.textContent = JUDGE_AI_MESSAGE;
+  container.appendChild(note);
+  container.scrollTop = container.scrollHeight;
+}
+
 function showAdvisorTyping(): HTMLDivElement {
   const container = document.getElementById('advisorMessages');
   if (!container) { const d = document.createElement('div'); return d; }
@@ -1273,7 +1285,8 @@ async function sendAdvisorMessage(text?: string): Promise<void> {
     }
   } catch (err: any) {
     removeAdvisorTyping();
-    appendAdvisorMessage('error', 'Connection error. Is the backend running on port 8788?');
+    if (isJudgeMode()) ensureJudgeModeNote();
+    else appendAdvisorMessage('error', 'Connection error. Is the backend running on port 8788?');
   } finally {
     advisorStreaming = false;
     document.getElementById('advisorSend')?.removeAttribute('disabled');
@@ -1328,7 +1341,8 @@ async function analyzeChart(): Promise<void> {
     }
   } catch (err: any) {
     removeAdvisorTyping();
-    appendAdvisorMessage('error', 'Analysis failed - is backend running?');
+    if (isJudgeMode()) ensureJudgeModeNote();
+    else appendAdvisorMessage('error', 'Analysis failed - is backend running?');
   } finally {
     advisorStreaming = false;
   }
@@ -1777,7 +1791,10 @@ async function startupChecks(): Promise<void> {
     }
   } catch {
     const statusEl = document.getElementById('data-status');
-    if (statusEl) { statusEl.textContent = 'Backend offline'; statusEl.className = 'error'; }
+    if (statusEl) {
+      statusEl.textContent = isJudgeMode() ? 'Judge demo · live AI off' : 'Backend offline';
+      statusEl.className = isJudgeMode() ? 'judge' : 'error';
+    }
   }
 }
 
@@ -3882,6 +3899,7 @@ CRITICAL RULES:
   }, 300000);
 
   // ─── Trade Advisor Controls ─────────────────────────────────────
+  ensureJudgeModeNote();
   const fab = document.getElementById('advisor-fab');
   const panel = document.getElementById('advisor-panel');
   fab?.addEventListener('click', () => {
@@ -3964,6 +3982,7 @@ CRITICAL RULES:
         : "Hi, I'm your Trade Advisor and assistant, how can I help you today?";
       container.innerHTML = `<div class="advisor-msg system">${escapeHtml(greeting)}</div>`;
     }
+    ensureJudgeModeNote();
   }
   document.getElementById('advisorClear')?.addEventListener('click', () => resetAdvisorChat());
   (window as any).__resetAdvisorChat = resetAdvisorChat;

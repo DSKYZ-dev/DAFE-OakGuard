@@ -8,6 +8,7 @@ import {
   repairScriptWithGates,
   type PipelineChat,
 } from './generation-pipeline';
+import { isJudgeMode, JUDGE_AI_MESSAGE } from '../judge-mode';
 
 // ─── Lean system prompts (fit in 4096 token context) ────────────────
 
@@ -260,8 +261,9 @@ export class TradeAdvisorAgent {
         return { ok: false, reply: errorMsg, agent: this.config.agentId, model: this.config.model, ts: Date.now() };
       }
     } catch (err: any) {
-      const errorMsg = `Connection error: ${err.message}`;
-      this.emit({ role: 'assistant', content: `Error: ${errorMsg}` });
+      const judge = isJudgeMode();
+      const errorMsg = judge ? JUDGE_AI_MESSAGE : `Connection error: ${err.message}`;
+      this.emit({ role: 'assistant', content: judge ? errorMsg : `Error: ${errorMsg}` });
       return { ok: false, reply: errorMsg, agent: this.config.agentId, model: this.config.model, ts: Date.now() };
     }
   }

@@ -82,6 +82,10 @@ Keys stay on your machine: the backend holds them encrypted and proxies every ca
 re-grades it with the referee in your browser.
 `https://dskyz-dev.github.io/DAFE-OakGuard/?oakguard=1&backend=none`
 
+The hosted build has no backend, so live AI (Trade Advisor and editor generation) is
+off there; the OakGuard replay, charts and drawing tools all run in the browser. Run
+the local setup below for live AI.
+
 **Headless, no API key (about a minute):**
 
 ```bash

@@ -6,6 +6,7 @@
 import type { TradeAdvisorAgent } from './agent';
 import type { ChartSnapshot } from './visual-adapter';
 import type { IndicatorInstance } from '../indicator-manager';
+import { isJudgeMode, JUDGE_AI_MESSAGE } from '../judge-mode';
 
 export interface AgentEditRequest {
   id: string;
@@ -507,7 +508,7 @@ export async function agentGenerateIndicator(
       onUpdate?.(resp.reply);
     }
   } else {
-    onUpdate?.(`Error: ${resp.reply}`);
+    onUpdate?.(isJudgeMode() ? JUDGE_AI_MESSAGE : `Error: ${resp.reply}`);
   }
 }
 
@@ -561,7 +562,7 @@ export async function agentGenerateIndicatorPhased(
       onUpdate?.('Error: Agent did not produce code');
     }
   } catch (err: any) {
-    onUpdate?.(`Error: ${err.message}`);
+    onUpdate?.(isJudgeMode() ? JUDGE_AI_MESSAGE : `Error: ${err.message}`);
   }
 }
 
@@ -659,7 +660,7 @@ export async function agentEditIndicator(
       onUpdate?.(resp.reply);
     }
   } else {
-    onUpdate?.(`Error: ${resp.reply}`);
+    onUpdate?.(isJudgeMode() ? JUDGE_AI_MESSAGE : `Error: ${resp.reply}`);
   }
 }
 
@@ -683,7 +684,7 @@ export async function agentBrainstormIndicator(
   if (resp.ok) {
     onUpdate?.(resp.reply);
   } else {
-    onUpdate?.(`Error: ${resp.reply}`);
+    onUpdate?.(isJudgeMode() ? JUDGE_AI_MESSAGE : `Error: ${resp.reply}`);
   }
 }
 
@@ -727,7 +728,7 @@ export async function agentDiagnoseErrors(
       onUpdate?.(resp.reply);
     }
   } else {
-    onUpdate?.(`Error: ${resp.reply}`);
+    onUpdate?.(isJudgeMode() ? JUDGE_AI_MESSAGE : `Error: ${resp.reply}`);
   }
 }
 
