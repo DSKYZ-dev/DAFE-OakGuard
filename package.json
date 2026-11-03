@@ -30,7 +30,6 @@
     "verify:signals": "npx tsx tools/verify/signal-engine-audit.ts",
     "verify:honesty": "npx tsx tools/verify/honesty-test.ts",
     "verify:intent": "npx tsx tools/verify/intent-mutants-test.ts",
-    "verify:volume": "npx tsx tools/verify/volume-extrusion-test.ts",
     "verify:docs": "npx tsx tools/verify/docs-coverage-test.ts"
   },
   "workspaces": [

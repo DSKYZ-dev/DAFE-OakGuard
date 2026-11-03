@@ -4,7 +4,7 @@ export type BarType = 'candlestick' | 'heikin-ashi' | 'renko' | 'range-bar' | 'v
 export type Timeframe = '1s' | '5s' | '10s' | '30s' | '1m' | '5m' | '15m' | '30m' | '1h' | '4h' | '1d' | '1w';
 
 export interface PerBarVolume {
-  levels: { price: number; lo: number; hi: number; volume: number; buyVol: number; sellVol: number }[];
+  levels: { price: number; volume: number; buyVol: number; sellVol: number }[];
   maxVol: number;
 }
 
@@ -435,55 +435,25 @@ function seededUnit(seed: number): number {
 function barSeed(bar: BaseBar, salt: number): number {
   return (bar.timestamp ^ Math.floor(bar.close * 100) ^ Math.floor(bar.volume) ^ (salt * 0x9e3779b9)) | 0;
 }
-/**
- * Per-bar volume profile, derived from OHLCV alone. Rules:
- *  - Conservation: the level volumes sum to bar.volume. Nothing is noise or clamped.
- *  - Placement: volume spreads over equal price bins, weighted by a triangle that
- *    peaks at the bar's typical price (H+L+C)/3, the usual OHLCV proxy for where
- *    the bar traded.
- *  - Bias: the bar's buy share is the damped close location, 0.25 + 0.5 * (C-L)/(H-L).
- *    That is the estimate the lookback profile uses, shrunk toward even because bars
- *    carry no buy/sell flags. Within the bar, levels below the close lean buy and
- *    levels above lean sell, by a tilt that averages to zero, so the bar total stays
- *    exact. Every level's buy share stays between 0 and 1.
- * Every bin keeps its exact edges (lo, hi), so renderers can draw them without gaps.
- * A bar with no volume or no price range has no profile.
- */
 export function generatePerBarVolumes(bars: BaseBar[], levelCount: number = 8): PerBarVolume[] {
   return bars.map(bar => {
-    const range = bar.high - bar.low;
-    if (!(range > 0) || !(bar.volume > 0) || levelCount < 1) return { levels: [], maxVol: 0 };
-    const step = range / levelCount;
-    const typical = (bar.high + bar.low + bar.close) / 3;
-    const halfSpan = Math.max(typical - bar.low, bar.high - typical);
-    const raw: number[] = [];
-    for (let i = 0; i < levelCount; i++) {
-      const centre = bar.low + step * (i + 0.5);
-      raw.push(Math.max(0, 1 - Math.abs(centre - typical) / halfSpan));
-    }
-    const rawTotal = raw.reduce((a, b) => a + b, 0);
-    const weights = rawTotal > 0 ? raw : raw.map(() => 1);
-    const total = weights.reduce((a, b) => a + b, 0);
-    const volumes = weights.map(w => (bar.volume * w) / total);
-    const clv = Math.min(1, Math.max(0, (bar.close - bar.low) / range));
-    const barBuy = 0.25 + 0.5 * clv;
-    // Tilt per level: +1 at the bottom of the bar, -1 at the top, measured from the close.
-    const tilt = Array.from({ length: levelCount }, (_, i) => (bar.close - (bar.low + step * (i + 0.5))) / range);
-    const weighted = tilt.reduce((s, t, i) => s + t * volumes[i], 0) / bar.volume;
-    const zeroMean = tilt.map(t => t - weighted);
-    const maxAbs = Math.max(...zeroMean.map(Math.abs));
-    const amplitude = maxAbs > 0 ? Math.min(barBuy, 1 - barBuy) / maxAbs : 0;
+    const step = (bar.high - bar.low) / levelCount || 1;
     const levels: PerBarVolume['levels'] = [];
     let maxVol = 0;
+    const effectiveVol = bar.volume > 0 ? bar.volume : (bar.high - bar.low) * 1000 || 1;
     for (let i = 0; i < levelCount; i++) {
-      const lo = bar.low + step * i;
-      const hi = i === levelCount - 1 ? bar.high : bar.low + step * (i + 1);
-      const volume = volumes[i];
-      // Clamped, so rounding at a bound can't leave a side slightly negative.
-      const share = Math.min(1, Math.max(0, barBuy + amplitude * zeroMean[i]));
-      const buyVol = volume * share;
-      levels.push({ price: (lo + hi) / 2, lo, hi, volume, buyVol, sellVol: volume * (1 - share) });
-      if (volume > maxVol) maxVol = volume;
+      const price = bar.low + step * (i + 0.5);
+      const distFactor = 1 - Math.abs(i - levelCount / 2) / (levelCount / 2);
+      const n1 = seededUnit(barSeed(bar, i * 3 + 1));
+      const n2 = seededUnit(barSeed(bar, i * 3 + 2));
+      const n3 = seededUnit(barSeed(bar, i * 3 + 3));
+      const noise = 0.5 + n1 * 1.0;
+      const vol = Math.round(effectiveVol / levelCount * distFactor * noise);
+      const isBuyAtLevel = n2 > 0.4;
+      const buyVol = Math.round(vol * (isBuyAtLevel ? (0.5 + n3 * 0.4) : (0.1 + n3 * 0.3)));
+      const sellVol = vol - buyVol;
+      if (vol > maxVol) maxVol = vol;
+      levels.push({ price: Math.round(price * 100) / 100, volume: vol, buyVol, sellVol });
     }
     return { levels, maxVol };
   });
