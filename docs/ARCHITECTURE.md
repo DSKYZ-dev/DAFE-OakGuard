@@ -135,7 +135,9 @@ user turn ─► visual-adapter.ts (bars, indicators, VP, regime, symbol)
 
 `POST /api/llm/providers/{id}/test` lists the provider's models *and* performs a
 real one-shot completion, so "connected" means the key can actually answer —
-not merely that a URL resolved.
+not merely that a URL resolved. The pass/fail verdict is stored with the key
+and returned by `GET /api/llm/providers`; a rejected key is labelled with the
+provider's error instead of being shown as connected.
 
 ## 6. Data pipeline
 

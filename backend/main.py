@@ -158,7 +158,7 @@ LLM_PROVIDERS: dict[str, dict[str, Any]] = {
     "meta": {
         "label": "Meta Model API (Muse Spark / Wonder)", "base_url": "https://api.meta.ai/v1", "auth": "bearer",
         "default_model": "muse-spark-1.3",
-        "note": "Meta's own models via the Meta Model API — OpenAI-compatible. Get a key at dev.meta.ai (MODEL_API_KEY).",
+        "note": "Meta's own models via the Meta Model API — OpenAI-compatible. Get a key at dev.meta.ai.",
         "doc": "dev.meta.ai",
     },
     "ollama": {
@@ -241,6 +241,27 @@ def _provider_record(pid: str, s: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
+def _rejected_key_detail(label: str, status_code: int) -> str:
+    return (f"{label} rejected the saved API key (HTTP {status_code}). "
+            "Paste a valid key under Settings → Provider API Keys, then press Test.")
+
+
+def _store_verification(pid: str, ok: bool, error: str) -> None:
+    """Remember whether the saved key passed its last check, so the UI never calls an unverified key connected."""
+    if not pid:
+        return
+    s = load_settings()
+    keys = dict(s.get("llm_provider_keys") or {})
+    entry = dict(keys.get(pid) or {})
+    if not entry.get("api_key"):
+        return
+    entry["verified"] = bool(ok)
+    entry["last_error"] = "" if ok else (error or "")[:300]
+    keys[pid] = entry
+    s["llm_provider_keys"] = keys
+    save_settings(s)
+
+
 async def _fetch_provider_models(pid: str, s: dict[str, Any], force: bool = False) -> dict[str, Any]:
     rec = _provider_record(pid, s)
     base = (rec.get("base_url") or "").rstrip("/")
@@ -269,6 +290,8 @@ async def _fetch_provider_models(pid: str, s: dict[str, Any], force: bool = Fals
                 detail = str(payload.get("error") or payload.get("message") or payload)[:200]
             except Exception:
                 detail = (resp.text or "")[:200]
+            if resp.status_code in (401, 403):
+                return {"ok": False, "error": _rejected_key_detail(rec.get("label") or pid, resp.status_code), "models": []}
             return {"ok": False, "error": f"HTTP {resp.status_code}" + (f" — {detail}" if detail else ""), "models": []}
         data = resp.json()
         if pid == "ollama":
@@ -387,6 +410,10 @@ async def _hosted_chat(
         async with httpx.AsyncClient(timeout=600.0) as client:
             resp = await _post_with_retry(client)
             if resp.status_code != 200:
+                if resp.status_code in (401, 403):
+                    detail = _rejected_key_detail(label, resp.status_code)
+                    _store_verification(rec.get("id") or "", False, detail)
+                    return {"ok": False, "detail": detail}
                 return {"ok": False, "detail": f"{label} returned {resp.status_code}: {(resp.text or '')[:300]}"}
             data = resp.json()
             reply = _extract(data)
@@ -1555,10 +1582,16 @@ def api_llm_providers():
         if pid == "ollama":
             continue  # configured by the Ollama URL, not a key
         rec = _provider_record(pid, s)
+        stored = (s.get("llm_provider_keys") or {}).get(pid) or {}
+        configured = bool(rec.get("api_key"))
+        verified = stored.get("verified")
         out.append({
             "id": pid, "label": rec.get("label", pid),
             "base_url": rec.get("base_url", ""),
-            "configured": bool(rec.get("api_key")),
+            "configured": configured,
+            "status": ("none" if not configured else "verified" if verified is True
+                       else "rejected" if verified is False else "untested"),
+            "last_error": stored.get("last_error", "") or "",
             "masked_key": mask_key(rec.get("api_key", "")),
             "note": rec.get("note", ""), "doc": rec.get("doc", ""),
             "default_model": rec.get("default_model", ""),
@@ -1574,6 +1607,7 @@ def api_llm_provider_save(pid: str, body: dict[str, Any]):
     s = load_settings()
     keys = dict(s.get("llm_provider_keys") or {})
     entry = dict(keys.get(pid) or {})
+    before = (entry.get("api_key"), entry.get("base_url"), entry.get("model"))
     api_key = str(body.get("api_key") or "").strip()
     # A masked value means "leave the stored key alone" — the same rule the
     # rest of the panel uses, so re-saving a visible mask cannot wipe a key.
@@ -1586,6 +1620,9 @@ def api_llm_provider_save(pid: str, body: dict[str, Any]):
         entry["base_url"] = new_base
     if "model" in body:
         entry["model"] = str(body.get("model") or "").strip()
+    if (entry.get("api_key"), entry.get("base_url"), entry.get("model")) != before:
+        entry.pop("verified", None)
+        entry.pop("last_error", None)
     keys[pid] = entry
     s["llm_provider_keys"] = keys
     save_settings(s)
@@ -1714,6 +1751,10 @@ async def api_meta_structured(body: dict[str, Any]):
     latency_ms = int((time.time() - started) * 1000)
     if resp is None or resp.status_code != 200:
         code = resp.status_code if resp is not None else 0
+        if code in (401, 403):
+            detail = _rejected_key_detail("Meta Model API", code)
+            _store_verification("meta", False, detail)
+            return {"ok": False, "detail": detail}
         return {"ok": False, "detail": f"Meta Model API returned {code}: {(resp.text if resp is not None else '')[:300]}"}
     data = resp.json()
     choice = (data.get("choices") or [{}])[0]
@@ -1801,7 +1842,9 @@ async def api_llm_provider_test(pid: str):
         return {"ok": False, "error": "No API key saved for this provider.", "models": 0}
     r = await _fetch_provider_models(pid, s, force=True)
     if not r.get("ok"):
-        return {"ok": False, "error": r.get("error", "Model list failed"), "models": 0}
+        error = r.get("error", "Model list failed")
+        _store_verification(pid, False, error)
+        return {"ok": False, "error": error, "models": 0}
     models = r.get("models", [])
     model = rec.get("model") or rec.get("default_model") or (models[0] if models else "")
     probe = await _hosted_chat(
@@ -1820,8 +1863,10 @@ async def api_llm_provider_test(pid: str):
         )
         if alt.get("ok"):
             probe, model = alt, models[0]
+    ok = bool(probe.get("ok"))
+    _store_verification(pid, ok, "" if ok else (probe.get("detail") or ""))
     return {
-        "ok": bool(probe.get("ok")), "models": len(models), "model": model,
+        "ok": ok, "models": len(models), "model": model,
         "error": probe.get("detail") or "", "reply": (probe.get("reply") or "")[:80],
     }
 

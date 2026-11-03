@@ -386,13 +386,19 @@ just want a larger model).
 
 | Setting | Description |
 |---------|-------------|
-| **Provider** | OpenCode, OpenRouter, OpenAI, Anthropic, OrcaRouter, NVIDIA NIM, or a custom OpenAI-compatible endpoint. |
+| **Provider** | Meta Model API, OpenCode, OpenRouter, OpenAI, Anthropic, OrcaRouter, NVIDIA NIM, or a custom OpenAI-compatible endpoint. |
 | **API Key** | Paste the key and press **Save**. It is encrypted at rest on the backend and shown back only as a mask (for example `nvap****…I8-X`); the browser never receives the real value. |
-| **Test** | Fetches the provider's model list *and* runs a real one-shot completion, so a green status means the key can actually answer — not merely that the URL resolved. |
+| **Test** | Fetches the provider's model list *and* runs a real one-shot completion. **Connected** means that test passed; a saved key that was never tested reads **key saved, not tested**, and a rejected key shows the provider's error. |
 | **Clear** | Removes the stored key from the backend. |
 
 Assign the Trade Advisor and the OakScript Coder to a hosted provider under
 **LLM Configuration** above; each role can use a different provider and model.
+
+The **Meta Model API** slot is separate from **Custom endpoint**, even when the
+custom URL is `https://api.meta.ai/v1`. If you use Meta's own models, save the
+key under **Meta Model API** so the Trade Advisor and OakScript Coder can find
+it; a key saved only under Custom endpoint verifies there but leaves the Meta
+slot empty or rejected.
 
 ### Data
 

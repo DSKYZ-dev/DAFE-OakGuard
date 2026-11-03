@@ -291,7 +291,7 @@ function fillHostedModelSelect(ddId: string, models: string[], selected?: string
   if (opts.length === 0) {
     const o = document.createElement('option');
     o.value = '';
-    o.textContent = 'No models — save the key, then hit Test';
+    o.textContent = 'No models — check the key in Settings → Provider API Keys, then press Test';
     dd.appendChild(o);
     return;
   }
@@ -3297,6 +3297,7 @@ CRITICAL RULES:
   type ProviderInfo = {
     id: string; label: string; base_url: string; configured: boolean;
     masked_key: string; note: string; doc: string; default_model: string; model: string;
+    status: 'none' | 'untested' | 'verified' | 'rejected'; last_error: string;
   };
   let providerCatalog: ProviderInfo[] = [];
 
@@ -3316,13 +3317,23 @@ CRITICAL RULES:
     return masked.slice(0, 8) + '…' + masked.slice(-4);
   }
 
+  // "connected" means the last Test passed. A saved key that was never tested,
+  // or that the provider rejected, must not read as connected.
+  function providerStatusSuffix(p: ProviderInfo): string {
+    if (p.status === 'verified') return ' · connected';
+    if (p.status === 'rejected') return ' · rejected';
+    if (p.status === 'untested') return ' · key saved, not tested';
+    return '';
+  }
+
   function renderProviderCard(): void {
     const id = pk<HTMLSelectElement>('pk-provider')?.value || '';
     const p = providerCatalog.find(x => x.id === id);
     if (!p) return;
     const label = pk('pk-label'); if (label) label.textContent = p.label;
-    const dot = pk('pk-dot'); if (dot) dot.className = 'pk-dot' + (p.configured ? ' on' : '');
-    const card = pk('pk-card'); if (card) card.className = 'pk-card' + (p.configured ? ' connected' : '');
+    const verified = p.status === 'verified';
+    const dot = pk('pk-dot'); if (dot) dot.className = 'pk-dot' + (verified ? ' on' : '');
+    const card = pk('pk-card'); if (card) card.className = 'pk-card' + (verified ? ' connected' : '');
     const masked = pk('pk-masked');
     if (masked) {
       masked.textContent = p.configured ? compactMask(p.masked_key) : 'no key';
@@ -3332,8 +3343,13 @@ CRITICAL RULES:
     if (key) { key.value = ''; key.placeholder = p.configured ? 'Paste a new key to replace' : 'Paste API key'; }
     const url = pk<HTMLInputElement>('pk-url'); if (url) url.value = p.base_url || '';
     const note = pk('pk-note');
-    if (note) note.textContent = [p.note, p.doc].filter(Boolean).join(' · ');
-    pkStatus('');
+    const metaHint = p.id === 'custom' && /api\.meta\.ai/i.test(p.base_url || '')
+      ? "This is Meta's endpoint. The advisor and editor use the Meta Model API slot, so paste the key there too." : '';
+    if (note) note.textContent = [p.note, p.doc, metaHint].filter(Boolean).join(' · ');
+    if (p.status === 'rejected') pkStatus('Rejected by the provider: ' + (p.last_error || 'invalid key').slice(0, 160), 'err');
+    else if (p.status === 'untested') pkStatus('Key saved but not tested yet. Press Test before you rely on it.');
+    else if (p.status === 'verified') pkStatus('Connected. The last test passed.', 'ok');
+    else pkStatus('');
   }
 
   async function loadProviderKeys(preselect?: string): Promise<void> {
@@ -3350,7 +3366,7 @@ CRITICAL RULES:
       for (const p of providerCatalog) {
         const o = document.createElement('option');
         o.value = p.id;
-        o.textContent = p.label + (p.configured ? ' · connected' : '');
+        o.textContent = p.label + providerStatusSuffix(p);
         dd.appendChild(o);
       }
       if (prev && providerCatalog.some(p => p.id === prev)) dd.value = prev;
@@ -3401,6 +3417,7 @@ CRITICAL RULES:
     try {
       const r = await fetch(`${BACKEND_URL}/api/llm/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
       const d = await r.json();
+      await loadProviderKeys(id);
       if (d.ok) {
         pkStatus(`Connected · ${d.models} models · chat verified`, 'ok');
         await refreshHostedModelsFor(id);
