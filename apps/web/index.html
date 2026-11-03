@@ -6,12 +6,22 @@
   <title>DAFE Charts — Interactive Demo</title>
   <script>
     // ?backend=none runs the app with no backend (judge mode: synthetic data,
-    // OakGuard replays its recorded Muse Wonder run). ?backend=<url> points at
-    // another backend. Default: the local backend on port 8788.
+    // OakGuard replays its recorded Muse Wonder run). In that mode requests to
+    // the local backend fail at once, without a network call, so the console
+    // stays clean. ?backend=<url> points at another backend. Default: the local
+    // backend on port 8788.
     (function () {
       var b = new URLSearchParams(location.search).get('backend');
-      if (b === 'none') window.__DAFE_BACKEND_URL = 'http://127.0.0.1:9';
-      else if (b && /^https?:\/\//.test(b)) window.__DAFE_BACKEND_URL = b.replace(/\/$/, '');
+      if (b === 'none') {
+        window.__DAFE_BACKEND_URL = 'http://127.0.0.1:9';
+        var realFetch = window.fetch.bind(window);
+        var localBackend = /^https?:\/\/(127\.0\.0\.1|localhost):(9|8788)(\/|$)/;
+        window.fetch = function (input, init) {
+          var url = typeof input === 'string' ? input : (input && input.url) || '';
+          if (localBackend.test(url)) return Promise.reject(new TypeError('No backend in judge mode'));
+          return realFetch(input, init);
+        };
+      } else if (b && /^https?:\/\//.test(b)) window.__DAFE_BACKEND_URL = b.replace(/\/$/, '');
     })();
   </script>
   <style>
@@ -1172,22 +1182,22 @@
         </label>
         <div style="color:rgba(255,255,255,0.3);font-size:9px;line-height:1.4;">Applies to the 3D main chart and the 3D lower deck together. Exposure lifts the whole scene; bar brightness targets the candles; background brightness changes the deep-space base.</div>
       <div class="settings-section">
-        <div class="settings-section-title">Hotkeys (Numpad)</div>
+        <div class="settings-section-title">Hotkeys (Numpad, fixed)</div>
         <div class="hotkey-grid">
-          <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input"></label>
-          <label>Volume Profile <input type="text" id="hk-vp" value="Numpad1" class="hotkey-input"></label>
-          <label>Model Editor <input type="text" id="hk-oak" value="Numpad2" class="hotkey-input"></label>
-          <label>Frame All <input type="text" id="hk-frame" value="Numpad3" class="hotkey-input"></label>
-          <label>Trend Line <input type="text" id="hk-trend" value="Numpad4" class="hotkey-input"></label>
-          <label>Horizontal <input type="text" id="hk-hline" value="Numpad5" class="hotkey-input"></label>
-          <label>Ray <input type="text" id="hk-ray" value="Numpad6" class="hotkey-input"></label>
-          <label>Rectangle <input type="text" id="hk-rect" value="Numpad7" class="hotkey-input"></label>
-          <label>Fib Retrace <input type="text" id="hk-fib" value="Numpad8" class="hotkey-input"></label>
-          <label>Channel <input type="text" id="hk-channel" value="Numpad9" class="hotkey-input"></label>
-          <label>Text Label <input type="text" id="hk-text" value="NumpadAdd" class="hotkey-input"></label>
-          <label>Undo Drawing <input type="text" id="hk-undo" value="NumpadSubtract" class="hotkey-input"></label>
-          <label>Clear All <input type="text" id="hk-clear" value="NumpadMultiply" class="hotkey-input"></label>
-          <label>Deselect <input type="text" id="hk-deselect" value="NumpadDecimal" class="hotkey-input"></label>
+          <label>3D Mode <input type="text" id="hk-3d" value="Numpad0" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Volume Profile <input type="text" id="hk-vp" value="Numpad1" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Model Editor <input type="text" id="hk-oak" value="Numpad2" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Frame All <input type="text" id="hk-frame" value="Numpad3" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Trend Line <input type="text" id="hk-trend" value="Numpad4" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Horizontal <input type="text" id="hk-hline" value="Numpad5" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Ray <input type="text" id="hk-ray" value="Numpad6" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Rectangle <input type="text" id="hk-rect" value="Numpad7" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Fib Retrace <input type="text" id="hk-fib" value="Numpad8" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Channel <input type="text" id="hk-channel" value="Numpad9" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Text Label <input type="text" id="hk-text" value="NumpadAdd" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Undo Drawing <input type="text" id="hk-undo" value="NumpadSubtract" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Clear All <input type="text" id="hk-clear" value="NumpadMultiply" class="hotkey-input" disabled title="Fixed numpad key"></label>
+          <label>Deselect <input type="text" id="hk-deselect" value="NumpadDecimal" class="hotkey-input" disabled title="Fixed numpad key"></label>
     </div>
     </div>
   </div>

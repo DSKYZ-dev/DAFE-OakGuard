@@ -283,7 +283,7 @@ Additional display options in Settings → Display:
 
 ## Toolbar & Interface
 
-The bottom toolbar is fully customizable:
+The bottom toolbar can be collapsed and moved:
 - **Collapse**: Click **«** to shrink to `DAFE Menu »`, click to restore
 - **Drag**: Grab empty space in the bar to reposition anywhere
 - **News Widget**: Drag by its header bar to any screen position
@@ -409,7 +409,7 @@ Assign the Trade Advisor and the OakScript Coder to a hosted provider under
 
 ### Hotkeys
 
-Customize keyboard shortcuts for tools and modes. See the [Hotkeys](#hotkeys) section.
+The numpad shortcuts for tools and modes are fixed. See the [Hotkeys](#hotkeys) section.
 
 ---
 
@@ -438,7 +438,7 @@ Numpad keys need NumLock on.
 | Esc | Cursor, and clear the selection |
 | ← / → | Pan the chart |
 
-These keys are fixed. The hotkey fields in Settings are not read.
+These keys are fixed. The hotkey fields in Settings are display only.
 
 ---
 
@@ -464,7 +464,7 @@ Click the **🎤 Voice** button in the advisor panel. Grant microphone permissio
 
 ### Wake Word
 
-The wake word is **"Advisor"** (customizable). Say it clearly, then speak your question. The advisor will:
+The wake word is **"Advisor"**. Say it clearly, then speak your question. The advisor will:
 
 1. Transcribe your speech to text
 2. Send it to the AI

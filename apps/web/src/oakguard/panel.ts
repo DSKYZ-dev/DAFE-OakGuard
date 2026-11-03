@@ -166,7 +166,7 @@ function buildWindow(): void {
   const caption = node('div', 'position:absolute;left:12px;bottom:10px;font-size:10px;letter-spacing:0.08em;color:rgba(255,255,255,0.35);pointer-events:none;', 'DRAG TO ORBIT · SCROLL TO ZOOM');
   viewport.append(canvas, chips, caption);
 
-  side = node('div', 'width:430px;flex-shrink:0;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;');
+  side = node('div', 'width:min(430px,44%);min-width:240px;flex-shrink:0;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px;');
   bodyEl.append(viewport, side);
   win.append(header, bodyEl);
   document.body.appendChild(win);

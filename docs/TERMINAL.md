@@ -66,7 +66,7 @@ providers you pick.
 **Charting**
 - 12 bar types — candlestick, Heikin-Ashi, Renko, range, volume, tick, Kagi, footprint, line, area, dollar and imbalance bars — plus timeframes from 1m to 1w.
 - Volume profile with per-level iso-bar voxels, value area and delta, in 2D and as a 3D heat map.
-- Drawing toolkit (horizontal line, trend/ray, rectangle, Fibonacci, channel, text), 6 built-in themes, customisable hotkeys, and opt-in auto-refresh that reloads the newest bars from the selected data source.
+- Drawing toolkit (horizontal line, trend/ray, rectangle, Fibonacci, channel, text), 4 built-in themes, fixed numpad hotkeys, and opt-in auto-refresh that reloads the newest bars from the selected data source.
 - Performance modes (Low → Ultra) that scale shadows, gradients and particles to your GPU.
 
 **OakScript**
