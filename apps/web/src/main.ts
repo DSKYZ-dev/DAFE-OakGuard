@@ -88,7 +88,9 @@ import { mountVisualEditor, saveVisualSettings, refreshVisualEditorInputs } from
 import { getSignalStyle, setSignalStyle, type SignalMarkerStyle } from './signal-style';
 import { mountNumberSteppers } from './number-stepper';
 import './ui-chrome.css';
+import { installThemedTooltips } from './themed-tooltip';
 
+installThemedTooltips();
 
 // ─── URL-based hard reset ──────────────────────────────────────────
 if (window.location.search.includes('reset=1')) {
