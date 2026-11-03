@@ -19,7 +19,7 @@ git diff --stat pre-hackathon-baseline main              # every file that chang
 git diff --stat pre-hackathon-baseline main -- apps/web/src/oakguard   # OakGuard (entirely new)
 ```
 
-Totals against the baseline: 304 files changed, +35,808 / −8,168 lines, 164 new files. Some of the new files under `tools/verify/` are scripts that existed untracked before the event and were first committed on Oct 27 (listed under "Pre-existing" below); they are not claimed as new.
+Totals against the baseline are computed, not typed in, so they stay correct as the repository changes: `git diff --shortstat pre-hackathon-baseline main` gives files and lines, and `git diff --diff-filter=A --name-only pre-hackathon-baseline main | wc -l` counts new files. Without the tag, use `53e6a04` in place of `pre-hackathon-baseline`. Some of the new files under `tools/verify/` are scripts that existed untracked before the event and were first committed on Oct 27 (listed under "Pre-existing" below); they are not claimed as new.
 
 ## Built during the event (the demo shows only these)
 

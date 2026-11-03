@@ -105,7 +105,7 @@ npx tsx tools/verify/learning-curve.ts mine    # 32 fresh Muse Spark drafts, the
 
 The terminal underneath (charts, the OakScript language, the advisor UI) existed before the
 event. [HACKATHON_CONTRIBUTIONS.md](HACKATHON_CONTRIBUTIONS.md) lists what was built during it, and
-the baseline is tagged `pre-hackathon-baseline` (pushed to GitHub on 2026-09-03), so
+the baseline is tagged `pre-hackathon-baseline` in this repository, so
 `git diff --stat pre-hackathon-baseline main` shows every change.
 
 ## Limits
