@@ -436,29 +436,16 @@ function barSeed(bar: BaseBar, salt: number): number {
   return (bar.timestamp ^ Math.floor(bar.close * 100) ^ Math.floor(bar.volume) ^ (salt * 0x9e3779b9)) | 0;
 }
 /**
- * Buy share of the volume at one price level, from the bar's candle shape. No bar
- * feed carries buy/sell flags, so this is an estimate: levels inside the body take
- * the bar's direction (buy for an up bar, sell for a down bar, half for a doji);
- * upper-wick levels are sell-side (buyers were rejected there); lower-wick levels
- * are buy-side (sellers were absorbed there).
- */
-export function levelBuyShare(bar: BaseBar, mid: number): number {
-  const bodyLow = Math.min(bar.open, bar.close);
-  const bodyHigh = Math.max(bar.open, bar.close);
-  if (mid > bodyHigh) return 0;
-  if (mid < bodyLow) return 1;
-  if (bar.close > bar.open) return 1;
-  if (bar.close < bar.open) return 0;
-  return 0.5;
-}
-
-/**
  * Per-bar volume profile, derived from OHLCV alone. Rules:
  *  - Conservation: the level volumes sum to bar.volume. Nothing is noise or clamped.
  *  - Placement: volume spreads over equal price bins, weighted by a triangle that
  *    peaks at the bar's typical price (H+L+C)/3, the usual OHLCV proxy for where
  *    the bar traded.
- *  - Bias: each level's buy share comes from levelBuyShare (the candle shape).
+ *  - Bias: the bar's buy share is the damped close location, 0.25 + 0.5 * (C-L)/(H-L).
+ *    That is the estimate the lookback profile uses, shrunk toward even because bars
+ *    carry no buy/sell flags. Within the bar, levels below the close lean buy and
+ *    levels above lean sell, by a tilt that averages to zero, so the bar total stays
+ *    exact. Every level's buy share stays between 0 and 1.
  * Every bin keeps its exact edges (lo, hi), so renderers can draw them without gaps.
  * A bar with no volume or no price range has no profile.
  */
@@ -477,15 +464,25 @@ export function generatePerBarVolumes(bars: BaseBar[], levelCount: number = 8): 
     const rawTotal = raw.reduce((a, b) => a + b, 0);
     const weights = rawTotal > 0 ? raw : raw.map(() => 1);
     const total = weights.reduce((a, b) => a + b, 0);
+    const volumes = weights.map(w => (bar.volume * w) / total);
+    const clv = Math.min(1, Math.max(0, (bar.close - bar.low) / range));
+    const barBuy = 0.25 + 0.5 * clv;
+    // Tilt per level: +1 at the bottom of the bar, -1 at the top, measured from the close.
+    const tilt = Array.from({ length: levelCount }, (_, i) => (bar.close - (bar.low + step * (i + 0.5))) / range);
+    const weighted = tilt.reduce((s, t, i) => s + t * volumes[i], 0) / bar.volume;
+    const zeroMean = tilt.map(t => t - weighted);
+    const maxAbs = Math.max(...zeroMean.map(Math.abs));
+    const amplitude = maxAbs > 0 ? Math.min(barBuy, 1 - barBuy) / maxAbs : 0;
     const levels: PerBarVolume['levels'] = [];
     let maxVol = 0;
     for (let i = 0; i < levelCount; i++) {
       const lo = bar.low + step * i;
       const hi = i === levelCount - 1 ? bar.high : bar.low + step * (i + 1);
-      const mid = (lo + hi) / 2;
-      const volume = (bar.volume * weights[i]) / total;
-      const buyVol = volume * levelBuyShare(bar, mid);
-      levels.push({ price: mid, lo, hi, volume, buyVol, sellVol: volume - buyVol });
+      const volume = volumes[i];
+      // Clamped, so rounding at a bound can't leave a side slightly negative.
+      const share = Math.min(1, Math.max(0, barBuy + amplitude * zeroMean[i]));
+      const buyVol = volume * share;
+      levels.push({ price: (lo + hi) / 2, lo, hi, volume, buyVol, sellVol: volume * (1 - share) });
       if (volume > maxVol) maxVol = volume;
     }
     return { levels, maxVol };

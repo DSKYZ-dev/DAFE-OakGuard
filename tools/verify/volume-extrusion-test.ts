@@ -1,7 +1,7 @@
 // Invariants for the per-bar volume profile and the 3D extrusions built from it.
 // Run: npm run verify:volume
 import type { BaseBar } from '@dafe/types';
-import { generatePerBarVolumes, levelBuyShare } from '../../apps/web/src/data-generator';
+import { generatePerBarVolumes } from '../../apps/web/src/data-generator';
 import { biasMix, biasOf, bodySpan, extrusionBox, NEUTRAL_BIAS } from '../../apps/web/src/volume-extrusion';
 
 let checks = 0;
@@ -63,8 +63,14 @@ bars.forEach((bar, idx) => {
   }
   const sum = lv.reduce((s, l) => s + l.volume, 0);
   check(`${name}: levels conserve the bar volume`, near(sum, bar.volume), `${sum} vs ${bar.volume}`);
-  for (const l of lv) {
-    check(`${name}: level buy share follows the candle shape`, near(l.buyVol, l.volume * levelBuyShare(bar, l.price)));
+  const barBuy = 0.25 + 0.5 * Math.min(1, Math.max(0, (bar.close - bar.low) / range));
+  check(`${name}: bar buy total is the damped close location`, near(lv.reduce((s, l) => s + l.buyVol, 0), barBuy * bar.volume));
+  for (const l of lv) check(`${name}: level buy share stays in [0, 1]`, l.buyVol >= -1e-9 && l.buyVol <= l.volume + 1e-9);
+  const byPrice = [...lv].sort((a, b) => a.price - b.price);
+  for (let k = 1; k < byPrice.length; k++) {
+    const lower = byPrice[k - 1].buyVol / byPrice[k - 1].volume;
+    const upper = byPrice[k].buyVol / byPrice[k].volume;
+    check(`${name}: buy share falls with price`, upper <= lower + 1e-9, `${lower} then ${upper}`);
   }
   check(`${name}: maxVol is the largest level`, pv.maxVol === Math.max(...lv.map(l => l.volume)));
   // Volume peaks where the bar's typical price sits, within one bin.
@@ -79,8 +85,8 @@ const mixedBars = profiles.filter(p => p.levels.some(l => biasOf(l) > 0) && p.le
 check('bias varies within bars', mixedBars > bars.length / 4, `${mixedBars} of ${bars.length} bars`);
 
 // Bias on the edge bars: a bar closing at its high is all buying, at its low all selling.
-check('closes at high: all buying', profiles[bars.length - 4].levels.every(l => l.sellVol === 0 && biasOf(l) === 1));
-check('closes at low: all selling', profiles[bars.length - 3].levels.every(l => l.buyVol === 0 && biasOf(l) === -1));
+check('closes at high: three quarters buying', near(profiles[bars.length - 4].levels.reduce((s, l) => s + l.buyVol, 0) / 5000, 0.75));
+check('closes at low: a quarter buying', near(profiles[bars.length - 3].levels.reduce((s, l) => s + l.buyVol, 0) / 5000, 0.25));
 
 // Extrusions: depth is linear in volume against the window's largest level.
 const maxVolume = Math.max(...profiles.flatMap(p => p.levels.map(l => l.volume)));

@@ -634,17 +634,17 @@ function drawVolumeBlock(
         const mt = along(ft, bt);
         const mb = along(fb, bb);
         const mrt = along(rt, brt);
-        fillFace([fb, ft, mt, mb], 0.55, 0.82, split.buyCol);
-        fillFace([mb, mt, bt, bb], 0.55, 0.82, split.sellCol);
+        fillFace([fb, ft, mt, mb], 0.55, 0.7, split.buyCol);
+        fillFace([mb, mt, bt, bb], 0.55, 0.7, split.sellCol);
         if (hasTop) {
-          fillFace([ft, rt, mrt, mt], 1.08, 0.85, split.buyCol);
-          fillFace([mt, mrt, brt, bt], 1.08, 0.85, split.sellCol);
+          fillFace([ft, rt, mrt, mt], 1.08, 0.75, split.buyCol);
+          fillFace([mt, mrt, brt, bt], 1.08, 0.75, split.sellCol);
         }
         fillFace([fb, ft, rt, rb], 1.0, 0.3, split.buyCol);
       } else {
         const col = split ? (split.buyShare >= 1 ? split.buyCol : split.sellCol) : baseCol;
-        fillFace([fb, ft, bt, bb], 0.55, 0.82, col);
-        if (hasTop) fillFace([ft, rt, brt, bt], 1.08, 0.85, col);
+        fillFace([fb, ft, bt, bb], 0.55, 0.7, col);
+        if (hasTop) fillFace([ft, rt, brt, bt], 1.08, 0.75, col);
         fillFace([fb, ft, rt, rb], 1.0, 0.3, col);
       }
       // Strong edge definition on the front face, in the front colour.
@@ -883,6 +883,14 @@ export function draw3DScene(
 
   if (opts.regimeSegments?.length) paintRegimeGlow(ctx, regimeBoxes(opts.regimeSegments, bars, start, end, (abs) => barX(abs - start, vLen, width, bs, view.scrollX), p2y, bw / 2), 'back');
 
+  // The volume profile renders behind the candles, so bodies and wicks stay
+  // readable and the profile shows as extrusions receding from them. Line and
+  // area charts are skipped: per-bar voxels would bury the curve.
+  const isCurve = opts.barType === 'line' || opts.barType === 'area' || opts.barType === 'kagi';
+  if (!isCurve && opts.volumeEnabled && (opts.volumeMode === '3D-Extrude' || opts.volumeMode === '3D-Heatmap')) {
+    draw3DVolume(ctx, visible, start, vLen, minP, pRange, view, opts.perBarVols, opts.vpiEnabled, opts.volumeMode, opts.visualEngine, opts.profileWidth ?? 50, opts.vpComputed);
+  }
+
   // ── Adaptive bar-type dispatch ──
   // Line / area chart types are a continuous curve, not per-bar solids — draw
   // them as a projected 3D ribbon instead of candles.
@@ -988,13 +996,7 @@ export function draw3DScene(
 
   if (opts.regimeSegments?.length) paintRegimeGlow(ctx, regimeBoxes(opts.regimeSegments, bars, start, end, (abs) => barX(abs - start, vLen, width, bs, view.scrollX), p2y, bw / 2), 'front');
 
-  // Volume profile renders ON TOP of candles so the extruded boxes cover the
-  // candle bodies. Skip it entirely for line/area — the per-bar VPI voxels
-  // would bury the curve and make Line look identical to the bar types.
-  const isCurve = opts.barType === 'line' || opts.barType === 'area' || opts.barType === 'kagi';
-  if (!isCurve && opts.volumeEnabled && (opts.volumeMode === '3D-Extrude' || opts.volumeMode === '3D-Heatmap')) {
-    draw3DVolume(ctx, visible, start, vLen, minP, pRange, view, opts.perBarVols, opts.vpiEnabled, opts.volumeMode, opts.visualEngine, opts.profileWidth ?? 50, opts.vpComputed);
-  }
+
 
   if (opts.plots?.length) {
     draw3DIndicatorPlots(ctx, opts.plots, start, vLen, width, height, bs, view, minP, pRange);
