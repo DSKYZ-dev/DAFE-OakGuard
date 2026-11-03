@@ -292,21 +292,27 @@ export function rgbaOf(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${clamp(a, 0, 1).toFixed(3)})`;
 }
 
-/** A regime segment's pixel box: horizontal extent and the price envelope it covers. */
+/** A regime segment's pixel geometry: the core it owns and the reach of its cloud. */
 export interface RegimeBox {
-  x0: number;
-  x1: number;
+  x0: number; // core: midpoint with the previous neighbour (or the first bar's edge)
+  x1: number; // core: midpoint with the next neighbour (or the last bar's edge)
+  cx: number; // cloud centre
+  hw: number; // cloud reach past the core on each side
   top: number; // pixels, top < bottom
   bottom: number;
-  cy: number; // centre of the envelope, pixels
+  cy: number; // centre of the price envelope, pixels
   color: string;
   strength: number;
 }
 
 /**
- * Pixel boxes for the visible part of each segment. `bars` is the full array
- * the segment indices refer to; xOf maps an absolute bar index to pixels and
- * yOf maps a price to pixels; halfBar is half a bar's pixel width.
+ * Pixel geometry for the visible part of each segment. `bars` is the full array
+ * the segment indices refer to; xOf maps an absolute bar index to pixels; yOf
+ * maps a price to pixels; halfBar is half a bar's pixel width.
+ *
+ * A segment owns the bars up to the midpoints with its neighbours, so adjacent
+ * segments meet exactly at the flip bar. Its cloud reaches a little past that
+ * core into the neighbour, so the two overlap there and blend.
  */
 export function regimeBoxes(
   segs: RegimeSegment[],
@@ -317,7 +323,7 @@ export function regimeBoxes(
   yOf: (price: number) => number,
   halfBar: number,
 ): RegimeBox[] {
-  const out: RegimeBox[] = [];
+  const parts: Array<{ cs: number; ce: number; top: number; bottom: number; color: string; strength: number }> = [];
   for (const seg of segs) {
     const s = Math.max(seg.start, visStart);
     const e = Math.min(seg.end, visEnd, bars.length - 1);
@@ -330,19 +336,34 @@ export function regimeBoxes(
     }
     const a = yOf(hi);
     const b = yOf(lo);
-    out.push({
-      x0: xOf(s) - halfBar,
-      x1: xOf(e) + halfBar,
+    parts.push({
+      cs: xOf(s),
+      ce: xOf(e),
       top: Math.min(a, b),
       bottom: Math.max(a, b),
-      cy: (a + b) / 2,
       color: REGIME_COLORS[seg.regime],
       strength: clamp(seg.strength, 0, 1),
     });
   }
-  return out;
+  return parts.map((p, i) => {
+    const prev = i > 0 ? parts[i - 1] : null;
+    const next = i + 1 < parts.length ? parts[i + 1] : null;
+    const x0 = prev ? (prev.ce + p.cs) / 2 : p.cs - halfBar;
+    const x1 = next ? (p.ce + next.cs) / 2 : p.ce + halfBar;
+    const core = Math.max(1, (x1 - x0) / 2);
+    return {
+      x0,
+      x1,
+      cx: (x0 + x1) / 2,
+      hw: core * 1.6 + 4,
+      top: p.top,
+      bottom: p.bottom,
+      cy: (p.top + p.bottom) / 2,
+      color: p.color,
+      strength: p.strength,
+    };
+  });
 }
-
 /** 2D: a band per regime segment across the full chart height, densest around its price envelope. */
 export function paintRegimeBands(ctx: CanvasRenderingContext2D, boxes: RegimeBox[], height: number): void {
   if (height <= 0) return;
@@ -368,15 +389,15 @@ export function paintRegimeGlow(ctx: CanvasRenderingContext2D, boxes: RegimeBox[
   for (const b of boxes) {
     const k = 0.55 + 0.45 * b.strength;
     const a0 = (layer === 'back' ? 0.7 : 0.16) * k;
-    const hw = Math.max(10, (b.x1 - b.x0) / 2 + 8);
+    const hw = Math.max(10, b.hw);
     const hh = Math.max(14, (b.bottom - b.top) / 2 + 8);
     ctx.save();
-    ctx.translate((b.x0 + b.x1) / 2, b.cy);
+    ctx.translate(b.cx, b.cy);
     ctx.scale(hw / hh, 1);
     const g = ctx.createRadialGradient(0, 0, 0, 0, 0, hh);
     g.addColorStop(0, rgbaOf(b.color, a0));
-    g.addColorStop(0.4, rgbaOf(b.color, a0 * 0.6));
-    g.addColorStop(0.75, rgbaOf(b.color, a0 * 0.15));
+    g.addColorStop(0.5, rgbaOf(b.color, a0 * 0.8));
+    g.addColorStop(0.78, rgbaOf(b.color, a0 * 0.3));
     g.addColorStop(1, rgbaOf(b.color, 0));
     ctx.fillStyle = g;
     ctx.beginPath();
