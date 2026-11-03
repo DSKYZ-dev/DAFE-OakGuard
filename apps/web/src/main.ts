@@ -373,6 +373,8 @@ function applyAdvisorProviderUI(provider: string): void {
 async function syncLlmConfigFromSettings(): Promise<void> {
   try {
     const data = await (await fetch(`${BACKEND_URL}/api/settings`)).json();
+    // The saved data source applies at startup too, not only once Settings opens.
+    if (data.market_data_source) applyDataSourceMode(data.market_data_source);
     const advisorProv = data.llm_provider || 'local';
     const coderProv = data.llm_coder_provider || 'local';
     if (advisorProv.startsWith('ollama') || coderProv.startsWith('ollama')) {
