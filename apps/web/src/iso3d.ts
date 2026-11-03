@@ -8,6 +8,7 @@ import {
 import { resolveTheme } from './theme-engine';
 import { isBrickType, isCurveType, isZigzagType, isProfileType, engineTreatment } from './rendering-matrix';
 import { paintRegimeGlow, regimeBoxes, type RegimeSegment } from './regime-ribbon';
+import { biasMix, biasOf, bodySpan, extrusionBox, NEUTRAL_BIAS } from './volume-extrusion';
 
 // ─── Isometric projection ───────────────────────────────────────────
 // Cabinet projection: the depth axis recedes up-and-to-the-left.
@@ -399,48 +400,60 @@ interface VolFacePts {
   top: number; bot: number; ratio: number; i: number; bw: number;
 }
 
+/** The buy share of a level, as the part of its depth nearest the candle plane. */
+interface VolSplit {
+  buyShare: number;
+  buyCol: string;
+  sellCol: string;
+}
+
 function drawVolumeBlock(
   ctx: CanvasRenderingContext2D,
   engine: VisualEngine,
   pts: VolFacePts,
   baseCol: string,
+  split: VolSplit | null,
 ): void {
   const { fb, ft, rb, rt, bb, bt, brb, brt, top, bot, ratio, i } = pts;
   const center = { x: (fb.x + brb.x) / 2, y: (fb.y + brt.y) / 2 };
 
   switch (engine) {
     case 'Thermal': {
-      // True heat-map palette (deep blue → cyan → green → yellow → red) keyed
-      // off ratio, instead of just tinting the bin's own bull/bear color —
-      // reads like an actual thermal camera rather than a glowing candle.
-      const heat = heatColor(ratio);
+      // Heat map of bias: the buy share glows the bull colour and the sell share
+      // the bear colour, split along the extrusion in proportion to volume.
+      // Brightness is the level's share of the window's largest volume.
       const alpha = 0.32 + ratio * 0.4;
       const g = ctx.createLinearGradient(fb.x, fb.y, bb.x, bb.y);
-      g.addColorStop(0, hexToRgba(heat, alpha));
-      g.addColorStop(0.5, hexToRgba(heat, alpha * 0.55));
-      g.addColorStop(1, hexToRgba(heat, alpha * 0.12));
+      if (split) {
+        g.addColorStop(0, hexToRgba(split.buyCol, alpha));
+        g.addColorStop(split.buyShare, hexToRgba(split.buyCol, alpha));
+        g.addColorStop(split.buyShare, hexToRgba(split.sellCol, alpha));
+        g.addColorStop(1, hexToRgba(split.sellCol, alpha));
+      } else {
+        g.addColorStop(0, hexToRgba(baseCol, alpha));
+        g.addColorStop(1, hexToRgba(baseCol, alpha * 0.12));
+      }
       ctx.fillStyle = g;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(bt.x, bt.y); ctx.lineTo(bb.x, bb.y); ctx.closePath();
       ctx.fill();
-      // Modest hot core — no longer a blown-out white flare
-      const cg = ctx.createRadialGradient(center.x, (fb.y + ft.y) / 2, 0, center.x, (fb.y + ft.y) / 2, Math.abs(rt.x - fb.x) * 1.1);
+      // Core glow and outline on the front face, in the dominant side's colour.
+      const dominant = split ? (split.buyShare >= 0.5 ? split.buyCol : split.sellCol) : baseCol;
+      const cg = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, Math.abs(rt.x - fb.x) * 1.1);
       cg.addColorStop(0, hexToRgba('#ffffff', ratio * 0.22));
-      cg.addColorStop(0.5, hexToRgba(heat, ratio * 0.22));
-      cg.addColorStop(1, hexToRgba(heat, 0));
+      cg.addColorStop(0.5, hexToRgba(dominant, ratio * 0.22));
+      cg.addColorStop(1, hexToRgba(dominant, 0));
       ctx.fillStyle = cg;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
       ctx.fill();
-      // Border
-      ctx.strokeStyle = hexToRgba(heat, 0.75);
+      ctx.strokeStyle = hexToRgba(dominant, 0.75);
       ctx.lineWidth = 1.0;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
       ctx.stroke();
       break;
     }
-
     case 'Nebula': {
       // Dropped the additive 'lighter' blend — with many stacked volume levels
       // per bar it summed straight to blown-out white regardless of alpha.
@@ -598,8 +611,8 @@ function drawVolumeBlock(
 
     case '3D-Depth':
     default: {
-      const fillFace = (face: { x: number; y: number }[], brightness: number, alpha = 0.92) => {
-        ctx.fillStyle = shade(baseCol, brightness);
+      const fillFace = (face: { x: number; y: number }[], brightness: number, alpha = 0.92, col = baseCol) => {
+        ctx.fillStyle = shade(col, brightness);
         ctx.globalAlpha = alpha;
         ctx.beginPath();
         ctx.moveTo(face[0].x, face[0].y);
@@ -607,15 +620,36 @@ function drawVolumeBlock(
         ctx.closePath(); ctx.fill();
         ctx.globalAlpha = 1;
       };
-      // In cabinet projection (depth recedes up-and-left), the back face
-      // [bb,bt,brt,brb] and inner right face [rb,rt,brt,brb] are occluded by
-      // the visible left-depth, top, and front faces. Skipping those two
-      // hidden faces cuts polygon fills by 40% with identical visuals.
-      fillFace([fb, ft, bt, bb], 0.55, 0.82);
-      if (Math.abs(bot - top) > 0.5) fillFace([ft, rt, brt, bt], 1.08, 0.85);
-      fillFace([fb, ft, rt, rb], 1.0, 0.92);
-      // Strong edge definition
-      ctx.strokeStyle = hexToRgba(baseCol, 0.6);
+      // In cabinet projection (depth recedes up-and-left), the back face and the
+      // inner right face are hidden behind the visible left, top and front faces,
+      // so only those three are drawn.
+      const hasTop = Math.abs(bot - top) > 0.5;
+      if (split && split.buyShare > 0 && split.buyShare < 1) {
+        // Each side is two faces that meet exactly at the split: the buy share
+        // nearest the candle plane, the sell share behind it. Their lengths are
+        // the volume proportions.
+        const f = split.buyShare;
+        const along = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+          ({ x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f });
+        const mt = along(ft, bt);
+        const mb = along(fb, bb);
+        const mrt = along(rt, brt);
+        fillFace([fb, ft, mt, mb], 0.55, 0.82, split.buyCol);
+        fillFace([mb, mt, bt, bb], 0.55, 0.82, split.sellCol);
+        if (hasTop) {
+          fillFace([ft, rt, mrt, mt], 1.08, 0.85, split.buyCol);
+          fillFace([mt, mrt, brt, bt], 1.08, 0.85, split.sellCol);
+        }
+        fillFace([fb, ft, rt, rb], 1.0, 0.3, split.buyCol);
+      } else {
+        const col = split ? (split.buyShare >= 1 ? split.buyCol : split.sellCol) : baseCol;
+        fillFace([fb, ft, bt, bb], 0.55, 0.82, col);
+        if (hasTop) fillFace([ft, rt, brt, bt], 1.08, 0.85, col);
+        fillFace([fb, ft, rt, rb], 1.0, 0.3, col);
+      }
+      // Strong edge definition on the front face, in the front colour.
+      const front = split ? (split.buyShare > 0 ? split.buyCol : split.sellCol) : baseCol;
+      ctx.strokeStyle = hexToRgba(front, 0.6);
       ctx.lineWidth = 1.0;
       ctx.beginPath();
       ctx.moveTo(fb.x, fb.y); ctx.lineTo(ft.x, ft.y); ctx.lineTo(rt.x, rt.y); ctx.lineTo(rb.x, rb.y); ctx.closePath();
@@ -637,64 +671,71 @@ function draw3DVolume(
   const p2y = (p: number) => priceToY(p, minP, pRange, height, view);
 
   if (!perBarVols || !vpiEnabled || vLen === 0) return;
+
+  // One depth scale for the whole visible window: the largest level is the full
+  // depth, and every other level extrudes in proportion to its volume.
+  let maxVolume = 0;
+  for (let i = 0; i < vLen; i++) {
+    const pv = perBarVols[start + i];
+    if (!pv) continue;
+    for (const lv of pv.levels) if (lv.volume > maxVolume) maxVolume = lv.volume;
+  }
+  if (maxVolume <= 0) return;
+  const maxDepth = bs * 0.5;
+
   ctx.save();
 
-  // Heatmap mode forces the thermal engine.
+  // Heatmap mode uses the thermal engine. Both modes colour by bias.
   const engine: VisualEngine = volumeMode === '3D-Heatmap' ? 'Thermal' : visualEngine;
-
-  // Use the same width as the candle body so the volume block fully covers the front face.
   const candleBw = Math.max(1.2, bs * 0.72);
-  const bw = candleBw * Math.min(1, 0.85 + (profileWidth / 100) * 0.6);
+  const widthFactor = Math.min(1, 0.85 + (profileWidth / 100) * 0.6);
   const colors = vpComputed?.colors;
+  const theme = resolveTheme();
+  const bull = colors ? colors.bull : theme.bull;
+  const bear = colors ? colors.bear : theme.bear;
 
   for (let i = vLen - 1; i >= 0; i--) {
     const pv = perBarVols[start + i];
     if (!pv || pv.levels.length === 0) continue;
-    const bar = visible[i];
     const x = barX(i, vLen, width, bs, view.scrollX);
     if (x < -bs * 2 || x > width + bs * 2) continue;
+    // The front face spans x..x+candleBw; the profile is centred on it.
+    const { left, right } = bodySpan(x, candleBw, widthFactor);
+    const bw = right - left;
 
-    const levels = pv.levels;
-    const levelH = Math.max(1.5, (p2y(bar.low) - p2y(bar.high)) / levels.length);
-
-    for (const lv of levels) {
-      const y = p2y(lv.price);
-      const ratio = Math.min(1, lv.volume / Math.max(pv.maxVol, 1));
-      if (ratio < 0.05) continue;
-      const dz = Math.min(0.18 * bs + ratio * BAR_DEPTH * bs * 3.2, bs * 0.5);
-      const buyRatio = lv.buyVol / Math.max(lv.volume, 0.001);
-      const theme = resolveTheme();
-      const baseCol = colors
-        ? (buyRatio > 0.55 ? colors.bull : buyRatio < 0.45 ? colors.bear : '#b48cff')
-        : (buyRatio > 0.55 ? theme.bull : buyRatio < 0.45 ? theme.bear : '#b48cff');
-
-      // Volume bar starts at the candle front plane (z=0) and extrudes backward.
-      const zFront = 0;
-      const zBack = dz;
-      const left = x;
-      const rightX = x + bw;
-      const top = y - levelH / 2;
-      const bot = y + levelH / 2;
-
+    for (const lv of pv.levels) {
+      const yA = p2y(lv.hi);
+      const yB = p2y(lv.lo);
+      const box = extrusionBox({
+        top: Math.min(yA, yB),
+        bottom: Math.max(yA, yB),
+        volume: lv.volume,
+        buyVolume: lv.buyVol,
+        maxVolume,
+        maxDepth,
+      });
+      if (!box || box.depth < 0.25) continue;
       const pts: VolFacePts = {
-        fb: project(left, bot, zFront),
-        ft: project(left, top, zFront),
-        rb: project(rightX, bot, zFront),
-        rt: project(rightX, top, zFront),
-        bb: project(left, bot, zBack),
-        bt: project(left, top, zBack),
-        brb: project(rightX, bot, zBack),
-        brt: project(rightX, top, zBack),
-        top, bot, ratio, i, bw,
+        fb: project(left, box.bottom, 0),
+        ft: project(left, box.top, 0),
+        rb: project(right, box.bottom, 0),
+        rt: project(right, box.top, 0),
+        bb: project(left, box.bottom, box.depth),
+        bt: project(left, box.top, box.depth),
+        brb: project(right, box.bottom, box.depth),
+        brt: project(right, box.top, box.depth),
+        top: box.top,
+        bot: box.bottom,
+        ratio: box.share,
+        i,
+        bw,
       };
-
-      drawVolumeBlock(ctx, engine, pts, baseCol);
+      const baseCol = biasMix(biasOf(lv), bull, bear, NEUTRAL_BIAS);
+      drawVolumeBlock(ctx, engine, pts, baseCol, { buyShare: box.buyShare, buyCol: bull, sellCol: bear });
     }
   }
-
   ctx.restore();
 }
-
 // ─── Main 3D scene entry ────────────────────────────────────────────
 export interface Scene3DOptions {
   barType: string;
