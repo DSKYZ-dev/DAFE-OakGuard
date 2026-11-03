@@ -48,3 +48,6 @@ Thumbs.db
 # ─── Vite ─────────────────────────────────────────────────────────────────────
 .vite/
 .vite-temp/
+
+# ─── Imported conversations and local captures — never commit ─────────────────
+.cloud-attachments/
