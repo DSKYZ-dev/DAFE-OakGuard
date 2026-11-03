@@ -15,6 +15,7 @@ import { setWebhookUrl, getWebhookUrl, getStoredOverrides, setStoredOverrides, s
 import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-band';
 import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, WINDOW_GAP, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
+import { minimizeWindow, restoreWindow, forgetWindow } from './window-dock';
 
 export interface DashboardToggleState {
   visible: boolean;
@@ -109,7 +110,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
 
   const collapseBtn = document.createElement('button');
   collapseBtn.textContent = '−';
-  collapseBtn.title = 'Collapse panel';
+  collapseBtn.title = 'Minimize';
   Object.assign(collapseBtn.style, {
     background: 'none', border: '1px solid rgba(255,255,255,0.1)',
     color: '#888', cursor: 'pointer', fontSize: '14px', padding: '1px 7px', borderRadius: '4px',
@@ -121,7 +122,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
     background: 'none', border: '1px solid rgba(255,255,255,0.1)',
     color: '#888', cursor: 'pointer', fontSize: '12px', padding: '1px 6px', borderRadius: '4px',
   });
-  closeBtn.onclick = () => { panel.style.display = 'none'; };
+  closeBtn.onclick = () => { forgetWindow('model-inputs'); panel.style.display = 'none'; };
 
   btnGroup.appendChild(collapseBtn);
   btnGroup.appendChild(closeBtn);
@@ -254,14 +255,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
   });
   panel.appendChild(resizeHandle);
 
-  let collapsed = false;
-  collapseBtn.onclick = () => {
-    collapsed = !collapsed;
-    collapseBtn.textContent = collapsed ? '+' : '−';
-    scrollArea.style.display = collapsed ? 'none' : 'block';
-    webhookDiv.style.display = collapsed ? 'none' : 'block';
-    panel.style.height = collapsed ? 'auto' : ''; panel.style.minHeight = collapsed ? '0' : '200px'; header.style.padding = collapsed ? '2px 12px' : '8px 12px';
-  };
+  collapseBtn.onclick = () => minimizeWindow('model-inputs', 'Model Inputs', panel);
 
   document.body.appendChild(panel);
 
@@ -419,8 +413,9 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
         scrollArea.appendChild(row);
       }
     },
-    toggle() { panel.style.display = panel.style.display === 'none' ? 'flex' : 'none'; },
+    toggle() { if (panel.style.display === 'none') this.show(); else this.hide(); },
     show() {
+      restoreWindow('model-inputs');
       if (!placedBySaved) {
         // First placement: beside the indicator list, on the same top line.
         const list = document.getElementById('indicator-list');
@@ -433,7 +428,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
       const r = panel.getBoundingClientRect();
       panel.style.top = `${clearOfHeaderTop(clearOfToolbarTop(r.left, r.top, r.width, r.height))}px`;
     },
-    hide() { panel.style.display = 'none'; },
-    destroy() { panel.remove(); },
+    hide() { forgetWindow('model-inputs'); panel.style.display = 'none'; },
+    destroy() { forgetWindow('model-inputs'); panel.remove(); },
   };
 }

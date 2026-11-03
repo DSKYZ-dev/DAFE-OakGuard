@@ -58,6 +58,7 @@ import {
 import { PerfGovernor, recommendInitialTier, tierParticleCount, type PerfTier } from './perf-governor';
 import { createInputsPanel } from './age-inputs-panel';
 import { createDashboard } from './dashboard-widget';
+import { minimizeWindow, restoreWindow, forgetWindow, isMinimized } from './window-dock';
 import { WINDOW_TOP_MIN, WINDOW_GAP, HEADER_BAR_HEIGHT, TRADING_LEFT, LEFT_COLUMN_LEFT, LEFT_COLUMN_WIDTH, SECOND_COLUMN_LEFT, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
 import { registerWidget, initWidgetMenu } from './widget-registry';
@@ -3853,12 +3854,10 @@ CRITICAL RULES:
   });
 
   // ─── News Box ────────────────────────────────────────────────────
-  const newsBody = document.getElementById('news-body');
   const newsList = document.getElementById('news-list');
   document.getElementById('news-toggle')?.addEventListener('click', () => {
-    newsBody?.classList.toggle('collapsed');
-    const btn = document.getElementById('news-toggle');
-    if (btn) btn.textContent = newsBody?.classList.contains('collapsed') ? '+' : '−';
+    const box = document.getElementById('news-box');
+    if (box) minimizeWindow('news', 'News & Events', box);
   });
 
   let firstNewsLoad = true;
@@ -3945,12 +3944,10 @@ CRITICAL RULES:
   }
 
   // Fetch news periodically — silent refreshes so no flash. Skip when the tab
-  // is hidden or the news panel is collapsed to avoid pointless web-search load.
+  // is hidden or the news window is minimized to avoid pointless web-search load.
   setTimeout(() => fetchNews(), 3000);
   setInterval(() => {
-    if (document.hidden) return;
-    const body = document.getElementById('news-body');
-    if (body && body.classList.contains('collapsed')) return;
+    if (document.hidden || isMinimized('news')) return;
     fetchNews({ silent: true });
   }, 300000);
 
@@ -4055,18 +4052,17 @@ CRITICAL RULES:
   const tradingPanelBody = document.getElementById('tradingPanelBody');
 
   if (tradingPanelCollapse && tradingPanel) {
-    tradingPanelCollapse.addEventListener('click', () => {
-      tradingPanel.classList.toggle('collapsed');
-      tradingPanelCollapse.textContent = tradingPanel.classList.contains('collapsed') ? '+' : '−';
-    });
+    tradingPanelCollapse.addEventListener('click', () => minimizeWindow('trading', 'Trading', tradingPanel));
   }
   tradingPanelClose?.addEventListener('click', () => {
+    forgetWindow('trading');
     if (tradingPanel) tradingPanel.style.display = 'none';
   });
 
   // ─── Widget Registry (close/reopen menu) ────────────────────────
   const newsBoxEl = document.getElementById('news-box');
   document.getElementById('news-close')?.addEventListener('click', () => {
+    forgetWindow('news');
     if (newsBoxEl) newsBoxEl.style.display = 'none';
   });
 
@@ -4078,8 +4074,8 @@ CRITICAL RULES:
   });
   registerWidget({
     name: 'News & Events',
-    show: () => { if (newsBoxEl) newsBoxEl.style.display = ''; },
-    hide: () => { if (newsBoxEl) newsBoxEl.style.display = 'none'; },
+    show: () => { restoreWindow('news'); if (newsBoxEl) newsBoxEl.style.display = ''; },
+    hide: () => { forgetWindow('news'); if (newsBoxEl) newsBoxEl.style.display = 'none'; },
     isVisible: () => !!newsBoxEl && newsBoxEl.style.display !== 'none',
   });
   registerWidget({
@@ -4095,8 +4091,8 @@ CRITICAL RULES:
   });
   registerWidget({
     name: 'Trading',
-    show: () => { if (tradingPanel) tradingPanel.style.display = ''; },
-    hide: () => { if (tradingPanel) tradingPanel.style.display = 'none'; },
+    show: () => { restoreWindow('trading'); if (tradingPanel) tradingPanel.style.display = ''; },
+    hide: () => { forgetWindow('trading'); if (tradingPanel) tradingPanel.style.display = 'none'; },
     isVisible: () => !!tradingPanel && tradingPanel.style.display !== 'none',
   });
   initWidgetMenu('widgets-toggle', 'widgets-menu');

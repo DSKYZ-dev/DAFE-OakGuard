@@ -9,6 +9,7 @@ import type { InputDef } from './oakscript/editor';
 import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-band';
 import { WINDOW_TOP_MIN, NEWS_BOX_BOTTOM, WINDOW_GAP, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
+import { minimizeWindow, restoreWindow, forgetWindow } from './window-dock';
 
 export function createDashboard(): {
   panel: HTMLDivElement;
@@ -86,13 +87,13 @@ export function createDashboard(): {
 
   const collapseBtn = document.createElement('button');
   collapseBtn.textContent = '−';
-  collapseBtn.title = 'Collapse';
+  collapseBtn.title = 'Minimize';
   collapseBtn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:12px;padding:1px 7px;border-radius:4px;';
 
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
   closeBtn.style.cssText = 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:10px;padding:1px 6px;border-radius:4px;';
-  closeBtn.onclick = () => { panel.style.display = 'none'; };
+  closeBtn.onclick = () => { forgetWindow('dashboard'); panel.style.display = 'none'; };
 
   btnGroup.appendChild(sizeDown);
   btnGroup.appendChild(sizeUp);
@@ -176,20 +177,7 @@ export function createDashboard(): {
   // changing the container's base font (which shrank the text on A+).
   function updateFont() { widget.refresh(); }
 
-  // Collapse toggle
-  let collapsed = false;
-  collapseBtn.onclick = () => {
-    collapsed = !collapsed;
-    collapseBtn.textContent = collapsed ? '+' : '−';
-    content.style.display = collapsed ? 'none' : 'block'; header.style.padding = collapsed ? '2px 10px' : '7px 10px';
-    // Hiding `content` alone left the panel stuck at its 180px minHeight —
-    // the outer panel enforces that floor regardless of the inner content's
-    // visibility, so collapsing only hid the plot list while leaving a big
-    // empty box below the header. Relax the panel's own height constraints
-    // while collapsed so it actually shrinks to just the header.
-    panel.style.minHeight = collapsed ? '0' : '180px';
-    panel.style.maxHeight = collapsed ? 'none' : '75vh';
-  };
+  collapseBtn.onclick = () => minimizeWindow('dashboard', 'Dashboard', panel);
 
   document.body.appendChild(panel);
 
@@ -372,8 +360,9 @@ export function createDashboard(): {
 
       content.innerHTML = html;
     },
-    toggle() { panel.style.display = panel.style.display === 'none' ? 'flex' : 'none'; },
+    toggle() { if (panel.style.display === 'none') this.show(); else this.hide(); },
     show() {
+      restoreWindow('dashboard');
       // First placement sits under News & Events in the right column. A saved or
       // dragged position stays where the user left it.
       if (!placedBySaved) {
@@ -384,8 +373,8 @@ export function createDashboard(): {
       panel.style.display = 'flex';
       this.refresh();
     },
-    hide() { panel.style.display = 'none'; },
-    destroy() { panel.remove(); },
+    hide() { forgetWindow('dashboard'); panel.style.display = 'none'; },
+    destroy() { forgetWindow('dashboard'); panel.remove(); },
   };
   return widget;
 }

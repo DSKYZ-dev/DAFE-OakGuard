@@ -416,7 +416,6 @@
       font-size: 12px; cursor: default;
       transition: opacity .2s;
     }
-    #trading-panel.collapsed .trading-panel-body { display: none; }
     #trading-panel.dragging { opacity: 0.85; }
 
     .trading-panel-header {
@@ -814,29 +813,6 @@
     }
     .news-tag.earnings { background: rgba(0,255,136,0.1); color: rgba(0,255,136,0.5); }
     .news-tag.risk { background: rgba(255,68,119,0.1); color: rgba(255,68,119,0.5); }
-    #news-body.collapsed { display: none; }
-
-    /* Minimized windows end at the header strip: no body, no height floor,
-       no leftover resize height, and tight vertical padding so every
-       collapsed bar lands at about the same 22-25px. */
-    #trading-panel.collapsed { height: auto !important; min-height: 0 !important; }
-    #trading-panel.collapsed .trading-panel-header { padding-top: 2px; padding-bottom: 2px; }
-    #news-box:has(#news-body.collapsed) #news-header { padding-top: 2px; padding-bottom: 2px; }
-    /* OakGuard writes its header padding inline, so key the collapsed bar off
-       the hidden body instead: same 22px strip as the other windows, title
-       only, and a "+" restore button. */
-    #oakguard-window:has(> div[style*="display: none"]) > div:first-child {
-      padding-top: 2px !important; padding-bottom: 2px !important;
-    }
-    #oakguard-window:has(> div[style*="display: none"]) > div:first-child > div:first-child > span:not(:first-child) {
-      display: none;
-    }
-    #oakguard-window:has(> div[style*="display: none"]) > div:first-child > div:last-child > button:first-child {
-      font-size: 0;
-    }
-    #oakguard-window:has(> div[style*="display: none"]) > div:first-child > div:last-child > button:first-child::before {
-      content: '+'; font-size: 14px;
-    }
   </style>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -1249,7 +1225,7 @@
     <div id="news-header">
       <span>📰 News &amp; Events</span>
       <div class="news-header-buttons">
-        <button id="news-toggle" title="Collapse">−</button>
+        <button id="news-toggle" title="Minimize">−</button>
         <button id="news-close" title="Close">✕</button>
       </div>
     </div>
@@ -1309,7 +1285,7 @@
     <div class="trading-panel-header" id="tradingPanelHeader">
       <span class="trading-panel-title">Trading</span>
       <div class="trading-panel-header-buttons">
-        <button class="trading-panel-collapse" id="tradingPanelCollapse">−</button>
+        <button class="trading-panel-collapse" id="tradingPanelCollapse" title="Minimize">−</button>
         <button class="trading-panel-collapse" id="tradingPanelClose" title="Close">✕</button>
       </div>
     </div>

@@ -22,6 +22,7 @@ import recorded from './recorded-run.json';
 import { validate } from '../oakscript/validator';
 import { getIndicators, getUserIndicators } from '../oakscript/indicators';
 import { WINDOW_TOP_MIN, clearOfHeaderTop } from '../header-band';
+import { minimizeWindow, restoreWindow, forgetWindow } from '../window-dock';
 import type { PlaybookState } from './types';
 
 const ACCENT = 'var(--dafe-glow, #2dffb3)';
@@ -49,7 +50,6 @@ let state: PlaybookState = loadPlaybook();
 let lastRun: OakGuardRun | null = null;
 let running = false;
 let runningMode: ProposerMode | null = null;
-let minimized = false;
 let detailsOpen = false;
 let placed = false;
 let checkResult: CheckResult | null = null;
@@ -134,11 +134,8 @@ function buildWindow(): void {
   );
   const controls = node('div', 'display:flex;gap:4px;flex-shrink:0;');
   const minBtn = node('button', 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:14px;padding:1px 7px;border-radius:4px;', '−');
-  minBtn.title = 'Collapse window';
-  minBtn.onclick = () => {
-    minimized = !minimized;
-    if (bodyEl) bodyEl.style.display = minimized ? 'none' : 'flex'; if (win) { if (minimized) win.dataset.expandedHeight = `${win.offsetHeight}px`; win.style.height = minimized ? 'auto' : (win.dataset.expandedHeight || ''); header.style.padding = minimized ? '2px 12px' : '8px 12px'; minBtn.textContent = minimized ? '+' : '−'; minBtn.title = minimized ? 'Expand window' : 'Collapse window'; }
-  };
+  minBtn.title = 'Minimize';
+  minBtn.onclick = () => { if (win) minimizeWindow('oakguard', 'OakGuard', win); };
   const closeBtn = node('button', 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:12px;padding:1px 6px;border-radius:4px;', '✕');
   closeBtn.title = 'Close';
   closeBtn.onclick = () => closeOakGuard();
@@ -194,6 +191,7 @@ export function openOakGuard(): void {
   if (!win) buildWindow();
   if (!win) return;
   state = loadPlaybook();
+  restoreWindow('oakguard');
   win.style.display = 'flex';
   observatory?.resize();
   syncScene();
@@ -202,10 +200,12 @@ export function openOakGuard(): void {
 }
 
 export function closeOakGuard(): void {
+  forgetWindow('oakguard');
   if (win) win.style.display = 'none';
 }
 
 export function disposeOakGuard(): void {
+  forgetWindow('oakguard');
   observatory?.dispose();
   observatory = null;
   win?.remove();
