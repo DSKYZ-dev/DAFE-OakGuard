@@ -681,7 +681,7 @@ function draw3DVolume(
     for (const lv of pv.levels) if (lv.volume > maxVolume) maxVolume = lv.volume;
   }
   if (maxVolume <= 0) return;
-  const maxDepth = bs * 0.5;
+  const maxDepth = bs * 1.5;
 
   ctx.save();
 
