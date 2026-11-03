@@ -66,11 +66,31 @@ const _vis: Chart3DVisualSettings = {
  * Background colour shared by the main 3D scene and the lower deck, so the two
  * panes always agree on how brightly the space behind the data reads.
  */
+/** Regime visual currently fogging the 3D scene; null when the visual is off. */
+let _regimeFog: { color: string; strength: number } | null = null;
+
 export function chart3DEnvColor(): THREE.Color {
   const b = Math.max(0, Math.min(2.2, _vis.bgBrightness));
   const base = new THREE.Color(0x0a0a18);
-  if (b <= 1) return base.multiplyScalar(b);
-  return base.lerp(new THREE.Color(0x33487c), Math.min(1, b - 1));
+  const env = b <= 1 ? base.multiplyScalar(b) : base.lerp(new THREE.Color(0x33487c), Math.min(1, b - 1));
+  // The regime tints the space around the bars, so the backdrop and the fog share one colour.
+  return _regimeFog ? env.lerp(new THREE.Color(_regimeFog.color), 0.1 + 0.16 * _regimeFog.strength) : env;
+}
+
+/** Fog thickens with regime strength: a stronger read gives a denser haze. */
+function fogDensityNow(): number {
+  return _vis.fogDensity * (1 + 3 * (_regimeFog?.strength ?? 0));
+}
+
+export function setRegimeFog(fog: { color: string; strength: number } | null): void {
+  _regimeFog = fog && Number.isFinite(fog.strength)
+    ? { color: fog.color, strength: Math.max(0, Math.min(1, fog.strength)) }
+    : null;
+  if (_scene) {
+    _scene.fog = new THREE.FogExp2(chart3DEnvColor().getHex(), fogDensityNow());
+    if (_scene.background instanceof THREE.Color) _scene.background.copy(chart3DEnvColor());
+  }
+  if (_renderer) _renderer.setClearColor(chart3DEnvColor(), _renderer.getClearAlpha());
 }
 
 let _gridHelper: THREE.GridHelper | null = null;
@@ -98,7 +118,7 @@ export function setChart3DVisualSettings(patch: Partial<Chart3DVisualSettings>):
   if (_bloomPass) { _bloomPass.strength = _vis.bloomStrength; _bloomPass.threshold = _vis.bloomThreshold; }
   if (_renderer) _renderer.toneMappingExposure = _vis.exposure;
   const env = chart3DEnvColor();
-  if (_scene) _scene.fog = new THREE.FogExp2(env.getHex(), _vis.fogDensity);
+  if (_scene) _scene.fog = new THREE.FogExp2(env.getHex(), fogDensityNow());
   if (_scene && _scene.background instanceof THREE.Color) _scene.background.copy(env);
   if (_renderer) _renderer.setClearColor(env, _renderer.getClearAlpha());
   applyBarBrightness();
@@ -291,7 +311,7 @@ function init(): void {
 
   _scene = new THREE.Scene();
   _scene.background = null;
-  _scene.fog = new THREE.FogExp2(chart3DEnvColor().getHex(), _vis.fogDensity);
+  _scene.fog = new THREE.FogExp2(chart3DEnvColor().getHex(), fogDensityNow());
 
   // In-scene starfield (the 3D takeover used to hide the 2D one behind an
   // opaque clear color, losing the deep-space cue entirely).

@@ -7,6 +7,7 @@ import {
 } from './chart-renderer';
 import { resolveTheme } from './theme-engine';
 import { isBrickType, isCurveType, isZigzagType, isProfileType, engineTreatment } from './rendering-matrix';
+import { paintRegimeGlow, regimeBoxes, type RegimeSegment } from './regime-ribbon';
 
 // ─── Isometric projection ───────────────────────────────────────────
 // Cabinet projection: the depth axis recedes up-and-to-the-left.
@@ -707,6 +708,8 @@ export interface Scene3DOptions {
   profileWidth?: number;
   vpComputed?: VPComputed;
   bgViz?: 'particles' | 'stars' | 'graph' | 'plain';
+  /** Regime history for the coloured fog: runs of one regime over absolute bar indices. */
+  regimeSegments?: RegimeSegment[];
   plots?: Array<{
     type?: string;
     name?: string;
@@ -837,6 +840,8 @@ export function draw3DScene(
   // and a deeper candle would run into the bar before it.
   const depth = Math.min(BAR_DEPTH * bs, bs * 0.5);
 
+  if (opts.regimeSegments?.length) paintRegimeGlow(ctx, regimeBoxes(opts.regimeSegments, bars, start, end, (abs) => barX(abs - start, vLen, width, bs, view.scrollX), p2y, bw / 2), 'back');
+
   // ── Adaptive bar-type dispatch ──
   // Line / area chart types are a continuous curve, not per-bar solids — draw
   // them as a projected 3D ribbon instead of candles.
@@ -939,6 +944,8 @@ export function draw3DScene(
   }
   ctx.restore();
   }
+
+  if (opts.regimeSegments?.length) paintRegimeGlow(ctx, regimeBoxes(opts.regimeSegments, bars, start, end, (abs) => barX(abs - start, vLen, width, bs, view.scrollX), p2y, bw / 2), 'front');
 
   // Volume profile renders ON TOP of candles so the extruded boxes cover the
   // candle bodies. Skip it entirely for line/area — the per-bar VPI voxels

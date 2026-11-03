@@ -13,7 +13,7 @@ import {
   drawOHLCTooltip, drawOakScriptPlots,
   drawSecondaryChart, drawTradeMarkers,
   updateParticles, drawParticles,
-  getVisibleRange, visibleBarCount, getPriceRange,
+  getVisibleRange, visibleBarCount, getPriceRange, barX, priceToY,
   DEFAULT_BAR_SPACING, MIN_BAR_SPACING, MAX_BAR_SPACING, chartRight,
   setPerfMode,
   type ViewState, type TradeMarker,
@@ -28,7 +28,8 @@ import {
 import { getAllAssetsAsMap } from './oakscript/image-assets';
 import {
   classifyRegime, createRegimeRibbon, createInitialRegimeState, applyHysteresis,
-  type RegimeResult,
+  regimeVisualFor, regimeSegments, regimeBoxes, paintRegimeBands,
+  type RegimeResult, type RegimeVisual, type RegimeSegment,
 } from './regime-ribbon';
 import { onLiveSignal } from './signal-engine';
 import * as draw from './drawings';
@@ -45,7 +46,7 @@ import { prefetchModelProfile, setModelContextOverride } from './trade-advisor/t
 import { AdvisorVoice } from './trade-advisor/voice';
 import { LiveDataStream } from './data-stream';
 import { getMarketStatus } from './market-hours';
-import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene, setChart3DVisualSettings, getChart3DVisualSettings, type Chart3DVisualSettings } from './three-indicators';
+import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene, setChart3DVisualSettings, getChart3DVisualSettings, setRegimeFog, type Chart3DVisualSettings } from './three-indicators';
 import { show3D, hide3D, setLowerPaneBackground, frameLower3D } from './three-lower-pane';
 import { draw3DScene } from './iso3d';
 import type { OakPlot3D } from './oakscript/runtime';
@@ -518,7 +519,7 @@ setMlRedrawCallback(() => {
 // Persistent, advisory-only top-of-chart strip — see regime-ribbon.ts for
 // the classification/hysteresis logic. Appended into #chart-area so it's
 // scoped to the chart canvas, not the whole viewport.
-const regimeRibbon = createRegimeRibbon();
+const regimeRibbon = createRegimeRibbon(() => setRegimeVisual(!regimeVisualOn));
 document.getElementById('chart-area')?.appendChild(regimeRibbon.el);
 const regimeState = createInitialRegimeState();
 // Discoverability toggle (toolbar "◉ Regime" button + Indicators dropdown
@@ -534,6 +535,27 @@ function setRegimeRibbonEnabled(enabled: boolean): void {
   try { localStorage.setItem('dafe_regime_ribbon', enabled ? '1' : '0'); } catch {}
   document.getElementById('regime-toggle')?.classList.toggle('active', enabled);
   visualAdapter.logAction('toggle', `Regime classification display ${enabled ? 'shown' : 'hidden'} (suggestion button unaffected)`);
+}
+// Regime visual: the dot+label button tints the 2D chart and fogs the 3D view
+// in the displayed regime's colour, with density following the read's strength.
+// Off by default; remembered between sessions.
+let regimeVisualOn = (() => { try { return localStorage.getItem('dafe_regime_visual') === '1'; } catch { return false; } })();
+let displayedRegime: RegimeResult | null = null;
+let regimeVisual: RegimeVisual | null = null;
+let lastRegimeFogKey = '';
+let regimeSegs: RegimeSegment[] = [];
+let regimeSegsSrc: BaseBar[] | null = null;
+regimeRibbon.setVisualOn(regimeVisualOn);
+function applyRegimeVisual(): void {
+  regimeVisual = regimeVisualOn ? regimeVisualFor(displayedRegime) : null;
+}
+function setRegimeVisual(on: boolean): void {
+  regimeVisualOn = on;
+  try { localStorage.setItem('dafe_regime_visual', on ? '1' : '0'); } catch { /* storage unavailable */ }
+  regimeRibbon.setVisualOn(on);
+  applyRegimeVisual();
+  lastRegimeComputeAt = 0;
+  visualAdapter.logAction('toggle', `Regime visual ${on ? 'on' : 'off'}`);
 }
 let lastRegimeComputeAt = 0;
 const REGIME_RECOMPUTE_THROTTLE_MS = 3000; // ADX/ATR over up to 300 bars — cheap, but no reason to redo it every rAF frame
@@ -554,6 +576,12 @@ function getBarData() {
 // work once per REGIME_RECOMPUTE_THROTTLE_MS. Cheap enough (bounded 300-bar
 // window) that this throttle exists purely to avoid pointless repeat work at
 // 60fps, not because the computation itself is expensive.
+function showRegime(result: RegimeResult | null): void {
+  displayedRegime = result;
+  applyRegimeVisual();
+  regimeRibbon.update(result, applyIndicatorByName, regimeRibbonEnabled, isIndicatorNameActive);
+}
+
 function updateRegimeRibbon(now: number): void {
   // The toggle controls ONLY the classification display (dot/label/
   // confidence/ADX/ATR/"advisory") via infoVisible below — it must NOT
@@ -562,14 +590,16 @@ function updateRegimeRibbon(now: number): void {
   // would go stale/hidden along with it instead of continuing to work.
   if (now - lastRegimeComputeAt < REGIME_RECOMPUTE_THROTTLE_MS) return;
   lastRegimeComputeAt = now;
-  if (transformed.length === 0) { regimeRibbon.update(null, applyIndicatorByName, regimeRibbonEnabled); return; }
+  if (transformed.length === 0) { showRegime(null); return; }
   const high = transformed.map(b => b.high);
   const low = transformed.map(b => b.low);
   const close = transformed.map(b => b.close);
   const fresh = classifyRegime(high, low, close);
-  if (!fresh) { regimeRibbon.update(null, applyIndicatorByName, regimeRibbonEnabled); return; }
+  regimeSegs = regimeVisualOn ? regimeSegments(high, low, close) : [];
+  regimeSegsSrc = transformed;
+  if (!fresh) { showRegime(null); return; }
   const displayed: RegimeResult = applyHysteresis(regimeState, fresh, now);
-  regimeRibbon.update(displayed, applyIndicatorByName, regimeRibbonEnabled, isIndicatorNameActive);
+  showRegime(displayed);
 }
 
 // Programmatically apply a built-in indicator by name — the same direct path
@@ -4322,6 +4352,8 @@ function frameBody(now: number) {
         });
       }
     }
+    const regimeFogKey = regimeVisual ? `${regimeVisual.color}|${Math.round(regimeVisual.strength * 20)}` : '';
+    if (regimeFogKey !== lastRegimeFogKey) { lastRegimeFogKey = regimeFogKey; setRegimeFog(regimeVisual); }
     renderMain3DScene(transformed, combined3d!.plot3d as OakPlot3D[], view, canvas.clientWidth, canvas.clientHeight, shape3DForMain, bgViz);
     // Draw time axis on the 2D canvas (always needed)
     drawTimeAxis(ctx, transformed, view);
@@ -4330,7 +4362,7 @@ function frameBody(now: number) {
       barType, perBarVols: vpiEnabled ? perBarVols : undefined,
       volumeBins, volumeMode: vpSettings.mode, visualEngine: vpSettings.visualEngine,
       volumeEnabled, vpiEnabled, time, profileWidth: vpSettings.profileWidth, vpComputed,
-      bgViz,
+      bgViz, regimeSegments: regimeVisualOn && regimeSegsSrc === transformed ? regimeSegs : undefined,
     });
     drawTimeAxis(ctx, transformed, view);
   } else {
@@ -4347,6 +4379,14 @@ function frameBody(now: number) {
       for (let y = 0; y < height; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
     }
     else { ctx.fillStyle = '#0a0a18'; ctx.fillRect(0, 0, width, height); }
+    if (regimeVisualOn && regimeSegsSrc === transformed) {
+      const pr = getPriceRange(transformed, view, width);
+      const vLen = visEnd - visStart + 1;
+      paintRegimeBands(ctx, regimeBoxes(regimeSegs, transformed, visStart, visEnd,
+        (abs) => barX(abs - visStart, vLen, width, view.barSpacing, view.scrollX),
+        (p) => priceToY(p, pr.minP, pr.pRange, height, view),
+        Math.max(1.2, view.barSpacing * 0.72) / 2), height);
+    }
     drawGrid(ctx, transformed, view, time);
     drawBars(ctx, transformed, view, time, barType, vpiEnabled ? perBarVols : undefined, barColorOverrides.size > 0 ? barColorOverrides : undefined);
     drawTimeAxis(ctx, transformed, view);
