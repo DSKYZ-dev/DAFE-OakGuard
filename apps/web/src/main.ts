@@ -44,8 +44,7 @@ import type { ChartSnapshot, IndicatorMetrics } from './trade-advisor/visual-ada
 import { prefetchModelProfile, setModelContextOverride } from './trade-advisor/token-optimizer';
 import { AdvisorVoice } from './trade-advisor/voice';
 import { LiveDataStream } from './data-stream';
-import { HybridDataEngine } from './data-stream/hybrid-engine';
-import { getMarketStatus, marketStatusLabel } from './market-hours';
+import { getMarketStatus } from './market-hours';
 import { render3DViz, toggle3DViz, disposeViz, isViz3DActive, renderMain3DScene, isChart3DMode, mark3DSceneDirty, dispose3DScene, setChart3DVisualSettings, getChart3DVisualSettings, type Chart3DVisualSettings } from './three-indicators';
 import { show3D, hide3D, setLowerPaneBackground, frameLower3D } from './three-lower-pane';
 import { draw3DScene } from './iso3d';
@@ -150,200 +149,77 @@ const perfGovernor = new PerfGovernor({
   },
 }, perfMode);
 
-// ─── Live Tick Simulator ──────────────────────────────────────────
-// ANCHORED ticks: the simulator never rewrites price history. It captures
-// the real last bar as an anchor and only wiggles the live close inside a
-// tight band (±0.25%) around that anchor, mean-reverting toward it. The old
-// unbounded per-tick random walk compounded 1.2% clamps every 300ms until
-// the newest candle was a giant spike and the 3D scene's price-range
-// normalization rescaled every extrusion around it. On stop/roll the live
-// bar is restored to its anchor exactly, so price action is never distorted.
-let liveTicksEnabled = false;
-let liveTickTimer: ReturnType<typeof setInterval> | null = null;
-let liveAnchor: { open: number; high: number; low: number; close: number; volume: number } | null = null;
-let liveOffset = 0;
-let liveTickVolume = 0;
-function captureLiveAnchor(): void {
-  const b = transformed[transformed.length - 1];
-  if (!b) { liveAnchor = null; return; }
-  liveAnchor = { open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume };
-  liveOffset = 0;
-  liveTickVolume = 0;
-}
-function restoreLiveAnchor(): void {
-  const b = transformed[transformed.length - 1];
-  if (!b || !liveAnchor) return;
-  b.open = liveAnchor.open; b.high = liveAnchor.high; b.low = liveAnchor.low;
-  b.close = liveAnchor.close; b.volume = liveAnchor.volume;
-}
-// Wall-clock time of the last bar roll — bars advance on real elapsed time, NOT
-// on (now - lastBarTimestamp), which floods flat bars when the feed is delayed.
-let lastBarRollTime = 0;
-let lastLiveIndicatorRefresh = 0;
+// ─── Auto-refresh ─────────────────────────────────────────────────
+// Opt-in: while on, the newest bars are re-fetched from the selected data
+// source (Massive, Yahoo or any added provider) every AUTO_REFRESH_MS. The
+// zoom and pan stay put. Refreshes pause while the tab is hidden or the market
+// is closed, never overlap, and give up on a request that stalls.
+const AUTO_REFRESH_MS = 30_000;
+const AUTO_REFRESH_TIMEOUT_MS = 20_000;
+let autoRefreshOn = (() => { try { return localStorage.getItem('dafe_auto_refresh') === '1'; } catch { return false; } })();
+let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let autoRefreshBusy = false;
+let autoRefreshFailed = false;
 
-// Data source mode. 'hybrid' = correction-anchored blend of Massive (paid,
-// sparse) + yfinance (free, frequent) + synthetic fill, for near-live accuracy
-// at a fraction of the API cost.
+// Data source: any registered universal provider id (Yahoo by default).
 let dataSourceMode: string = 'yahoo';
-const hybridEngine = new HybridDataEngine({
-  baseUrl: (window as any).__DAFE_BACKEND_URL || 'http://localhost:8788',
-});
-// Tell the user when the blend adapts (e.g. yfinance doesn't cover the symbol,
-// so we run on the paid stream alone at a reduced request rate).
-hybridEngine.onCoverageChange = (st) => {
-  if (st.mode === 'paid-only') {
-    appendAdvisorMessage('system',
-      `${currentSymbol}: not covered by Yahoo — switched to paid stream only (reduced ~20s polling + synthetic fill).`);
-  } else if (st.mode === 'blend') {
-    appendAdvisorMessage('system', `${currentSymbol}: Yahoo coverage restored — full hybrid blend resumed.`);
-  } else {
-    appendAdvisorMessage('system', `${currentSymbol}: no live provider — pure synthetic mode.`);
-  }
-};
-
-const TIMEFRAMES_SEC: Record<Timeframe, number> = {
-  '1s': 1, '5s': 5, '10s': 10, '30s': 30,
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800,
-};
 
 // Sub-minute bars only exist on a real second-resolution feed — populated from
 // /api/market-data/providers once at load, used to grey out the tf-select
 // options the current data source can't actually serve.
 let supportedSubMinuteTfs: Set<string> = new Set();
 
-function startLiveTicks(): void {
-  if (liveTickTimer) return;
-  const status = getMarketStatus(currentSymbol);
-  if (status === 'closed') {
-    appendAdvisorMessage('system', `Live ticks disabled — ${marketStatusLabel(status)} for ${currentSymbol}`);
-    return;
-  }
-  liveTicksEnabled = true;
-
-  // Hybrid mode: calibrate + start the correction-anchored engine so the
-  // synthesized ticks track real prices (corrected by free/paid quotes).
-  const useHybrid = dataSourceMode === 'hybrid' && transformed.length > 1;
-  if (useHybrid) {
-    hybridEngine.calibrate(transformed, TIMEFRAMES_SEC[timeframe]);
-    hybridEngine.start(currentSymbol, transformed[transformed.length - 1].close);
-  }
-  lastBarRollTime = Date.now();
-  captureLiveAnchor();
-
-  const tickMs = 300;
-  liveTickTimer = setInterval(() => {
-    if (!liveTicksEnabled) return; // orphaned-interval guard: a stopped engine never ticks again
-    if (transformed.length === 0) return;
-    // Periodically check if market closed — stop ticks
-    if (Math.random() < 0.02) {
-      if (getMarketStatus(currentSymbol) === 'closed') { stopLiveTicks(); updateUI(); return; }
+async function refreshBarsInPlace(): Promise<void> {
+  if (autoRefreshBusy || document.hidden) return;
+  const sym = currentSymbol;
+  if (getMarketStatus(sym) === 'closed') return;
+  autoRefreshBusy = true;
+  try {
+    const result = await Promise.race([
+      liveStream.fetchBars(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), AUTO_REFRESH_TIMEOUT_MS)),
+    ]);
+    if (sym !== currentSymbol) return;
+    const wasFailing = autoRefreshFailed;
+    if (!result) {
+      if (!wasFailing) { autoRefreshFailed = true; updateUI(); }
+      return;
     }
-    const last = transformed[transformed.length - 1];
-    const now = Date.now();
-    const intervalMs = TIMEFRAMES_SEC[timeframe] * 1000;
-
-    // Roll a new bar on REAL elapsed time (one per interval). Using wall-clock
-    // here — not (now - last.timestamp) — prevents the flat-bar flood when the
-    // upstream feed is delayed. We cap to a single roll per tick, and never
-    // stamp a bar past real "now" — guards against runaway bars if the last
-    // bar's timestamp is off (stale feed data, symbol/timeframe switch, tab
-    // throttling causing missed rolls to pile up).
-    const barsBefore = transformed.length;
-    const nextBarTs = last.timestamp + intervalMs;
-    if (now - lastBarRollTime >= intervalMs && nextBarTs <= now) {
-      lastBarRollTime = now;
-      // Commit the REAL anchor close, never the simulated wiggle.
-      restoreLiveAnchor();
-      const anchorClose = liveAnchor?.close ?? last.close;
-      const newBar: BaseBar = {
-        timestamp: nextBarTs,
-        open: anchorClose, high: anchorClose, low: anchorClose, close: anchorClose, volume: 0,
-      };
-      // Transform-aware: push the bar through the current barType transform
-      // so non-candlestick types (renko, kagi, range-bar, etc.) get proper
-      // live bars instead of raw untransformed candles.
-      bars.push({ ...newBar });
-      const transformedNew = transformBars(bars, barType);
-      // If the transform produced a new bar (e.g. renko brick), use it;
-      // otherwise the raw bar is the live bar.
-      if (transformedNew.length > transformed.length) {
-        transformed = transformedNew;
-      } else {
-        transformed.push(newBar);
-      }
-      // Extend the per-bar volume profile so the new bar gets the same VPI
-      // voxel/extrusion treatment as historical bars.
-      perBarVols = generatePerBarVolumes(transformed, 12);
-      if (useHybrid && hybridEngine.isActive()) {
-        // Re-anchor the new bar to the last close, but do NOT recalibrate from
-        // synthetic-polluted bars — that creates a drift feedback loop.
-        hybridEngine.start(currentSymbol, anchorClose);
-      }
-      liveAnchor = { open: anchorClose, high: anchorClose, low: anchorClose, close: anchorClose, volume: 0 };
-      liveOffset = 0;
-      liveTickVolume = 0;
-      // fall through so the fresh bar gets an immediate price move this tick
+    autoRefreshFailed = false;
+    const prev = bars[bars.length - 1];
+    const next = result.bars[result.bars.length - 1];
+    const unchanged = !!prev && !!next && bars.length === result.bars.length
+      && prev.timestamp === next.timestamp && prev.close === next.close;
+    if (unchanged) {
+      if (wasFailing) updateUI();
+      return;
     }
-
-    const live = transformed[transformed.length - 1];
-    if (!liveAnchor) captureLiveAnchor();
-    if (liveAnchor) {
-      // Bounded, mean-reverting wiggle around the anchor — never a walk.
-      const band = liveAnchor.close * 0.0025; // ±0.25% hard band
-      if (useHybrid && hybridEngine.isActive()) {
-        // Real corrected prices may drift: let the ANCHOR follow slowly
-        // (≤0.05%/tick) so the band tracks reality instead of fighting it.
-        const real = hybridEngine.tick(now);
-        const step = Math.max(-liveAnchor.close * 0.0005, Math.min(liveAnchor.close * 0.0005, real - liveAnchor.close));
-        liveAnchor.close = Math.max(0.01, liveAnchor.close + step);
-        liveAnchor.high = Math.max(liveAnchor.high, liveAnchor.close);
-        liveAnchor.low = Math.min(liveAnchor.low, liveAnchor.close);
-      }
-      liveOffset = liveOffset * 0.92 + (Math.random() - 0.5) * liveAnchor.close * 0.0006;
-      liveOffset = Math.max(-band, Math.min(band, liveOffset));
-      live.close = Math.max(0.01, liveAnchor.close + liveOffset);
-      live.high = Math.max(liveAnchor.high, Math.min(live.close, liveAnchor.close + band));
-      live.low = Math.min(liveAnchor.low, Math.max(live.close, liveAnchor.close - band));
-      liveTickVolume += Math.round(Math.abs(liveOffset) * 100 + Math.random() * 8);
-      live.volume = liveAnchor.volume + liveTickVolume;
-    }
-    // Per-bar VPI for the live bar is intentionally NOT regenerated per
-    // tick anymore — regenerating it reseeded the newest bars' voxels and
-    // made the 3-5 newest extrusions jump. It refreshes on bar roll only.
-    // Keep the one-click trading panel (buy/sell/spread) in sync with the tick.
+    bars = result.bars;
+    dataProviderLabel = result.provider;
+    transformed = transformBars(bars, barType);
+    perBarVols = generatePerBarVolumes(transformed, 12);
+    vpCacheKey = '';
+    oakPathKey = '';
+    if (oakScriptEnabled) runAllIndicators();
+    updateUI();
     updateTradingPanel();
-    // Live bars feed the indicators. Re-run them on every bar roll and at most
-    // every 2 s while ticking, so plots, labels and signals keep pace with the
-    // newest bar instead of stopping at the last full run.
-    if (transformed.length !== barsBefore || now - lastLiveIndicatorRefresh >= 2000) {
-      lastLiveIndicatorRefresh = now;
-      refreshLiveIndicators();
-    }
-  }, tickMs);
-}
-
-/** Single authoritative Live toggle — every caller goes through here so
- * state, timer, and button can never disagree (the old split start/stop
- * calls left the button lit after the engine had stopped and vice versa). */
-function setLiveTicks(on: boolean): void {
-  if (on) startLiveTicks(); else stopLiveTicks();
-  const btn = document.getElementById('live-tick-toggle') as HTMLButtonElement | null;
-  if (btn) {
-    btn.classList.toggle('active', liveTicksEnabled);
-    btn.setAttribute('aria-pressed', String(liveTicksEnabled));
-    btn.title = liveTicksEnabled ? 'Live tick simulation ON — click to stop' : 'Live tick simulation — click to start';
+  } finally {
+    autoRefreshBusy = false;
   }
 }
 
-function stopLiveTicks(): void {
-  if (liveTickTimer) { clearInterval(liveTickTimer); liveTickTimer = null; }
-  hybridEngine.stop();
-  restoreLiveAnchor();
-  liveAnchor = null;
-  liveTicksEnabled = false;
-  // Reset so a later startLiveTicks() re-anchors cleanly rather than rolling
-  // catch-up bars based on a stale wall-clock reference from before the switch.
-  lastBarRollTime = 0;
+/** Single authoritative auto-refresh switch: state, timer and button stay in step. */
+function setAutoRefresh(on: boolean, fetchNow = true): void {
+  autoRefreshOn = on;
+  try { localStorage.setItem('dafe_auto_refresh', on ? '1' : '0'); } catch { /* storage unavailable */ }
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+  autoRefreshFailed = false;
+  if (on) {
+    autoRefreshTimer = setInterval(() => { void refreshBarsInPlace(); }, AUTO_REFRESH_MS);
+    if (fetchNow) void refreshBarsInPlace();
+  }
+  visualAdapter.logAction('toggle', `Auto-refresh ${on ? 'on' : 'off'}`);
+  updateUI();
 }
 
 // ─── Ollama model list (shared by both provider dropdowns) ────────
@@ -515,27 +391,18 @@ async function syncLlmConfigFromSettings(): Promise<void> {
   } catch { /* backend offline — defaults stand */ }
 }
 
-// Switch data-source mode. Hybrid detects the paid feed and, if live ticks are
-// already running, restarts them so the correction-anchored engine takes over.
+// Switch the data source. Any registered universal provider id (yahoo, massive,
+// polygon, alpaca, twelvedata, custom) is served by the backend adapter. The
+// retired 'hybrid' blend falls back to Yahoo so saved settings still load.
 function applyDataSourceMode(mode: string): void {
   if (!mode) return;
-  // 'hybrid' = Massive anchors + Yahoo corrections + synthetic fill.
-  // Anything else is a registered universal provider id (yahoo, massive,
-  // polygon, alpaca, twelvedata, custom) served by the backend adapter.
-  dataSourceMode = mode;
-  try { liveStream.setProvider(mode === 'hybrid' ? '' : mode); } catch { /* stream not ready */ }
-  if (mode === 'hybrid') {
-    hybridEngine.detectProviders().then(({ massive }) => {
-      appendAdvisorMessage('system',
-        `Hybrid data: ${massive ? 'Massive (paid anchors) + ' : ''}yfinance corrections + synthetic fill engaged.`);
-    });
-  }
-  // Reflect the mode in the data status chip immediately.
+  dataSourceMode = mode === 'hybrid' ? 'yahoo' : mode;
+  try { liveStream.setProvider(dataSourceMode); } catch { /* stream not ready */ }
+  // Reflect the source in the data status chip immediately.
   const statusEl = document.getElementById('data-status');
   if (statusEl && dataProviderLabel && dataProviderLabel !== 'synthetic') {
-    statusEl.textContent = `${currentSymbol} (${mode === 'hybrid' ? `hybrid·${dataProviderLabel}` : dataProviderLabel})`;
+    statusEl.textContent = `${currentSymbol} (${dataProviderLabel})`;
   }
-  if (liveTicksEnabled) { stopLiveTicks(); startLiveTicks(); }
 }
 
 // ─── Trade Advisor state ──────────────────────────────────────────
@@ -677,7 +544,7 @@ function getBarData() {
     low: transformed.map(b => b.low),
     volume: transformed.map(b => b.volume),
     time: transformed.map(b => b.timestamp),
-    live: liveTicksEnabled,
+    live: autoRefreshOn && getMarketStatus(currentSymbol) !== 'closed',
   };
 }
 
@@ -808,18 +675,6 @@ function afterPreviewChange(): void {
   mark3DSceneDirty();
   syncPreviewBadge();
   updateUI();
-}
-
-/** Re-run the scripts on the live bar array. Unlike runAllIndicators() this skips
- *  the sidebar rebuild, so it is cheap enough for the tick timer. */
-function refreshLiveIndicators(): void {
-  if (!hasActiveIndicators()) return;
-  runAllInstances(getBarData(), imageAssetsCache);
-  syncPreviewBadge();
-  oakPathKey = '';
-  oakPathCache = null;
-  mark3DSceneDirty();
-  dashboard.refresh();
 }
 
 function runAllIndicators(): void {
@@ -1102,7 +957,6 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
 
   liveStream.setSymbol(sym);
   liveStream.setTimeframe(tfv);
-  stopLiveTicks();
 
   try {
     const result = await liveStream.fetchBars();
@@ -1118,7 +972,7 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
       if (oakScriptEnabled) runAllIndicators();
 
       if (statusEl) {
-        statusEl.textContent = `${sym} (${dataSourceMode === 'hybrid' ? `hybrid·${result.provider}` : result.provider})`;
+        statusEl.textContent = `${sym} (${result.provider})`;
         statusEl.className = 'loaded';
       }
 
@@ -1757,7 +1611,16 @@ function updateUI() {
   }
   document.getElementById('os-status')?.classList.toggle('has-errors', oakScriptErrors.length > 0);
   document.getElementById('os-open-editor')?.classList.toggle('active', isEditorVisible());
-  document.getElementById('live-tick-toggle')?.classList.toggle('active', liveTicksEnabled);
+  const autoBtn = document.getElementById('auto-refresh-toggle') as HTMLButtonElement | null;
+  if (autoBtn) {
+    autoBtn.classList.toggle('active', autoRefreshOn);
+    autoBtn.setAttribute('aria-pressed', String(autoRefreshOn));
+    autoBtn.title = !autoRefreshOn
+      ? `Auto-refresh (off): reload bars from the selected data source every ${AUTO_REFRESH_MS / 1000} s`
+      : autoRefreshFailed
+        ? 'Auto-refresh on: the last refresh failed, retrying on the next tick'
+        : `Auto-refresh on: bars reload every ${AUTO_REFRESH_MS / 1000} s, paused while the market is closed`;
+  }
   buildIndicatorList();
   syncVPSettingsPanel();
   updateAdvisorContext();
@@ -2202,8 +2065,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // onclick (property) rather than addEventListener: assignment is
   // idempotent, so this control can never end up double-bound — a double
   // toggle per click reads exactly like "the button won't disengage".
-  const liveBtn = document.getElementById('live-tick-toggle') as HTMLButtonElement | null;
-  if (liveBtn) liveBtn.onclick = () => setLiveTicks(!liveTicksEnabled);
+  const autoRefreshBtn = document.getElementById('auto-refresh-toggle') as HTMLButtonElement | null;
+  if (autoRefreshBtn) autoRefreshBtn.onclick = () => setAutoRefresh(!autoRefreshOn);
+  if (autoRefreshOn) setAutoRefresh(true, false);
   document.getElementById('btn-frame')?.addEventListener('click', () => {
     view.scrollX = 0; view.barSpacing = DEFAULT_BAR_SPACING; view.offsetY = 0;
     visualAdapter.logAction('frame', 'Reset chart view');
@@ -3213,8 +3077,10 @@ CRITICAL RULES:
         bgSel.value = bgViz;
       }
       if (data.market_data_source) {
-        sel('set-data-source').value = data.market_data_source;
-        applyDataSourceMode(data.market_data_source);
+        // 'hybrid' was retired; a value saved before that still loads as Yahoo.
+        const source = data.market_data_source === 'hybrid' ? 'yahoo' : data.market_data_source;
+        sel('set-data-source').value = source;
+        applyDataSourceMode(source);
       }
 
       const hkMap: Record<string, string> = {hk3d:'hotkey_3d',hkvp:'hotkey_vp',hkframe:'hotkey_frame',hkoak:'hotkey_oak',hktrend:'hotkey_trend',hkhline:'hotkey_hline',hkray:'hotkey_ray',hkrect:'hotkey_rect',hkfib:'hotkey_fib',hkchannel:'hotkey_channel',hktext:'hotkey_text',hkundo:'hotkey_undo',hkclear:'hotkey_clear',hkdeselect:'hotkey_deselect'};
@@ -4305,7 +4171,7 @@ function frame(now: number) {
   // otherwise one bad render (e.g. NaN/Infinity from a buggy indicator
   // reaching the 3D builders) permanently freezes the canvas with no
   // visible error, which looks exactly like a browser crash to the user.
-  const interacting = liveTicksEnabled || mouseDown || (now - lastActivityAt) < 1500;
+  const interacting = mouseDown || (now - lastActivityAt) < 1500;
   // Full rate while interacting/live; 30fps for idle 3D scenes (orbit
   // inertia/atmosphere stay smooth); 20fps (10fps low tier) for idle 2D.
   const minInterval = interacting ? 0 : is3DMode ? 33 : (perfMode === 'low' ? 100 : 50);
@@ -4632,11 +4498,7 @@ function frameBody(now: number) {
   // Status bar — only rebuild string when content changes (not every frame)
   const osCount = oakPathCache ? oakPathCache.mainPlots.length + oakPathCache.sepPlots.length : 0;
   const osErr = oakScriptErrors.length;
-  const hybridActive = dataSourceMode === 'hybrid' && hybridEngine.isActive();
-  const hybridSt = hybridActive ? hybridEngine.getStatus() : null;
-  const hybridAcc = hybridSt ? (hybridSt.accuracy * 100).toFixed(1) : '';
-  const hybridMode = hybridSt ? (hybridSt.mode === 'blend' ? 'blend' : hybridSt.mode === 'paid-only' ? 'paid' : 'synth') : '';
-  const statusKey = `${currentSymbol}|${dataProviderLabel}|${is3DMode ? 3 : 2}|${barType}|${timeframe}|${volumeEnabled}|${vpSettings.mode}|${view.barSpacing.toFixed(1)}|${liveTicksEnabled}|${hybridAcc}|${hybridMode}`;
+  const statusKey = `${currentSymbol}|${dataProviderLabel}|${is3DMode ? 3 : 2}|${barType}|${timeframe}|${volumeEnabled}|${vpSettings.mode}|${view.barSpacing.toFixed(1)}|${autoRefreshOn}`;
   if (statusKey !== (window as any).__dafeStatusKey) {
     (window as any).__dafeStatusKey = statusKey;
     const parts = [
@@ -4645,7 +4507,7 @@ function frameBody(now: number) {
       `Mode: ${is3DMode ? '3D' : '2D'}`,
       `Type: ${barType}`,
       `TF: ${timeframe}`,
-      `Live: ${liveTicksEnabled ? (hybridActive ? `⚡Hybrid ${hybridMode} ${hybridAcc}%` : '◆') : '-'}`,
+      `Auto: ${autoRefreshOn ? `${AUTO_REFRESH_MS / 1000}s` : 'off'}`,
       getMarketStatus(currentSymbol) === 'open' ? '●' : '○',
     ];
     if (osCount > 0 || osErr > 0) parts.push(`Oak: ${osCount}${osErr ? ` (${osErr} err)` : ''}`);

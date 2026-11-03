@@ -426,7 +426,7 @@ export function aggregateTimeframe(bars: BaseBar[], tf: Timeframe): BaseBar[] {
 
 // ─── PER-BAR VOLUME DISTRIBUTION ──────────────────────────────────
 // Deterministic seeded RNG — per-bar/per-level stable so 3D isotropic
-// VolP voxels don't jump colors/volumes when Hybrid appends a bar.
+// VolP voxels don't jump colors/volumes when a live bar is appended.
 function seededUnit(seed: number): number {
   let x = seed | 0;
   x ^= x << 13; x ^= x >> 17; x ^= x << 5;

@@ -66,7 +66,7 @@ providers you pick.
 **Charting**
 - 12 bar types — candlestick, Heikin-Ashi, Renko, range, volume, tick, Kagi, footprint, line, area, dollar and imbalance bars — plus timeframes from 1m to 1w.
 - Volume profile with per-level iso-bar voxels, value area and delta, in 2D and as a 3D heat map.
-- Drawing toolkit (horizontal line, trend/ray, rectangle, Fibonacci, channel, text), 6 built-in themes, customisable hotkeys, and a live tick engine that animates the forming bar.
+- Drawing toolkit (horizontal line, trend/ray, rectangle, Fibonacci, channel, text), 6 built-in themes, customisable hotkeys, and opt-in auto-refresh that reloads the newest bars from the selected data source.
 - Performance modes (Low → Ultra) that scale shadows, gradients and particles to your GPU.
 
 **OakScript**
@@ -82,7 +82,7 @@ providers you pick.
 - An ML lab on the backend: train and predict with classical models (gradient boosting, MLP, logistic, tabular Q-learning) or, optionally, torch-backed LSTM/DQN.
 
 **Data**
-- Yahoo Finance (free) or Massive/Polygon (paid), with a **hybrid** mode that blends sparse paid anchors with frequent free corrections and a correction-anchored synthetic engine.
+- Yahoo Finance (free) or Massive/Polygon (paid), plus any added provider adapter. Real bars only: nothing synthetic is mixed into the chart.
 - 95 built-in symbols plus any Yahoo ticker; market-hours awareness across equities, futures, forex, crypto and foreign sessions; synthetic fallback when every provider is down (clearly labelled).
 - An optional standalone WebSocket relay (`relay/`) that broadcasts 10-second OHLCV ticks — Binance for crypto, Polygon/Massive for futures — deployable to Render.
 

@@ -238,10 +238,6 @@ set it (or use the Settings UI dropdown) to a specific model's name to pin it.
 `market_data_source` can be:
 - **`yahoo`** — free Yahoo Finance (default).
 - **`massive`** — paid Massive feed (requires `massive_api_key`).
-- **`hybrid`** — blends sparse paid Massive anchors + frequent free Yahoo
-  corrections + a correction-anchored synthetic engine for near-live ticks at a
-  fraction of the API cost. For symbols Yahoo doesn't cover (e.g. some futures),
-  it runs on the paid feed alone at a reduced poll rate.
 
 ### API Keys (Optional)
 
@@ -478,5 +474,3 @@ Add new symbols to both files to keep them in sync.
 - **Chart defaults**: Edit `main.ts` initial state variables (near the top).
 - **Voice wake word**: Pass `wakeWord` option to `AdvisorVoice` constructor.
 - **News refresh interval**: Edit the `fetchNews` interval in `main.ts`.
-- **Hybrid data tuning**: `HybridConfig` defaults in
-  `apps/web/src/data-stream/hybrid-engine.ts` (poll intervals, snap factor, band).

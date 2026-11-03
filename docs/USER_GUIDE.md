@@ -16,7 +16,7 @@ DAFE Charts is a professional-grade trading charting platform with an onboard AI
 8. [Volume Profile](#volume-profile)
 9. [OakScript — Custom Indicators](#oakscript--custom-indicators)
 10. [3D Indicator Visualizations](#3d-indicator-visualizations)
-11. [Live Tick Simulation](#live-tick-simulation)
+11. [Auto-Refresh](#auto-refresh)
 12. [Trade Advisor](#trade-advisor)
 13. [Trading Panel](#trading-panel)
 14. [News Feed](#news-feed)
@@ -242,17 +242,15 @@ Open the OakScript editor and select from the "3D Visualizations" category:
 - Volume 3D Bars
 - MACD 3D Ribbon
 
-## Live Tick Simulation
+## Auto-Refresh
 
-The **◆ Live** button in the toolbar simulates real-time price movement on the current candle.
+The **◷ Auto** button in the toolbar re-fetches the newest bars for the current symbol and timeframe every 30 seconds.
 
-- Updates only the **last candle** — close, high, low, and volume change with each tick
-- Previous bars remain static — only the right edge of the chart animates
-- Ticks fire every 300ms with realistic Gaussian random walk
-- A new candle opens automatically when the timeframe interval expires
-- Button pulses green when active
-- **Market-hours aware**: refuses to start outside trading hours and auto-stops when the market closes
-- Crypto runs 24/7, forex runs 24/5, equities run US market hours
+- Real data only: bars come from the source chosen under **Settings → Data → Source** (Yahoo Finance, Massive, or another added provider). Nothing is simulated.
+- Off by default; the setting is remembered between sessions.
+- Your zoom and pan stay where they are while bars refresh.
+- Refreshes pause while the browser tab is hidden and while the symbol's market is closed. Crypto runs 24/7, forex runs 24/5, and equities follow US market hours.
+- If a refresh fails, the button's tooltip says so and the next refresh tries again.
 
 ## Market Hours Detection
 

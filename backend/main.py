@@ -542,7 +542,7 @@ def _collapse_repetition(text: str) -> str:
 # The whole point: hit PAID providers as rarely as possible. A TF bar only
 # changes once per period and a quote only matters every few seconds, so we
 # serve repeats from cache and collapse concurrent identical fetches into one
-# upstream call. This is what makes the hybrid / single-paid-stream mode cheap.
+# upstream call. This is what makes single-paid-stream polling cheap.
 # ---------------------------------------------------------------------------
 _cache: dict[str, tuple[float, Any]] = {}
 _cache_locks: dict[str, asyncio.Lock] = {}

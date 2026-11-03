@@ -329,7 +329,7 @@ export interface RuntimeBarData {
   volume: number[];
   time: number[];
   count: number;
-  /** True while the last bar is still forming (live tick feed). */
+  /** True while the last bar is still forming (auto-refresh on, market open). */
   live?: boolean;
 }
 

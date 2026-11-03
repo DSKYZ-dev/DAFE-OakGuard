@@ -44,7 +44,7 @@ hackathon, what is verified, what is broken/known-limited, what remains, and wha
 **DAFE Charts** — an offline-first AI trading terminal (pre-existing base):
 - Desktop web app (`apps/web/`, TypeScript + Vite + Three.js), FastAPI backend (`backend/`),
   optional local llama.cpp LLM, Capacitor Android app (`apps/mobile/`), WebSocket relay (`relay/`).
-- 12 bar types, volume profile, drawing tools, live tick simulation, paper trading,
+- 12 bar types, volume profile, drawing tools, opt-in auto-refresh, paper trading,
   backtesting (Web Worker) + optimizer, ML lab (sklearn + optional torch), voice, news.
 - **OakScript** — a purpose-built indicator language: lexer → parser → validator →
   per-bar interpreter (`apps/web/src/oakscript/`), 91 builtins, 15 `plot3d` styles across
@@ -92,7 +92,7 @@ hackathon, what is verified, what is broken/known-limited, what remains, and wha
 | Visual Editor | Bloom/glow/fog/marker/camera controls + Crucible/Professional/Minimal presets, persisted | `apps/web/src/visual-editor.ts` |
 | Universal data adapter | Provider registry (Yahoo, Massive, Polygon, Alpaca, Twelve Data, Custom REST with URL template + field map), encrypted keys, Test endpoint fetching real bars | `backend/main.py` (`DATA_PROVIDERS`, `_fetch_via_adapter`), Settings UI |
 | Settings/theme | All sections in Provider-API-Keys card treatment; unified interface glow (color + **brightness slider**) across menu, advisor, trading, news, settings, visual editor | `index.html`, `main.ts` |
-| Live ticks | Rebuilt anchored: ±0.25% mean-reverting band around the real bar, history never rewritten, exact restore on stop | `main.ts` |
+| Auto-refresh | Opt-in Auto button re-fetches the newest bars from the selected provider every 30 s; zoom and pan kept; pauses when the tab is hidden or the market is closed; no synthetic ticks | `main.ts` (`refreshBarsInPlace`) |
 | Background/Live/Suggest fixes | Stars baseline on first load, dropdown applies immediately; single authoritative Live toggle; Suggested = 4 models/regime + cycle button | `main.ts`, `regime-ribbon.ts` |
 | Performance | Idle frame caps (20fps 2D / 30fps 3D idle), advisor snapshot only when open, combined-plots once per frame, pixel-ratio 1.5, lower-pane/Observatory pauses | `main.ts`, `three-*.ts` |
 | Perf tricks made real | 20 measured (not simulated) tricks, `npm run verify:tricks` (5,000-iteration harness, 0 failures on `b64e0e7`) | `perf-trick-test-engine.ts`, `tools/verify/perf-tricks-test.ts` |

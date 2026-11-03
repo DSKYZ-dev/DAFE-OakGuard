@@ -54,7 +54,7 @@ browser. Every path is relative to the script, so the repo is portable.
 | Advisor | `trade-advisor/` — see §4 |
 | Trading | `trading/paper-broker.ts`, `broker-port.ts`, `currency.ts`, `ledger.ts` |
 | Backtest | `backtest/engine.ts`, `optimizer.ts`, `stats.ts`, `worker.ts`, `chart.ts`, `data.ts` |
-| Data | `data-stream/hybrid-engine.ts`, `live-data.ts`, `market-hours.ts`, `ml-client.ts` |
+| Data | `data-stream/live-data.ts`, `market-hours.ts`, `ml-client.ts` |
 | Platform | `accessibility.ts`, `image-cache.ts`, `crypto-utils.ts`, `webgl-renderer.ts` |
 
 ### Backend — `backend/`
@@ -141,10 +141,9 @@ not merely that a URL resolved.
 
 1. `data-stream/live-data.ts` requests bars from the backend for the current
    symbol and timeframe.
-2. The backend picks a provider: Massive if configured, Yahoo otherwise, or the
-   hybrid engine — sparse paid anchors corrected by frequent free polls, with a
-   correction-anchored synthetic generator filling gaps (used by symbols the free
-   feed does not cover, at a reduced poll rate).
+2. The backend serves the provider selected in Settings (Yahoo, Massive, or any
+   added adapter). The Auto button re-fetches the newest bars from it every 30 s
+   while on; no bars are synthesized.
 3. `market-hours.ts` gates live behaviour per instrument class (equities,
    futures, forex, crypto, foreign sessions), so the live engine refuses to tick
    a closed market and stops itself at the close.
