@@ -43,6 +43,7 @@
 #visual-editor-panel,
 #oakscript-editor,
 #oakguard-window,
+#draw-rail,
 .hud-window,
 .dafe-glow-window {
   background: var(--hud-surface) !important;
@@ -68,6 +69,7 @@
 #advisor-panel::before,
 #oakscript-editor::before,
 #oakguard-window::before,
+#draw-rail::before,
 .hud-window::before,
 .dafe-glow-window::before {
   content: "";
@@ -96,6 +98,7 @@
 #advisor-panel:hover::before,
 #oakscript-editor:hover::before,
 #oakguard-window:hover::before,
+#draw-rail:hover::before,
 .hud-window:hover::before,
 .dafe-glow-window:hover::before {
   opacity: 0.85;
@@ -470,6 +473,56 @@ input[type="number"]:not(:disabled):not([readonly]):focus {
 /* ── Splitter: a light rail, not a slab ─────────────────────── */
 #chart-splitter {
   background: linear-gradient(90deg, transparent, rgba(124, 232, 255, 0.16), rgba(180, 140, 255, 0.16), transparent) !important;
+}
+
+/* ── Drawing rail: the vertical sibling of the command deck ─────── */
+#draw-rail {
+  border-radius: 14px;
+}
+/* The rail's buttons fill it edge to edge, so its bezel ticks sit inside the
+   6px padding instead of the window inset. */
+#draw-rail::before {
+  background:
+    linear-gradient(var(--hud-accent), var(--hud-accent)) left 3px top 3px / 7px 1px no-repeat,
+    linear-gradient(var(--hud-accent), var(--hud-accent)) left 3px top 3px / 1px 7px no-repeat,
+    linear-gradient(var(--hud-accent), var(--hud-accent)) right 3px top 3px / 7px 1px no-repeat,
+    linear-gradient(var(--hud-accent), var(--hud-accent)) right 3px top 3px / 1px 7px no-repeat,
+    linear-gradient(var(--hud-accent-2), var(--hud-accent-2)) left 3px bottom 3px / 7px 1px no-repeat,
+    linear-gradient(var(--hud-accent-2), var(--hud-accent-2)) left 3px bottom 3px / 1px 7px no-repeat,
+    linear-gradient(var(--hud-accent-2), var(--hud-accent-2)) right 3px bottom 3px / 7px 1px no-repeat,
+    linear-gradient(var(--hud-accent-2), var(--hud-accent-2)) right 3px bottom 3px / 1px 7px no-repeat;
+}
+#draw-rail .draw-btn {
+  border: 1px solid rgba(124, 232, 255, 0.14);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(124, 232, 255, 0.05), rgba(124, 232, 255, 0.015));
+  color: rgba(214, 232, 255, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s, transform 0.1s;
+}
+#draw-rail .draw-btn:hover {
+  color: #eaf7ff;
+  border-color: rgba(124, 232, 255, 0.45);
+  background: linear-gradient(180deg, rgba(124, 232, 255, 0.16), rgba(124, 232, 255, 0.04));
+  box-shadow: 0 0 18px rgba(124, 232, 255, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+#draw-rail .draw-btn:active { transform: translateY(1px); }
+#draw-rail .draw-btn.active {
+  color: #061018;
+  border-color: rgba(124, 232, 255, 0.75);
+  background: linear-gradient(180deg, #a8f2ff, #5cd4ff);
+  box-shadow: 0 0 22px rgba(124, 232, 255, 0.45);
+}
+#draw-rail .draw-btn .tooltip {
+  padding: 6px 10px;
+  border: 1px solid var(--hud-line);
+  border-radius: 7px;
+  background: linear-gradient(180deg, rgba(16, 22, 44, 0.98), rgba(7, 10, 22, 0.98));
+  color: var(--hud-ink);
+  font-family: var(--hud-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), 0 0 16px rgba(124, 232, 255, 0.10);
 }
 
 /* ── Themed tooltips (themed-tooltip.ts) — replaces the OS title box ── */
