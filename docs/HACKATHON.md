@@ -52,8 +52,13 @@ windows. Rehearse the live run once (about 45 seconds of model time; cut the wai
 label them "sped up").
 
 Music: `Dark Pulse - 45s Cut` runs 0:00–0:45 (opener, cold open, title, escapes); crossfade about
-one second into `Quiet Cost - Full Underscore` at 0:45 and run it to 3:00, ducked to near silence
-under the cost chip at 2:44.
+one second into `Quiet Cost - Full Underscore` at 0:45 and run it to 3:00. The bed sits about ten
+decibels under the voice and lifts in the 0:00–0:12 gap where there is no narration; it dips under
+the cost line at 2:44 and fades out over the last second of the end card.
+
+Picture: every beat is joined by a half-second dissolve rather than a hard cut, and the longer stills
+push in slowly (about 1.2 percent a second) so nothing sits dead on screen. The build script is
+`recapture/build-v2-xfade.ps1`; the reference file is `OakGuard-submission-v2.mp4`.
 
 Voice-over: the twelve takes are trimmed, level-matched and assembled on `VO Timeline (fixed).wav`
 at the timecodes in `timeline.csv`. The opener runs 0:00–0:10 and the first word lands at 0:12 —
@@ -68,13 +73,14 @@ line, so the frame is always established when the sentence begins.
 | 0:28.1–0:49.2 | `IMG-03a-dead-length.png` · `IMG-03b-silent-call.png` · `IMG-03c-breakout.png` — cut a→b at ~0:37.9 and b→c at ~0:41.0, on the sentence starts | "OakGuard starts with three scripts. The validator accepts all three. All three are broken. A zero length that never produces a finite number. A misspelled call that silently returns zero. And a breakout that fired zero times on twenty-four hundred bars. The chart looks fine — nobody notices until the signal is trusted." |
 | 0:49.2–1:10.5 | `IMG-04-wonder-json.png` — one Muse Wonder rule, its JSON | "So I ran the code, and the runtime oracles proved each one broken. Then Muse Wonder wrote a rule that would have caught it. One rule — declarative JSON in a fixed rule language. Data, never code. It cannot touch the chart. It cannot touch the engine. It can only describe the bug." |
 | 1:10.5–1:34.2 | `IMG-05-gate-scores.png` — hold 3–4 s on **Variants 92/92 · held-out 31/31 · false alarms 0/46** | "And then a referee it cannot see decides. Ninety-two of ninety-two broken variants caught. Thirty-one of thirty-one held out — a third the model never saw. Zero false alarms on forty-six known-good scripts. Across all three rules: a hundred and seventy-four of a hundred and seventy-four. Fifty-eight of fifty-eight. Zero false alarms." |
-| 1:34.2–1:53.2 | `IMG-06-playbook-rings.png` → `IMG-07-referee-block.png` → `proposer.mp4` (motion beats a still) | "The referee has teeth. Give it a rule that is too broad and it flags the legitimate new-high test — and rejects it, with that line as the counterexample. Nine deliberately flawed rules. Nine rejections. Every proposer, referee and oracle check passes, headlessly, without an API key." |
+| 1:34.2–1:53.2 | `IMG-06-playbook-rings.png` → `IMG-07-referee-block.png` → `proposer.mp4` (cut in 0:07 into the recording, where the PASS output is already printing) | "The referee has teeth. Give it a rule that is too broad and it flags the legitimate new-high test — and rejects it, with that line as the counterexample. Nine deliberately flawed rules. Nine rejections. Every proposer, referee and oracle check passes, headlessly, without an API key." |
 | 1:53.2–2:04.2 | `IMG-09-editor-rejection.png` — paste the breakout → `SELF_INCLUSIVE_WINDOW_BREAKOUT` | "Now watch it touch my own code. I paste the breakout in — and the validator, armed with Wonder's rule, stops it dead: self-inclusive breakout window." |
 | 2:04.2–2:13.7 | `IMG-10-fixed-markers.png` — 🔧 Fix → breakout markers firing | "One click of Fix. Muse Spark diagnoses it, repairs both lines — and for the first time, the breakout markers actually fire." |
 | 2:13.7–2:29.1 | `IMG-11-voice-request.png` → `IMG-12-look-result.png` | "I do not even have to type it. Add an RSI filter above fifty, show the channel in three D. Muse Voice transcribes it, Muse Spark writes it — and when it does not match, Look tells me exactly what is missing." |
 | 2:29.1–2:43.8 | `IMG-08-referee-9of9.png` / `OakGuard-report-2026-11-03_1125.html` — the two engine fixes and the learning curve | "Then I pointed the oracles at my own engine — and they found two interpreter bugs that had been silently killing shipped indicators. On thirty-two fresh Muse Spark drafts, the learned rules raised zero false alarms." |
 | 2:43.8–2:50.0 | `IMG-06-playbook-rings.png` again → `IMG-13-cost-chip.png` | "And the whole thing — every rule, every call, every token — cost ten cents." |
-| 2:50.0–3:00 | `IMG-15-end-card.png` — repo URL, judge URL, the three Meta models (`muse-wonder-1.0`, `muse-spark-1.3`, `muse-voice-transcribe-1.0`) | "Muse Wonder writes the rules. A referee it cannot see decides. It certifies the code, not the returns. OakGuard." |
+| 2:50.0–2:54.6 | `IMG-15-end-card.png` — repo URL, judge URL, the three Meta models (`muse-wonder-1.0`, `muse-spark-1.3`, `muse-voice-transcribe-1.0`) | "Muse Wonder writes the rules. A referee it cannot see decides. It certifies the code, not the returns. OakGuard." |
+| 2:54.6–3:00 | `IMG-17-brand-card.png` — DskyzInvestments end card ("Same math. New view.") held under the close | — |
 
 Look is shown honestly. The capture reads **✕ does not match yet** and lists what is missing
 (`Upper, Lower, RSI filter above 50`); the voice-over says so. Do not cut it to imply a pass.
