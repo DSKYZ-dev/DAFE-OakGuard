@@ -34,7 +34,7 @@ been silently killing shipped indicators (a crossover() cache collision and NaN-
 sma/ema), now fixed. On 32 fresh Muse Spark drafts, the learned rules raised no false alarms.
 
 Muse Spark 1.3 is the editor's coder and the trade advisor, and also checks the rendered chart
-from an image ("Look"). Muse Voice Transcribe turns spoken requests into indicators. Every claim
+from an image ("Look"). Muse Voice Transcribe turns a spoken request into text for the agent. If it hears nothing, the chat says so and you can speak again. Every claim
 reproduces headlessly without an API key (`npm run verify:proposer`), and the judge build runs in
 a browser with no backend.
 
@@ -47,8 +47,8 @@ a browser with no backend.
   trade advisor. 110 of 110 prompts passed live acceptance over 10 consecutive runs; a re-run after
   the engine fixes passed 11 of 11.
 - **Muse Spark 1.3 image understanding**: reads a capture of the rendered 2D/3D chart and lists
-  what the request asked for that it can and cannot see.
-- **Muse Voice Transcribe**: push-to-talk requests in the editor, keyword-biased to trading terms.
+  what the request asked for that it can and cannot see, and says what is missing when a capture does not match.
+- **Muse Voice Transcribe**: push-to-talk requests in the editor, keyword-biased to trading terms. A take that hears nothing is reported in the chat, not hidden.
 
 ## What was built during the hackathon
 
@@ -66,7 +66,7 @@ built during the event carry a NEW badge in the app.
 >
 > So I built OakGuard: @AIatMeta's Muse Wonder writes the rule that catches the bug, and a referee it can't see decides if the rule is good enough to go live.
 >
-> 174/174 broken variants caught · 0 false alarms · $0.12
+> 174/174 broken variants caught · 0 false alarms · $0.10 live run
 > It even found two bugs in my own engine.
 >
 > [video] · [repo] #MetaHackathon
