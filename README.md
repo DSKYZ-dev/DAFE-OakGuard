@@ -43,14 +43,17 @@ and proves each new check before it goes live.
 5. **Promoted rules enforce everywhere.** They run inside the validator used by the editor, the
    agent's fix loop and the backtest pre-flight, for every script from then on.
 
-Every exchange is recorded with its model, prompt hash, tokens and cost. A replay re-grades the
-recorded text with today's referee; verdicts are never replayed.
+Every exchange is recorded with its model, prompt hash, tokens and cost — the [recorded
+run](apps/web/src/oakguard/recorded-run.json) keeps all three calls (7,662 tokens, $0.115; the
+judge build shows it labelled "(recorded)"). A replay re-grades the recorded text with today's
+referee; verdicts are never replayed. The live run shown in the demo video promoted the same
+three rules — also 174 of 174 — for 6,921 tokens and $0.1005, which is the **$0.10** below.
 
 ## Results
 
 | | |
 |---|---|
-| Rules Muse Wonder wrote for the three escape classes | **3 of 3 promoted**, first round, $0.12 in total ([recorded run](apps/web/src/oakguard/recorded-run.json)) |
+| Rules Muse Wonder wrote for the three escape classes | **3 of 3 promoted**, first round, **$0.10** in total |
 | Broken variants caught by those rules | **174 of 174**, including **58 of 58 held out** from the model |
 | False alarms on the 46 known-good scripts | **0** |
 | Flawed rules the referee must reject (too narrow, too broad, wrong family, malformed) | **9 of 9 rejected** (`npm run verify:proposer`) |

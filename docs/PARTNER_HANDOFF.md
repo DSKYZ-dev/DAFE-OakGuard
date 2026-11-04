@@ -2,7 +2,7 @@
 
 > **Current status (Nov 2, 2026) — read this first; it supersedes older sections below.**
 > - Track switched to **Startup** (it explicitly allows building on an existing codebase).
-> - OakGuard's candidates now come from **Muse Wonder live** (`proposer.ts`, `/api/meta/structured`), graded by the referee. Recorded run: 3/3 promoted, 174/174 variants (58/58 held out), 0/46 false alarms, $0.12 (`apps/web/src/oakguard/recorded-run.json`). The hand-written catalogue remains only as the offline test path.
+> - OakGuard's candidates now come from **Muse Wonder live** (`proposer.ts`, `/api/meta/structured`), graded by the referee. Live run: 3/3 promoted, 174/174 variants (58/58 held out), 0/46 false alarms, $0.10. The hand-written catalogue remains only as the offline test path.
 > - New: runtime oracles, contrast corpus (46 known-good scripts), `self-inclusive-window` rule family, referee self-test (9/9 flawed rules rejected), learning curve on 32 Muse Spark drafts (`docs/reports/LEARNING_CURVE.md`), Muse Voice Transcribe push-to-talk, Muse Spark 👁 Look, judge mode (`?backend=none`), CI job and GitHub Pages deploy.
 > - Engine fixes found by OakGuard: `crossover()` cache collision, NaN-poisoned `sma()`/`ema()`, scientific notation in the lexer, 🔧 Fix ignoring validator-only errors.
 > - All roles on Meta: coder and advisor `muse-spark-1.3`, proposer `muse-wonder-1.0`. Acceptance re-run after the fixes: 11/11 (`tools/verify/final-limit-results-acceptance-nov2-*`).
@@ -13,15 +13,15 @@
 this project without re-deriving anything. It covers what exists, what was built during the
 hackathon, what is verified, what is broken/known-limited, what remains, and what comes after.
 
-**Last updated:** Oct 31, 2026 · **Deadline: Nov 4, 2026, 9:00 PM ET** · Repo: this directory
+**Last updated:** Nov 3, 2026 · **Deadline: Nov 4, 2026, 9:00 PM ET** · Repo: this directory
 (`C:\DAFECharts-META-Hackathon`, git initialized locally, **not yet pushed public**)
 
 ---
 
 ## 1. The event and where we fit
 
-- **Event:** Meta Global AI Developer Hackathon (Cerebral Valley, virtual, Oct 27 – Nov 4, 2026).
-- **Track chosen:** **Indie Developer** ($400k pool; judged on creativity, technical ambition, whether it works).
+- **Event:** Meta Global AI Developer Hackathon (Cerebral Valley, virtual, Oct 26 – Nov 4, 2026).
+- **Track chosen:** **Startup** (switched from Indie Developer — it explicitly allows building on an existing codebase; judged on creativity, technical ambition, whether it works).
 - **Theme chosen:** **Push the Frontier** — software / verifiable agents. (Supporting narrative:
   "Build for Your World" — the founder is a trader; the Pine indicators in the wild are his.)
 - **Rules that shape everything:**
@@ -142,15 +142,15 @@ Current role config: **Trade Advisor = OpenCode · `qwen3.8-flash`; OakScript Co
 
 ## 5. Still needs to be completed (priority order)
 
-1. **Push the repo public on GitHub** (judging requirement). Local git history is ready;
-   GitHub CLI is authenticated as `DSKYZ-dev` and no remote is configured yet. Then put
-   the URL in `docs/HACKATHON.md` + submission form.
+1. **Push the repo public on GitHub** (judging requirement). Done —
+   `https://github.com/DSKYZ-dev/DAFE-OakGuard` (origin configured; URL is in
+   `docs/SUBMISSION.md`). Keep it public through judging.
 2. **Claim the $150 Meta Model API credits** (participant-guide form) if not done; confirm
    the Meta key in Settings is the credited account's key.
 3. **Record the 3-minute demo video** from the script in `docs/HACKATHON.md`
    (Crucible stepper, `http://127.0.0.1:5173/?oakguard=1`). Record a backup take.
    Rehearse once with **Reset Playbook** so the demo starts at v1.
-4. **Fill the submission form**: track = Indie Developer, theme = Push the Frontier,
+4. **Fill the submission form**: track = Startup, theme = Push the Frontier,
    contributions list = §3 of this doc / top of `docs/HACKATHON.md`, team members, video link.
 5. **No key material in the repository.** The only 23-character literal in the old
    `apps/mobile/src/state.ts` history was the localStorage key name

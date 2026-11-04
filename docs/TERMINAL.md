@@ -24,9 +24,9 @@ language that renders in 2D _and_ 3D, and a trade advisor that runs on your own 
 
 ## New in this submission: DAFE OakGuard
 
-Built during the Meta Global AI Developer Hackathon (Oct 27 – Nov 4, 2026). The trading terminal below is the pre-existing base. [docs/HACKATHON.md](HACKATHON.md) lists exactly what was built during the event.
+Built during the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026). The trading terminal below is the pre-existing base. [docs/HACKATHON.md](HACKATHON.md) lists exactly what was built during the event.
 
-OakGuard is a verification layer for the indicator code an AI writes. The app runs on Meta's `muse-spark-1.3` for both its editor and its trade assistant. Candidate validation rules come from a hand-written catalogue for now; a live model as proposer is the next step. An independent, deterministic referee accepts a rule only if it catches the planted bugs and wrongly flags none of the known-good scripts, and it records every decision with its evidence. It also certifies the procedure behind every backtest: no lookahead, fills at the open of the entry bar, costs charged, a reserved out-of-sample period. It certifies the procedure, not the returns.
+OakGuard is a verification layer for the indicator code an AI writes. The app runs on Meta's `muse-spark-1.3` for both its editor and its trade assistant. Candidate validation rules come from **Muse Wonder live**; the hand-written catalogue remains only as the offline test path. An independent, deterministic referee accepts a rule only if it catches the planted bugs and wrongly flags none of the known-good scripts, and it records every decision with its evidence. It also certifies the procedure behind every backtest: no lookahead, fills at the open of the entry bar, costs charged, a reserved out-of-sample period. It certifies the procedure, not the returns.
 
 Verify the claims with three headless commands (no API keys needed):
 
