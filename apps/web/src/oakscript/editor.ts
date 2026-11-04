@@ -20,6 +20,8 @@ import { backtestCertificate } from '../oakguard/honesty';
 import { PushToTalk } from '../meta-voice';
 import { visualCheck } from '../visual-check';
 import { newBadge } from '../new-badge';
+import { minimizeWindow, restoreWindow, forgetWindow, isMinimized } from '../window-dock';
+import { raiseOnPress, toggleFullscreen, isFullscreen } from '../window-frame';
 
 /** The last request sent to the agent, for the visual check. */
 let lastAgentRequest = '';
@@ -242,6 +244,7 @@ export function showEditorConfirmModal(opts: ConfirmModalOptions): Promise<boole
 let currentResult: OakscriptResult | null = null;
 let currentSource = '';
 let editorVisible = false;
+const EDITOR_WINDOW_ID = 'oakscript-editor';
 let editorPanel: HTMLDivElement | null = null;
 let textarea: HTMLTextAreaElement | null = null;
 let errorListDiv: HTMLDivElement | null = null;
@@ -505,9 +508,25 @@ export function setWebhookUrl(url: string): void {
 }
 
 export function toggleEditor(): boolean {
+  // A minimized editor is still open, so the toolbar button brings it back.
+  if (isMinimized(EDITOR_WINDOW_ID)) {
+    editorVisible = true;
+    restoreWindow(EDITOR_WINDOW_ID);
+    fitEditorToViewport();
+    return true;
+  }
   editorVisible = !editorVisible;
   if (editorPanel) editorPanel.style.display = editorVisible ? 'flex' : 'none';
+  if (editorVisible) fitEditorToViewport();
+  else forgetWindow(EDITOR_WINDOW_ID);
   return editorVisible;
+}
+
+/** Keep the editor's bottom edge on screen, so its chat and resize grip stay reachable. */
+function fitEditorToViewport(): void {
+  if (!editorPanel || isFullscreen(editorPanel) || editorPanel.style.display === 'none') return;
+  const top = editorPanel.getBoundingClientRect().top;
+  editorPanel.style.maxHeight = `${Math.max(320, window.innerHeight - top - 12)}px`;
 }
 
 let onRunCallback: ((source: string) => void) | null = null;
@@ -568,6 +587,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   editorPanel = document.createElement('div');
   editorPanel.id = 'oakscript-editor';
   editorPanel.className = 'hud-window';
+  raiseOnPress(editorPanel);
   Object.assign(editorPanel.style, {
     position: 'fixed', left: `${SECOND_COLUMN_LEFT}px`, top: `${WINDOW_TOP_MIN}px`, width: '460px', maxHeight: '90vh',
     minWidth: '420px', minHeight: '320px',
@@ -616,7 +636,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   let dragOffX = 0, dragOffY = 0, dragging = false;
   header.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).tagName === 'BUTTON') return;
-    if (!editorPanel) return;
+    if (!editorPanel || isFullscreen(editorPanel)) return;
     dragging = true;
     const r = editorPanel.getBoundingClientRect();
     dragOffX = e.clientX - r.left;
@@ -630,40 +650,37 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     editorPanel.style.left = x + 'px';
     editorPanel.style.top = y + 'px';
   });
-  document.addEventListener('mouseup', () => { dragging = false; saveBounds(); });
+  document.addEventListener('mouseup', () => { dragging = false; saveBounds(); fitEditorToViewport(); });
 
   function saveBounds() {
-    if (!editorPanel) return;
+    if (!editorPanel || isFullscreen(editorPanel)) return;
     const r = editorPanel.getBoundingClientRect();
     try { localStorage.setItem('oakscript_editor_bounds', JSON.stringify({ left: r.left, top: r.top, width: r.width, height: r.height })); } catch {}
   }
 
   const btnGroup = document.createElement('div');
-  Object.assign(btnGroup.style, { display: 'flex', alignItems: 'center', gap: '2px' });
+  Object.assign(btnGroup.style, { display: 'flex', alignItems: 'center', gap: '4px' });
+
+  const minBtn = document.createElement('button');
+  minBtn.textContent = '−';
+  minBtn.title = 'Minimize';
+  Object.assign(minBtn.style, {
+    background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+    color: '#888', cursor: 'pointer', fontSize: '14px', padding: '1px 7px', borderRadius: '4px',
+  });
+  minBtn.onclick = () => { if (editorPanel) minimizeWindow(EDITOR_WINDOW_ID, 'OakScript Editor', editorPanel); };
+  btnGroup.appendChild(minBtn);
 
   const fullscreenBtn = document.createElement('button');
   fullscreenBtn.textContent = '⛶';
   fullscreenBtn.title = 'Fullscreen';
   Object.assign(fullscreenBtn.style, {
-    background: 'none', border: 'none', color: 'rgba(255,255,255,0.25)',
-    cursor: 'pointer', fontSize: '12px', padding: '2px 6px',
+    background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+    color: '#888', cursor: 'pointer', fontSize: '12px', padding: '1px 6px', borderRadius: '4px',
   });
-  let isFullscreen = false;
   fullscreenBtn.onclick = () => {
     if (!editorPanel) return;
-    isFullscreen = !isFullscreen;
-    if (isFullscreen) {
-      editorPanel.style.left = '0'; editorPanel.style.top = '0';
-      editorPanel.style.width = window.innerWidth + 'px';
-      editorPanel.style.height = window.innerHeight + 'px';
-      editorPanel.style.maxHeight = 'none';
-      editorPanel.style.borderRadius = '0';
-    } else {
-      editorPanel.style.left = '300px'; editorPanel.style.top = '60px';
-      editorPanel.style.width = '460px'; editorPanel.style.height = '';
-      editorPanel.style.maxHeight = '90vh';
-      editorPanel.style.borderRadius = '10px';
-    }
+    fullscreenBtn.title = toggleFullscreen(editorPanel) ? 'Exit fullscreen' : 'Fullscreen';
     saveBounds();
   };
   btnGroup.appendChild(fullscreenBtn);
@@ -671,10 +688,10 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   const closeBtn = document.createElement('button');
   closeBtn.textContent = '✕';
   Object.assign(closeBtn.style, {
-    background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)',
-    cursor: 'pointer', fontSize: '14px', padding: '2px 6px',
+    background: 'none', border: '1px solid rgba(255,255,255,0.1)',
+    color: '#888', cursor: 'pointer', fontSize: '12px', padding: '1px 6px', borderRadius: '4px',
   });
-  closeBtn.onclick = () => { editorVisible = false; if (editorPanel) editorPanel.style.display = 'none'; };
+  closeBtn.onclick = () => { editorVisible = false; forgetWindow(EDITOR_WINDOW_ID); if (editorPanel) editorPanel.style.display = 'none'; };
   btnGroup.appendChild(closeBtn);
   header.appendChild(btnGroup);
   editorPanel.appendChild(header);
@@ -1285,7 +1302,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     maxHeight: '80px', overflow: 'auto', padding: '2px 8px',
     fontSize: '9px', fontFamily: 'monospace',
     color: 'rgba(255,255,255,0.5)',
-    display: 'none', resize: 'vertical',
+    display: 'none',
   });
 
   const chatHeader = document.createElement('div');
@@ -1332,6 +1349,25 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
     }).catch(() => {});
   };
   chatTools.appendChild(copyLogBtn);
+
+  // Taller message log for reading back a long conversation.
+  let chatExpanded = false;
+  const chatExpandBtn = document.createElement('button');
+  chatExpandBtn.textContent = '⤢';
+  chatExpandBtn.title = 'Expand the chat to review the conversation';
+  Object.assign(chatExpandBtn.style, {
+    padding: '1px 5px', border: '1px solid rgba(180,140,255,0.1)',
+    borderRadius: '3px', background: 'transparent',
+    color: 'rgba(255,255,255,0.25)', cursor: 'pointer', fontSize: '8px',
+  });
+  chatExpandBtn.onclick = () => {
+    chatExpanded = !chatExpanded;
+    chatMsgs.style.maxHeight = chatExpanded ? '40vh' : '80px';
+    chatExpandBtn.textContent = chatExpanded ? '⤡' : '⤢';
+    chatExpandBtn.title = chatExpanded ? 'Shrink the chat' : 'Expand the chat to review the conversation';
+    chatMsgs.scrollIntoView({ block: 'nearest' });
+  };
+  chatTools.appendChild(chatExpandBtn);
 
   // Muse Spark looks at the rendered chart and says whether it shows what was asked.
   const lookBtn = document.createElement('button');
@@ -1551,6 +1587,7 @@ export function createEditor(container: HTMLElement, onRun: (source: string) => 
   editorPanel.style.position = 'fixed';
   editorPanel.appendChild(resizeHandle);
   container.appendChild(editorPanel);
+  window.addEventListener('resize', fitEditorToViewport);
   return { panel: editorPanel, textarea };
 }
 

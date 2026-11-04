@@ -59,6 +59,7 @@ import { PerfGovernor, recommendInitialTier, tierParticleCount, type PerfTier } 
 import { createInputsPanel } from './age-inputs-panel';
 import { createDashboard } from './dashboard-widget';
 import { minimizeWindow, restoreWindow, forgetWindow, isMinimized } from './window-dock';
+import { raiseOnPress } from './window-frame';
 import { WINDOW_TOP_MIN, WINDOW_GAP, HEADER_BAR_HEIGHT, TRADING_LEFT, LEFT_COLUMN_LEFT, LEFT_COLUMN_WIDTH, SECOND_COLUMN_LEFT, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
 import { isJudgeMode, JUDGE_AI_MESSAGE } from './judge-mode';
@@ -202,7 +203,7 @@ async function refreshBarsInPlace(): Promise<void> {
     perBarVols = generatePerBarVolumes(transformed, 12);
     vpCacheKey = '';
     oakPathKey = '';
-    if (oakScriptEnabled) runAllIndicators();
+    if (oakScriptEnabled || hasActiveIndicators()) runAllIndicators();
     updateUI();
     updateTradingPanel();
   } finally {
@@ -513,7 +514,7 @@ function dashboardToggleFor(id?: string): import('./age-inputs-panel').Dashboard
 // neutral default (0.5/0) forever instead of just until the fetch lands,
 // since nothing else forces a re-run absent a new bar/tick.
 setMlRedrawCallback(() => {
-  if (oakScriptEnabled) { runAllIndicators(); updateUI(); }
+  if (oakScriptEnabled || hasActiveIndicators()) { runAllIndicators(); updateUI(); }
 });
 
 // ─── Regime Ribbon ─────────────────────────────────────────────────
@@ -809,7 +810,7 @@ function regenerate() {
   view.barSpacing = DEFAULT_BAR_SPACING;
   vpCacheKey = ''; vpCacheResult = null;
   oakPathKey = ''; oakPathCache = null;
-  if (oakScriptEnabled) { runAllIndicators(); }
+  if (oakScriptEnabled || hasActiveIndicators()) { runAllIndicators(); }
   updateTradingPanel();
 }
 
@@ -851,12 +852,15 @@ function canvasPoint(e: MouseEvent): { x: number; y: number } {
 }
 canvas.addEventListener('mousedown', (e) => {
   const p = canvasPoint(e);
-  if (drawingsVisible && draw.isDrawing()) {
+  // Shift-drag pans even while a drawing tool is armed (the eraser, a trend
+  // line, ...), so moving the chart never requires disarming the tool.
+  const panGesture = e.shiftKey;
+  if (!panGesture && drawingsVisible && draw.isDrawing()) {
     draw.onClick(p.x, p.y, transformed, view, canvas.clientWidth, canvas.clientHeight, is3DMode);
     visualAdapter.logAction('draw', `Placed ${draw.getTool()} at (${Math.round(p.x)}, ${Math.round(p.y)})`);
     return;
   }
-  if (drawingsVisible && draw.pointerDown(p.x, p.y, transformed, view, canvas.clientWidth, canvas.clientHeight, is3DMode)) return;
+  if (!panGesture && drawingsVisible && draw.pointerDown(p.x, p.y, transformed, view, canvas.clientWidth, canvas.clientHeight, is3DMode)) return;
   if (p.x > chartRight(canvas.clientWidth)) {
     scaleYDragging = true;
     canvas.style.cursor = 'ns-resize';
@@ -1010,7 +1014,7 @@ const loadLiveData = async function(symbol?: string, tf?: string): Promise<void>
       view.barSpacing = DEFAULT_BAR_SPACING;
       vpCacheKey = '';
       oakPathKey = '';
-      if (oakScriptEnabled) runAllIndicators();
+      if (oakScriptEnabled || hasActiveIndicators()) runAllIndicators();
 
       if (statusEl) {
         statusEl.textContent = `${sym} (${result.provider})`;
@@ -1051,7 +1055,7 @@ function useSyntheticData(sym: string, tfv: Timeframe): void {
   view.barSpacing = DEFAULT_BAR_SPACING;
   vpCacheKey = '';
   oakPathKey = '';
-  if (oakScriptEnabled) runAllIndicators();
+  if (oakScriptEnabled || hasActiveIndicators()) runAllIndicators();
   updateUI();
   updateAdvisorContext();
   updateTradingPanel();
@@ -1409,6 +1413,7 @@ function buildIndicatorList() {
     boxShadow: '0 4px 20px rgba(0,0,0,0.4)', width: `${LEFT_COLUMN_WIDTH}px`, minWidth: '240px', maxWidth: `${LEFT_COLUMN_WIDTH}px`,
     fontSize: '11px', color: 'rgba(255,255,255,0.7)',
   });
+  raiseOnPress(indicatorListEl);
 
   const titleRow = document.createElement('div');
   titleRow.className = 'hud-head';
@@ -3801,6 +3806,10 @@ CRITICAL RULES:
   });
 
   // ─── News Box ────────────────────────────────────────────────────
+  for (const id of ['news-box', 'trading-panel', 'settings-panel', 'vp-settings-panel']) {
+    const win = document.getElementById(id);
+    if (win) raiseOnPress(win);
+  }
   const newsList = document.getElementById('news-list');
   document.getElementById('news-toggle')?.addEventListener('click', () => {
     const box = document.getElementById('news-box');

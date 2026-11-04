@@ -10,6 +10,7 @@ import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-
 import { WINDOW_TOP_MIN, NEWS_BOX_BOTTOM, WINDOW_GAP, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
 import { minimizeWindow, restoreWindow, forgetWindow } from './window-dock';
+import { raiseOnPress } from './window-frame';
 
 export function createDashboard(): {
   panel: HTMLDivElement;
@@ -40,6 +41,7 @@ export function createDashboard(): {
     boxShadow: '0 6px 30px rgba(0,0,0,0.5)',
     overflow: 'hidden',
   });
+  raiseOnPress(panel);
 
   let placedBySaved = false;
   // Restore position

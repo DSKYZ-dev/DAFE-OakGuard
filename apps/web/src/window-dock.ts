@@ -22,7 +22,7 @@ function injectStyles(): void {
   style.id = 'window-dock-styles';
   style.textContent = `
     #window-dock {
-      position: fixed; left: 12px; bottom: 0; z-index: 10002;
+      position: fixed; left: 12px; bottom: 0; z-index: 10040;
       display: none; align-items: flex-end; gap: 4px;
       height: ${DOCK_HEIGHT}px; max-width: calc(100vw - 24px);
       overflow-x: auto; scrollbar-width: none;

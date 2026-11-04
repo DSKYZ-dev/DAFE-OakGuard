@@ -23,6 +23,7 @@ import { validate } from '../oakscript/validator';
 import { getIndicators, getUserIndicators } from '../oakscript/indicators';
 import { WINDOW_TOP_MIN, clearOfHeaderTop } from '../header-band';
 import { minimizeWindow, restoreWindow, forgetWindow } from '../window-dock';
+import { raiseOnPress, toggleFullscreen, isFullscreen } from '../window-frame';
 import type { PlaybookState } from './types';
 
 const ACCENT = 'var(--dafe-glow, #2dffb3)';
@@ -139,14 +140,21 @@ function buildWindow(): void {
   const closeBtn = node('button', 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:12px;padding:1px 6px;border-radius:4px;', '✕');
   closeBtn.title = 'Close';
   closeBtn.onclick = () => closeOakGuard();
-  controls.append(minBtn, closeBtn);
+  const fullBtn = node('button', 'background:none;border:1px solid rgba(255,255,255,0.1);color:#888;cursor:pointer;font-size:12px;padding:1px 6px;border-radius:4px;', '⛶');
+  fullBtn.title = 'Fullscreen';
+  fullBtn.onclick = () => {
+    if (!win) return;
+    fullBtn.title = toggleFullscreen(win) ? 'Exit fullscreen' : 'Fullscreen';
+    observatory?.resize();
+  };
+  controls.append(minBtn, fullBtn, closeBtn);
   header.append(titleWrap, controls);
 
   let dragX = 0;
   let dragY = 0;
   let dragging = false;
   header.addEventListener('mousedown', (ev) => {
-    if (!win || (ev.target as HTMLElement).tagName === 'BUTTON') return;
+    if (!win || isFullscreen(win) || (ev.target as HTMLElement).tagName === 'BUTTON') return;
     dragging = true;
     dragX = ev.clientX - win.offsetLeft;
     dragY = ev.clientY - win.offsetTop;
@@ -170,6 +178,7 @@ function buildWindow(): void {
   bodyEl.append(viewport, side);
   win.append(header, bodyEl);
   document.body.appendChild(win);
+  raiseOnPress(win);
 
   observatory = new OakGuardObservatory(canvas);
   placeWindow();

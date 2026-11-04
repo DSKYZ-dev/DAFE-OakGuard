@@ -16,6 +16,7 @@ import { TOOLBAR_BAND, clearOfToolbarTop, overlapsToolbarBand } from './toolbar-
 import { WINDOW_TOP_MIN, SECOND_COLUMN_LEFT, WINDOW_GAP, clearOfHeaderTop } from './header-band';
 import { escapeHtml } from './escape-html';
 import { minimizeWindow, restoreWindow, forgetWindow } from './window-dock';
+import { raiseOnPress } from './window-frame';
 
 export interface DashboardToggleState {
   visible: boolean;
@@ -85,6 +86,7 @@ export function createInputsPanel(onRun: (overrides: Map<string, any>) => void):
     boxShadow: '0 8px 40px rgba(0,0,0,0.6)',
     overflow: 'hidden',
   });
+  raiseOnPress(panel);
 
   try {
     const saved = JSON.parse(localStorage.getItem('age_inputs_bounds') || 'null');

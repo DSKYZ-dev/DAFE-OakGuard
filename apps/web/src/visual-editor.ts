@@ -13,6 +13,7 @@ import {
   getChart3DVisualSettings, setChart3DVisualSettings, resetChart3DCamera,
   mark3DSceneDirty, type Chart3DVisualSettings,
 } from './three-indicators';
+import { raiseOnPress } from './window-frame';
 
 const KEY = 'dafe_visual_editor_v1';
 const FONT = "ui-monospace, Menlo, Consolas, monospace";
@@ -131,6 +132,7 @@ export function toggleVisualEditor(): void {
     background: 'rgba(7,10,24,0.96)', border: '1px solid rgba(111,214,255,0.35)',
     borderRadius: '10px', boxShadow: '0 0 24px rgba(80,180,255,0.22)', backdropFilter: 'blur(10px)',
   });
+  raiseOnPress(panel);
   const head = document.createElement('div');
   Object.assign(head.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
   head.className = 'hud-head';
