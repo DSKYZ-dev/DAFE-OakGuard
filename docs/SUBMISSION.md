@@ -28,8 +28,8 @@ each bug class. Rejected rules go back to the model with the reason and a counte
 rules are enforced in the validator for every script the agent writes from then on.
 
 Results on the live run: Muse Wonder's three rules caught 174 of 174 broken variants, 58 of
-58 held out, with zero false alarms, for $0.10 (the recorded run shipped for replay in the judge
-build is labelled "(recorded)" and cost $0.115 for the same three rules). The referee rejects all nine deliberately flawed
+58 held out, with zero false alarms, for $0.10–$0.12 a run (live run $0.1005; the recorded run shipped
+for replay in the judge build is labelled "(recorded)" and cost $0.115 for the same three rules). The referee rejects all nine deliberately flawed
 rules in its self-test. Pointed at our own engine, the oracles found two interpreter bugs that had
 been silently killing shipped indicators (a crossover() cache collision and NaN-poisoned
 sma/ema), now fixed. On 32 fresh Muse Spark drafts, the learned rules raised no false alarms.
@@ -67,7 +67,7 @@ built during the event carry a NEW badge in the app.
 >
 > So I built OakGuard: @AIatMeta's Muse Wonder writes the rule that catches the bug, and a referee it can't see decides if the rule is good enough to go live.
 >
-> 174/174 broken variants caught · 0 false alarms · $0.10 live run
+> 174/174 broken variants caught · 0 false alarms · $0.10–$0.12 per run
 > It even found two bugs in my own engine.
 >
 > [video] · [repo] #MetaHackathon

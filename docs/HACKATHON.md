@@ -56,9 +56,11 @@ one second into `Quiet Cost - Full Underscore` at 0:45 and run it to 3:00. The b
 decibels under the voice and lifts in the 0:00–0:12 gap where there is no narration; it dips under
 the cost line at 2:44 and fades out over the last second of the end card.
 
-Picture: every beat is joined by a half-second dissolve rather than a hard cut, and the longer stills
-push in slowly (about 1.2 percent a second) so nothing sits dead on screen. The build script is
-`recapture/build-v2-xfade.ps1`; the reference file is `OakGuard-submission-v2.mp4`.
+Picture: beats are joined by a half-second dissolve, with a directional wipe reserved for scene changes.
+Motion varies by frame rather than repeating one drift: the chart stills push in, the gate card pulls
+out, the escape cards drift laterally, and the text-heavy frames (title, referee block, terminal, end
+cards) are held still so nothing slides out of frame. The build script is `recapture/build-v3.ps1`;
+the reference file is `OakGuard-submission-v3.mp4`.
 
 Voice-over: the twelve takes are trimmed, level-matched and assembled on `VO Timeline (fixed).wav`
 at the timecodes in `timeline.csv`. The opener runs 0:00–0:10 and the first word lands at 0:12 —
@@ -78,9 +80,12 @@ line, so the frame is always established when the sentence begins.
 | 2:04.2–2:13.7 | `IMG-10-fixed-markers.png` — 🔧 Fix → breakout markers firing | "One click of Fix. Muse Spark diagnoses it, repairs both lines — and for the first time, the breakout markers actually fire." |
 | 2:13.7–2:29.1 | `IMG-11-voice-request.png` → `IMG-12-look-result.png` | "I do not even have to type it. Add an RSI filter above fifty, show the channel in three D. Muse Voice transcribes it, Muse Spark writes it — and when it does not match, Look tells me exactly what is missing." |
 | 2:29.1–2:43.8 | `IMG-08-referee-9of9.png` / `OakGuard-report-2026-11-03_1125.html` — the two engine fixes and the learning curve | "Then I pointed the oracles at my own engine — and they found two interpreter bugs that had been silently killing shipped indicators. On thirty-two fresh Muse Spark drafts, the learned rules raised zero false alarms." |
-| 2:43.8–2:50.0 | `IMG-06-playbook-rings.png` again → `IMG-13-cost-chip.png` | "And the whole thing — every rule, every call, every token — cost ten cents." |
-| 2:50.0–2:54.6 | `IMG-15-end-card.png` — repo URL, judge URL, the three Meta models (`muse-wonder-1.0`, `muse-spark-1.3`, `muse-voice-transcribe-1.0`) | "Muse Wonder writes the rules. A referee it cannot see decides. It certifies the code, not the returns. OakGuard." |
-| 2:54.6–3:00 | `IMG-17-brand-card.png` — DskyzInvestments end card ("Same math. New view.") held under the close | — |
+| 2:43.8–2:51.0 | `IMG-06-playbook-rings.png` again → `IMG-13-cost-range.png` (**$0.10–$0.12** · live run $0.1005, recorded replay $0.115) | "And the whole thing — every rule, every call, every token — stays in a low cost effective range." |
+| 2:51.0–2:54.9 | `IMG-15-end-card.png` — repo URL, judge URL, the three Meta models (`muse-wonder-1.0`, `muse-spark-1.3`, `muse-voice-transcribe-1.0`) | "Muse Wonder writes the rules. A referee it cannot see decides. It certifies the code, not the returns. OakGuard." |
+| 2:54.9–3:00 | `IMG-17-brand-card.png` — DskyzInvestments end card ("Same math. New view.") held under the close | — |
+
+The cost is shown as a **range** ($0.10–$0.12) so the frame matches the recorded voice-over, which no
+longer commits to a single figure; both endpoints are the real run costs (live $0.1005, replay $0.115).
 
 Look is shown honestly. The capture reads **✕ does not match yet** and lists what is missing
 (`Upper, Lower, RSI filter above 50`); the voice-over says so. Do not cut it to imply a pass.
@@ -89,7 +94,7 @@ Presenter rules: never show an equity curve or a P&L figure as a result; say "ru
 model fixed itself"; keep the NEW badges in frame when showing a feature.
 
 **60-second cut:** escape (0:00–0:08) → Muse Wonder writes it, held-out numbers (0:08–0:25) →
-referee 9/9 (0:25–0:35) → voice + Look (0:35–0:45) → engine bugs and ten cents (0:45–1:00).
+referee 9/9 (0:25–0:35) → voice + Look (0:35–0:45) → engine bugs and the cost range (0:45–1:00).
 
 ## Judge FAQ
 
