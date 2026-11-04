@@ -1,6 +1,6 @@
 # OakGuard — YouTube Publishing Package
 
-**Long cut:** `OakGuard-submission-v4.mp4` — 3:00 (180.00 s) · 1920×1080 · 30 fps · AAC 48 kHz · 98 MB
+**Long cut:** `OakGuard-submission-v5.mp4` — 3:00 (180.00 s) · 1920×1080 · 30 fps · AAC 48 kHz · 90 MB
 **45-second cut:** `OakGuard-short-45s.mp4` — 0:45 (45.00 s) · 1920×1080 · 30 fps · AAC 48 kHz
 **Thumbnails:** `OakGuard-thumbnail-3min.jpg` (1280×720) · `OakGuard-short-thumbnail.jpg` (1280×720)
 **Music:** *Dark Pulse* and *Quiet Cost* beds, crossfaded at 0:45 in the long cut.
@@ -168,7 +168,7 @@ nine flawed rules rejected, $0.10–$0.12 per run. It certifies the code — not
 
 ## Assets checklist
 
-- [x] `OakGuard-submission-v4.mp4` — 180.000 s, video + audio both 180.000, 1920×1080@30, H.264/AAC, 98 MB
+- [x] `OakGuard-submission-v5.mp4` — 180.000 s, video + audio both 180.000, 1920×1080@30, H.264/AAC, 90 MB
 - [x] `OakGuard-short-45s.mp4` — 45.000 s, video + audio both 45.000, 1920×1080@30, H.264/AAC
 - [x] `OakGuard-thumbnail-3min.jpg` — 1280×720, 117 KB
 - [x] `OakGuard-short-thumbnail.jpg` — 1280×720, 140 KB

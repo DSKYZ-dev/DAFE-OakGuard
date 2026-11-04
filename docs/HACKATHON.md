@@ -56,13 +56,11 @@ one second into `Quiet Cost - Full Underscore` at 0:45 and run it to 3:00. The b
 decibels under the voice and lifts in the 0:00–0:12 gap where there is no narration; it dips under
 the cost line at 2:44 and fades out over the last second of the end card.
 
-Picture: beats are joined by a half-second dissolve, with a directional wipe reserved for scene changes.
-Motion is confined to the scene frames — the rising chart, the three escape cards, the orbit and the
-marker shots push or drift gently. Every frame that carries text (title, JSON, gate card, referee
-block, editor, terminal clip, rules table, cost card, end cards) is held completely still, so nothing
-on screen moves while it is being read. The build script is `recapture/build-v4.ps1`; the reference
-file is `OakGuard-submission-v4.mp4`. The recorded cost line and the closing line are separated by a
-clear beat (2:50.5–2:51.4) so the two takes never overlap.
+Picture: there is no camera movement anywhere — every frame is held completely still, including the
+chart and orbit shots, because the push-in filter quantises its position and reads as a shake. The
+only transition is a half-second dissolve. The build script is `recapture/build-v5-static.ps1`; the
+reference file is `OakGuard-submission-v5.mp4`. The recorded cost line and the closing line are
+separated by a clear beat (2:50.5–2:51.4) so the two takes never overlap.
 
 Voice-over: the twelve takes are trimmed, level-matched and assembled on `VO Timeline (fixed).wav`
 at the timecodes in `timeline.csv`. The opener runs 0:00–0:10 and the first word lands at 0:12 —
