@@ -57,10 +57,12 @@ decibels under the voice and lifts in the 0:00–0:12 gap where there is no narr
 the cost line at 2:44 and fades out over the last second of the end card.
 
 Picture: beats are joined by a half-second dissolve, with a directional wipe reserved for scene changes.
-Motion varies by frame rather than repeating one drift: the chart stills push in, the gate card pulls
-out, the escape cards drift laterally, and the text-heavy frames (title, referee block, terminal, end
-cards) are held still so nothing slides out of frame. The build script is `recapture/build-v3.ps1`;
-the reference file is `OakGuard-submission-v3.mp4`.
+Motion is confined to the scene frames — the rising chart, the three escape cards, the orbit and the
+marker shots push or drift gently. Every frame that carries text (title, JSON, gate card, referee
+block, editor, terminal clip, rules table, cost card, end cards) is held completely still, so nothing
+on screen moves while it is being read. The build script is `recapture/build-v4.ps1`; the reference
+file is `OakGuard-submission-v4.mp4`. The recorded cost line and the closing line are separated by a
+clear beat (2:50.5–2:51.4) so the two takes never overlap.
 
 Voice-over: the twelve takes are trimmed, level-matched and assembled on `VO Timeline (fixed).wav`
 at the timecodes in `timeline.csv`. The opener runs 0:00–0:10 and the first word lands at 0:12 —
@@ -80,7 +82,7 @@ line, so the frame is always established when the sentence begins.
 | 2:04.2–2:13.7 | `IMG-10-fixed-markers.png` — 🔧 Fix → breakout markers firing | "One click of Fix. Muse Spark diagnoses it, repairs both lines — and for the first time, the breakout markers actually fire." |
 | 2:13.7–2:29.1 | `IMG-11-voice-request.png` → `IMG-12-look-result.png` | "I do not even have to type it. Add an RSI filter above fifty, show the channel in three D. Muse Voice transcribes it, Muse Spark writes it — and when it does not match, Look tells me exactly what is missing." |
 | 2:29.1–2:43.8 | `IMG-08-referee-9of9.png` / `OakGuard-report-2026-11-03_1125.html` — the two engine fixes and the learning curve | "Then I pointed the oracles at my own engine — and they found two interpreter bugs that had been silently killing shipped indicators. On thirty-two fresh Muse Spark drafts, the learned rules raised zero false alarms." |
-| 2:43.8–2:51.0 | `IMG-06-playbook-rings.png` again → `IMG-13-cost-range.png` (**$0.10–$0.12** · live run $0.1005, recorded replay $0.115) | "And the whole thing — every rule, every call, every token — stays in a low cost effective range." |
+| 2:43.8–2:51.0 | `IMG-18-rules-promoted.png` (the three promoted rules and their gate scores) → `IMG-13-cost-range.png` (**$0.10–$0.12** · live run $0.1005, recorded replay $0.115) | "And the whole thing — every rule, every call, every token — stays in a low cost effective range." |
 | 2:51.0–2:54.9 | `IMG-15-end-card.png` — repo URL, judge URL, the three Meta models (`muse-wonder-1.0`, `muse-spark-1.3`, `muse-voice-transcribe-1.0`) | "Muse Wonder writes the rules. A referee it cannot see decides. It certifies the code, not the returns. OakGuard." |
 | 2:54.9–3:00 | `IMG-17-brand-card.png` — DskyzInvestments end card ("Same math. New view.") held under the close | — |
 
